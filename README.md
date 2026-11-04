@@ -6,7 +6,7 @@
 
 - 方案：`docs/PROJECT_PLAN.md`
 - 任务手册：`docs/TASKS.md`
-- 界面草图：`pre-temp/0.jpg`
+- 验收清单：`docs/RELEASE_1.0.0.md`
 
 ## 运行
 
