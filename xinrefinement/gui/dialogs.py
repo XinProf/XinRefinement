@@ -14,10 +14,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -170,6 +174,169 @@ class GenericDialog(_BaseDialog):
 
     def settings(self) -> dict:
         return {opt: cb.isChecked() for opt, cb in self._checks.items()}
+
+
+class PhaseEditDialog(_BaseDialog):
+    """编辑→物相参数编辑：按相编辑晶胞 / 择优取向 / 对称性描述。
+
+    只产出**设置字典**，写回结构体与 ProfileParams 由主窗口负责：
+
+    - ``cell``：直接写回 ``struct.cell``（影响下一次精修与标记条）；
+    - ``po``： ``(h,k,l,r)`` 或 None，写回 ``ProfileParams.po_r`` 并用于
+      ``compute_peaks(po=...)``；
+    - ``symmetry``：空间群 / 点群 / 劳厄群的显示与记录（元数据，暂不
+      参与精修约束）。
+    """
+
+    AXES = ("a", "b", "c", "α", "β", "γ")
+    #: 常用点群（可编辑下拉，覆盖 7 大晶系的典型选择）
+    POINT_GROUPS = ("", "1", "2", "m", "2/m", "222", "mm2", "mmm",
+                    "4", "4/m", "4/mmm", "-4", "422",
+                    "3", "-3", "32", "3m", "-3m",
+                    "6", "6/m", "6/mmm", "-6", "622",
+                    "23", "m-3", "m-3m", "432", "-43m")
+    #: 11 种劳厄群
+    LAUE_GROUPS = ("", "-1", "2/m", "mmm", "4/m", "4/mmm",
+                   "-3", "-3m", "6/m", "6/mmm", "m-3", "m-3m")
+
+    def __init__(self, phase_structs: list, current: dict | None = None,
+                 parent=None) -> None:
+        """``phase_structs``: CifStructure 列表；``current``: 既往设置。"""
+        super().__init__("物相参数编辑", parent)
+        cur = current or {}
+        self._structs = list(phase_structs)
+        self.setMinimumWidth(430)
+
+        if not self._structs:
+            self._root.addWidget(QLabel("尚未导入 CIF；请先导入物相。"))
+            self._add_buttons()
+            return
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("物相"))
+        self.combo = QComboBox()
+        for st in self._structs:
+            self.combo.addItem(st.name)
+        top.addWidget(self.combo, 1)
+        self._root.addLayout(top)
+
+        self._stack = QStackedWidget()
+        self._root.addWidget(self._stack)
+
+        self._cell_boxes: dict[str, list[QDoubleSpinBox]] = {}
+        self._po_enable: dict[str, QCheckBox] = {}
+        self._po_hkl: dict[str, list[QSpinBox]] = {}
+        self._po_r: dict[str, QDoubleSpinBox] = {}
+        self._sg_edit: dict[str, QLineEdit] = {}
+        self._pg_edit: dict[str, QComboBox] = {}
+        self._laue_edit: dict[str, QComboBox] = {}
+
+        for st in self._structs:
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(0, 0, 0, 0)
+            saved = cur.get(st.name, {})
+
+            # -- 晶胞参数 ---------------------------------------------- #
+            grp_cell = QGroupBox("晶胞参数 (Å / °)")
+            cf = QFormLayout(grp_cell)
+            boxes: list[QDoubleSpinBox] = []
+            saved_cell = saved.get("cell")
+            for k, ax in enumerate(self.AXES):
+                sb = QDoubleSpinBox()
+                if k < 3:
+                    sb.setRange(0.5, 200.0)
+                    sb.setDecimals(5)
+                    sb.setSingleStep(0.001)
+                else:
+                    sb.setRange(5.0, 175.0)
+                    sb.setDecimals(3)
+                    sb.setSingleStep(0.01)
+                val = (saved_cell[k] if saved_cell else st.cell[k])
+                sb.setValue(float(val))
+                boxes.append(sb)
+                cf.addRow(ax, sb)
+            self._cell_boxes[st.name] = boxes
+            pv.addWidget(grp_cell)
+
+            # -- 择优取向（March–Dollase） ------------------------------ #
+            grp_po = QGroupBox("择优取向 (March–Dollase)")
+            pf = QFormLayout(grp_po)
+            en = QCheckBox("启用")
+            en.setChecked(bool(saved.get("po")))
+            pf.addRow(en)
+            hkl_row = QHBoxLayout()
+            hkl_boxes: list[QSpinBox] = []
+            saved_po = saved.get("po")
+            for k in range(3):
+                sb = QSpinBox()
+                sb.setRange(-9, 9)
+                sb.setValue(int(saved_po[k]) if saved_po else 0)
+                hkl_boxes.append(sb)
+                hkl_row.addWidget(sb)
+            pf.addRow("择优面 (h k l)", hkl_row)
+            r_sb = QDoubleSpinBox()
+            r_sb.setRange(0.1, 5.0)
+            r_sb.setDecimals(3)
+            r_sb.setSingleStep(0.05)
+            r_sb.setValue(float(saved_po[3]) if saved_po else 1.0)
+            pf.addRow("r (1 = 无取向)", r_sb)
+            en.toggled.connect(r_sb.setEnabled)
+            for sb in hkl_boxes:
+                en.toggled.connect(sb.setEnabled)
+            r_sb.setEnabled(en.isChecked())
+            for sb in hkl_boxes:
+                sb.setEnabled(en.isChecked())
+            self._po_enable[st.name] = en
+            self._po_hkl[st.name] = hkl_boxes
+            self._po_r[st.name] = r_sb
+            pv.addWidget(grp_po)
+
+            # -- 对称性（空间群 / 点群 / 劳厄群） ----------------------- #
+            grp_sym = QGroupBox("对称性")
+            sf = QFormLayout(grp_sym)
+            sg = QLineEdit(st.spacegroup or "")
+            sg.setPlaceholderText("来自 CIF 的 H-M 符号")
+            sf.addRow("空间群", sg)
+            pg = QComboBox()
+            pg.setEditable(True)
+            pg.addItems(self.POINT_GROUPS)
+            pg.setCurrentText(str(saved.get("point_group", "")))
+            sf.addRow("点群", pg)
+            laue = QComboBox()
+            laue.setEditable(True)
+            laue.addItems(self.LAUE_GROUPS)
+            laue.setCurrentText(str(saved.get("laue_group", "")))
+            sf.addRow("劳厄群", laue)
+            if st.sg_number:
+                sf.addRow("国际表号", QLabel(str(st.sg_number)))
+            self._sg_edit[st.name] = sg
+            self._pg_edit[st.name] = pg
+            self._laue_edit[st.name] = laue
+            pv.addWidget(grp_sym)
+
+            self._stack.addWidget(page)
+
+        self.combo.currentIndexChanged.connect(self._stack.setCurrentIndex)
+        self._add_buttons()
+
+    def settings(self) -> dict:
+        out: dict = {}
+        for st in self._structs:
+            cell = [float(sb.value()) for sb in self._cell_boxes.get(
+                st.name, [])]
+            po = None
+            if st.name in self._po_enable and self._po_enable[st.name].isChecked():
+                hkl = [int(sb.value()) for sb in self._po_hkl[st.name]]
+                po = (hkl[0], hkl[1], hkl[2], float(self._po_r[st.name].value()))
+            out[st.name] = {
+                "cell": cell,
+                "po": po,
+                "spacegroup": self._sg_edit[st.name].text().strip(),
+                "point_group": self._pg_edit[st.name].currentText().strip(),
+                "laue_group": self._laue_edit[st.name].currentText().strip(),
+            }
+        return out
 
 
 def open_settings(step: str, title: str, phase_names: list[str],

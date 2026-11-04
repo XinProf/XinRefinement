@@ -193,6 +193,7 @@ D:/Project/XinRefinement/
 | P4.4 | 打包 PyInstaller + Inno Setup（zh/en/ja） | 🟡 已本地构建 v1.0.0（`packaging/xinrefinement.spec` + `packaging/inno/xinrefinement.iss` + `tools/build_binaries.py`）：GUI/CLI 双 exe（onedir）+ 安装包 66.6 MB，zh/en/ja 三语；**产物不入库不上传，待人工双击验收** |
 | P4.5 | CLI 批处理入口（`refine --recipe/--report/--quant/--esd`） | ✅ 完成：四旗全接（配方分步/HTML 报告目录/WPF 定量表/Schur e.s.d.）；v50 一条命令全流程通过 |
 | P4.6 | 公开库 API 契约 + XinMatch 对接 demo（`xinrefinement.core` 稳定 solve/quant/report 入口 + 版本化约定） | ✅ 完成：`xinrefinement/api.py`（RefineRequest/RefineResponse + refine/quant/report/capabilities + API_VERSION）；`test_p46_public_api` 验证最小调用 |
+| P4.7 | 验收轮 GUI 增强（v1.0.0 人工验收反馈并入）：MAUD 式标记条 / 物相编辑 / 关于对话框 / 品牌 splash / 精修菜单 | ✅ 完成：① 每相标记条（左标相名按相着色、棒高∝相对强度、残差面板收窄 1→0.55）；② 编辑→物相参数编辑（晶胞写回 struct.cell、PO hkl+r 传导 ProfileParams.po_r、空间群/点群/劳厄群，双击列表项直达，.xrp 持久化）；③ 精修菜单一键连跑+停止；④ 帮助→关于（版权/许可继承 XinMatch，根目录 LICENSE/LICENSE-CN）；⑤ logo/窗口图标/splash 走 assets 三级回退（项目根→_MEIPASS→包内）；测试 244 项 |
 
 ---
 

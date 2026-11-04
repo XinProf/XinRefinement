@@ -19,6 +19,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -52,8 +53,10 @@ from xinrefinement.core.refine.linear import background_basis
 from xinrefinement.core.refine.nonlinear import RefineConfig
 from xinrefinement.core.refine.recipe import DEFAULT_STEPS
 from xinrefinement.core.refine.solve import RefineInputs, solve
+from xinrefinement.gui.about import AboutDialog
+from xinrefinement.gui.assets import app_icon
 from xinrefinement.gui.canvas import PatternCanvas
-from xinrefinement.gui.dialogs import STEPS, open_settings
+from xinrefinement.gui.dialogs import STEPS, PhaseEditDialog, open_settings
 from xinrefinement.gui.project import load_project, save_project
 from xinrefinement.gui.workers import RefineWorker
 from xinrefinement.i18n import (
@@ -71,6 +74,9 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.resize(1180, 720)
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
         self._pattern = None
         self._pattern_path: str | None = None
         self._cif_paths: list[str] = []
@@ -79,6 +85,10 @@ class MainWindow(QMainWindow):
         self._settings: dict[str, dict] = {}
         self._worker: RefineWorker | None = None
         self._step_status: dict[str, str] = {}
+        #: 每相 March–Dollase 择优取向 {phase_name: (h,k,l,r)}
+        self._phase_po: dict[str, tuple] = {}
+        #: 物相编辑对话框的全部设置（晶胞/择优取向/对称性元数据）
+        self._phase_edits: dict[str, dict] = {}
         self._menu_actions: dict[str, QAction] = {}
         self._menus: dict[str, object] = {}
         self._toolbar_buttons: dict[str, QPushButton] = {}
@@ -106,6 +116,27 @@ class MainWindow(QMainWindow):
             act.triggered.connect(slot)
             fm.addAction(act)
             self._menu_actions[key] = act
+        # 编辑 → 物相参数编辑
+        em = self._menus["menu.edit"]
+        for key, slot in (("menu.phase_edit", self.open_phase_editor),):
+            act = QAction(tr(key), self)
+            act.triggered.connect(slot)
+            em.addAction(act)
+            self._menu_actions[key] = act
+        # 精修 → 一键连跑（默认配置）/ 停止
+        rm = self._menus["menu.refine"]
+        for key, slot in (("menu.run_all", self.run_recipe_all),
+                          ("menu.stop", self.cancel_refine)):
+            act = QAction(tr(key), self)
+            act.triggered.connect(slot)
+            rm.addAction(act)
+            self._menu_actions[key] = act
+        # 帮助 → 关于
+        hm = self._menus["menu.help"]
+        act = QAction(tr("menu.about"), self)
+        act.triggered.connect(self.show_about)
+        hm.addAction(act)
+        self._menu_actions["menu.about"] = act
         # 设置 → 语言子菜单
         lang_menu = self._menus["menu.setting"].addMenu(tr("menu.language"))
         self._menus["menu.language"] = lang_menu
@@ -143,6 +174,8 @@ class MainWindow(QMainWindow):
         lv.addWidget(lbl_phases)
         self.phase_list = QListWidget()
         self.phase_list.itemChanged.connect(self._on_phase_toggled)
+        self.phase_list.itemDoubleClicked.connect(
+            lambda _item: self.open_phase_editor())
         lv.addWidget(self.phase_list)
         lbl_tree = QLabel(tr("panel.param_tree"))
         self._labels["panel.param_tree"] = lbl_tree
@@ -278,6 +311,7 @@ class MainWindow(QMainWindow):
             "pattern": self._pattern_path,
             "cifs": list(self._cif_paths),
             "settings": self._settings,
+            "phase_edits": self._phase_edits,
             "result": result,
             "navigation": {"step_status": self._step_status,
                            "records": records},
@@ -313,11 +347,21 @@ class MainWindow(QMainWindow):
             self.retranslate()
             self.canvas.retranslate()
         self._settings = dict(data.get("settings", {}))
+        self._phase_edits = dict(data.get("phase_edits", {}))
+        self._phase_po = {n: s["po"] for n, s in self._phase_edits.items()
+                          if s.get("po")}
         if data.get("pattern") and Path(data["pattern"]).exists():
             self._load_pattern_path(Path(data["pattern"]))
         cifs = [c for c in data.get("cifs", []) if c and Path(c).exists()]
         if cifs:
             self._load_cif_paths([Path(c) for c in cifs])
+            # 恢复工程里保存的晶胞 / 择优取向编辑（覆盖 CIF 原始值）
+            for name, s in self._phase_edits.items():
+                st = next((x for x in self._phases if x.name == name), None)
+                cell = s.get("cell") if st is not None else None
+                if cell and len(cell) == 6:
+                    st.cell = tuple(float(v) for v in cell)
+            self._refresh_sticks()
         nav = data.get("navigation", {})
         self._step_status = dict(nav.get("step_status", {}))
         for step, status in self._step_status.items():
@@ -340,6 +384,8 @@ class MainWindow(QMainWindow):
         self._result = None
         self._settings.clear()
         self._step_status.clear()
+        self._phase_po.clear()
+        self._phase_edits.clear()
         self.phase_list.clear()
         self.canvas.clear()
         self.result_table.setRowCount(0)
@@ -394,17 +440,21 @@ class MainWindow(QMainWindow):
         return added
 
     def _refresh_sticks(self) -> None:
-        """按每相结构算布拉格峰位棒（用 core 前向模型的峰枚举）。"""
+        """按每相结构算布拉格峰棒（含相对强度与择优取向权重）。"""
         if not self._phases:
             return
         sticks = []
         for st in self._phases:
             try:
-                peaks, _skipped = compute_peaks(st, 1.5406, 5.0, 90.0)
-                sticks.append((st.name, [float(p[0]) for p in peaks]))
+                po = self._phase_po.get(st.name)
+                peaks, _skipped = compute_peaks(st, 1.5406, 5.0, 90.0, po=po)
+                # (2θ, |F|²·LP)：画布按相内最大值归一化成相对强度棒
+                sticks.append((st.name,
+                               [(float(p[0]), float(p[1])) for p in peaks]))
             except Exception:
                 sticks.append((st.name, []))
         self.canvas.set_phase_sticks(sticks)
+        self.canvas.refresh()
 
     def _on_phase_toggled(self, item: QListWidgetItem) -> None:
         self.canvas.set_phase_visible(item.text(),
@@ -418,6 +468,33 @@ class MainWindow(QMainWindow):
             self._settings[step] = got
             self.statusBar().showMessage(f"已更新「{title}」设置")
 
+    def open_phase_editor(self) -> None:
+        """编辑→物相参数编辑：晶胞写回结构体，择优取向传导到前向模型。"""
+        if not self._phases:
+            QMessageBox.information(self, "物相参数编辑", "请先导入 CIF 物相")
+            return
+        dlg = PhaseEditDialog(self._phases, self._phase_edits, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        got = dlg.settings()
+        for name, s in got.items():
+            st = next((x for x in self._phases if x.name == name), None)
+            if st is None:
+                continue
+            cell = s.get("cell")
+            if cell and len(cell) == 6:
+                st.cell = tuple(float(v) for v in cell)
+            self._phase_edits[name] = s
+        self._phase_po = {n: s["po"] for n, s in self._phase_edits.items()
+                          if s.get("po")}
+        self._refresh_sticks()
+        self.statusBar().showMessage(
+            "物相参数已更新（晶胞 / 择优取向用于下一次精修与标记条）")
+
+    def show_about(self) -> None:
+        """帮助→关于：家族版式（版权/许可继承 XinMatch）。"""
+        AboutDialog(self).exec()
+
     def _make_inputs(self) -> RefineInputs | None:
         """按当前齿轮设置构造精修输入（同步与后台线程共用）。"""
         if self._pattern is None or not self._phases:
@@ -430,7 +507,8 @@ class MainWindow(QMainWindow):
             bg_mode=bg.get("bg_mode", "cheb"),
             tmin=5.0, tmax=90.0, max_iter=40)
         prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
-                            anode="Cu", integrated=False)
+                            anode="Cu", integrated=False,
+                            po_r=self._phase_po or None)
         return RefineInputs(pattern=self._pattern, phases=self._phases,
                             profile=prm, config=cfg)
 
