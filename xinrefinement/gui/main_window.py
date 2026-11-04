@@ -1,11 +1,15 @@
-"""P3.1 · 主窗口三区骨架（对照草图 pre-temp/0.jpg）。
+"""P3.1/P3.3 · 主窗口三区骨架 + 导航式精修（对照草图 pre-temp/0.jpg）。
 
 布局：菜单 + 工具栏 / 左（物相列表 + 参数树占位）/ 中（交互图谱 + 缩放工具栏）
 / 右（导航式精修面板「▶执行 + ⚙设置」+ 结果区）。
 
-本卡用 **P0/M0 已就绪的引擎**（``core.refine.solve``）跑真实精修，不依赖
-P1 通用化；导航配方（P3.3）、后台线程（P3.3）、i18n（P3.6）后续接入。
-当前精修在 UI 线程同步执行（虚拟样量级 < 1 s）。
+- 工具栏「▶精修」= 单次统一精修（同步，便于脚本/测试复现）；
+- 导航每行的 ▶ = 按配方**单步**执行（后台线程 P3.3）；
+- 「一键连跑」= 按标准配方顺序连跑，逐步回报 Rwp（后台线程 P3.3）；
+- 齿轮 ⚙ = 打开该步骤详细设置，设置传导到下一次精修。
+
+后台线程由 ``gui.workers.RefineWorker`` 承担，主线程只更新控件；
+``closeEvent`` 会请求取消并等待线程收尾，避免 QThread 被销毁时 abort。
 """
 from __future__ import annotations
 
@@ -40,9 +44,11 @@ from xinrefinement.core.profile.forward import ProfileParams
 from xinrefinement.core.profile.struct import compute_peaks
 from xinrefinement.core.refine.linear import background_basis
 from xinrefinement.core.refine.nonlinear import RefineConfig
+from xinrefinement.core.refine.recipe import DEFAULT_STEPS
 from xinrefinement.core.refine.solve import RefineInputs, solve
 from xinrefinement.gui.canvas import PatternCanvas
 from xinrefinement.gui.dialogs import STEPS, open_settings
+from xinrefinement.gui.workers import RefineWorker
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +62,8 @@ class MainWindow(QMainWindow):
         self._phases: list = []
         self._result = None
         self._settings: dict[str, dict] = {}
+        self._worker: RefineWorker | None = None
+        self._step_status: dict[str, str] = {}
         self._build_menu()
         self._build_toolbar()
         self._build_body()
@@ -132,9 +140,21 @@ class MainWindow(QMainWindow):
             hl.addWidget(gear)
             nv.addWidget(row)
             self._step_buttons[step] = run
-        self.btn_run_all = QPushButton("▶ 一键连跑（配方，P3.3 接入）")
-        self.btn_run_all.setEnabled(False)
-        nv.addWidget(self.btn_run_all)
+        self.btn_run_all = QPushButton("▶ 一键连跑（标准配方）")
+        self.btn_run_all.setToolTip("按 8 步标准配方顺序精修，逐步回报 Rwp")
+        self.btn_run_all.clicked.connect(self.run_recipe_all)
+        self.btn_cancel = QPushButton("■ 停止")
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.clicked.connect(self.cancel_refine)
+        row_all = QWidget()
+        hl_all = QHBoxLayout(row_all)
+        hl_all.setContentsMargins(0, 0, 0, 0)
+        hl_all.addWidget(self.btn_run_all, 1)
+        hl_all.addWidget(self.btn_cancel)
+        nv.addWidget(row_all)
+        self.lbl_progress = QLabel("就绪")
+        self.lbl_progress.setWordWrap(True)
+        nv.addWidget(self.lbl_progress)
         rv.addWidget(nav)
 
         res = QGroupBox("精修结果")
@@ -228,14 +248,12 @@ class MainWindow(QMainWindow):
             self._settings[step] = got
             self.statusBar().showMessage(f"已更新「{title}」设置")
 
-    def run_step(self, step: str) -> None:
-        """单步执行：当前所有步骤共用统一精修入口（P3.3 接配方分组）。"""
-        self.run_refine()
-
-    def run_refine(self) -> None:
+    def _make_inputs(self) -> RefineInputs | None:
+        """按当前齿轮设置构造精修输入（同步与后台线程共用）。"""
         if self._pattern is None or not self._phases:
-            QMessageBox.information(self, "无法精修", "请先导入谱图和至少一个 CIF")
-            return
+            QMessageBox.information(self, "无法精修",
+                                    "请先导入谱图和至少一个 CIF")
+            return None
         bg = self._settings.get("bg", {})
         cfg = RefineConfig(
             refine_zero=True, refine_uvw=True, n_bg=int(bg.get("n_bg", 3)),
@@ -243,23 +261,129 @@ class MainWindow(QMainWindow):
             tmin=5.0, tmax=90.0, max_iter=40)
         prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
                             anode="Cu", integrated=False)
+        return RefineInputs(pattern=self._pattern, phases=self._phases,
+                            profile=prm, config=cfg)
+
+    def run_step(self, step: str) -> None:
+        """导航单步：按配方只执行该步（后台线程）。"""
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "正在精修", "请等待当前精修结束或点「停止」")
+            return
+        self._start_worker(single_step=step)
+
+    def run_recipe_all(self) -> None:
+        """一键连跑标准配方（后台线程）。"""
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "正在精修", "请等待当前精修结束或点「停止」")
+            return
+        self._step_status.clear()
+        self._start_worker(single_step=None)
+
+    def _start_worker(self, single_step: str | None) -> None:
+        inputs = self._make_inputs()
+        if inputs is None:
+            return
+        worker = RefineWorker(inputs, steps=DEFAULT_STEPS,
+                              single_step=single_step)
+        self._worker = worker
+        worker.step_started.connect(self._on_step_started)
+        worker.step_finished.connect(self._on_step_finished)
+        worker.progress.connect(self._on_progress)
+        worker.finished_ok.connect(self._on_worker_ok)
+        worker.failed.connect(self._on_worker_failed)
+        worker.finished.connect(self._on_worker_done)
+        self.btn_run_all.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
+        for btn in self._step_buttons.values():
+            btn.setEnabled(False)
+        worker.start()
+
+    def cancel_refine(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+            self.lbl_progress.setText("正在停止…")
+
+    def _on_step_started(self, key: str, title: str) -> None:
+        self._step_status[key] = "running"
+        self.statusBar().showMessage(f"执行中：{title}")
+
+    def _on_step_finished(self, key, status, rwp, message) -> None:
+        self._step_status[key] = status
+        btn = self._step_buttons.get(key)
+        if btn is not None:
+            mark = {"done": "✓", "skipped": "–", "failed": "!"}.get(status, "")
+            title = next((s[1] for s in STEPS if s[0] == key), key)
+            btn.setText(f"{mark} {title}" if not btn.text().startswith(mark)
+                        else btn.text())
+
+    def _on_progress(self, msg: str, pct) -> None:
+        self.lbl_progress.setText(msg)
+        self.statusBar().showMessage(msg)
+
+    def _on_worker_ok(self, res) -> None:
+        self._result = res
+        bg_curve = self._background_curve(res)
+        self.canvas.show_fit(res.pattern.two_theta,
+                             res.pattern.intensity, res.ycalc,
+                             background=bg_curve)
+        self._fill_results(res)
+
+    def _on_worker_failed(self, msg: str) -> None:
+        # 取消是用户主动行为，不弹模态框：离屏/自动化测试里模态框会
+        # 永久阻塞事件循环（实测 test_cancel_stops_recipe 挂死 12 分钟）。
+        cancelled = (self._worker is not None
+                     and self._worker.is_cancelled)
+        if not cancelled:
+            QMessageBox.warning(self, "精修未完成", msg)
+        self.lbl_progress.setText("已停止" if cancelled else msg)
+
+    def _on_worker_done(self) -> None:
+        self.btn_run_all.setEnabled(True)
+        self.btn_cancel.setEnabled(False)
+        for btn in self._step_buttons.values():
+            btn.setEnabled(True)
+
+    def _background_curve(self, res):
+        """背景系数 -> 背景曲线（失败时返回 None）。"""
         try:
-            res = solve(RefineInputs(pattern=self._pattern, phases=self._phases,
-                                     profile=prm, config=cfg))
+            return (background_basis(res.pattern.two_theta,
+                                     len(res.background),
+                                     res.config.bg_mode)
+                    @ np.asarray(res.background, dtype=float))
+        except Exception:
+            return None
+
+    def wait_for_worker(self, timeout_ms: int = 30000) -> bool:
+        """测试辅助：等待后台线程收尾并派发信号（供离屏冒烟用）。"""
+        w = self._worker
+        if w is None:
+            return False
+        ok = w.wait(timeout_ms)
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+        return ok
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 约定
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(30000)
+        super().closeEvent(event)
+
+    def run_refine(self) -> None:
+        """工具栏「▶精修」：单次统一精修（同步，保留脚本/测试契约）。"""
+        inputs = self._make_inputs()
+        if inputs is None:
+            return
+        try:
+            res = solve(inputs)
         except Exception as exc:
             QMessageBox.warning(self, "精修失败", str(exc))
             return
         self._result = res
         # 背景系数 -> 背景曲线（与精修同一组基函数，界面与报告口径一致）
-        try:
-            bg_curve = background_basis(
-                res.pattern.two_theta, len(res.background), cfg.bg_mode
-            ) @ np.asarray(res.background, dtype=float)
-        except Exception:
-            bg_curve = None
         self.canvas.show_fit(res.pattern.two_theta,
                              res.pattern.intensity, res.ycalc,
-                             background=bg_curve)
+                             background=self._background_curve(res))
         self._fill_results(res)
         self.statusBar().showMessage(
             f"精修完成：Rwp={res.rwp:.3f}%  success={res.success}")

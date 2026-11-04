@@ -133,3 +133,47 @@ def test_new_project_clears(win, qapp):
     assert win._pattern is None and win._phases == []
     assert win.result_table.rowCount() == 0
     assert not win.canvas.has_fit
+
+
+def test_recipe_all_runs_in_background(win, qapp):
+    """一键连跑：后台 QThread 按配方执行，逐步记录状态并产出结果。"""
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_recipe_all()
+    assert win._worker is not None and win._worker.isRunning()
+    assert win.btn_cancel.isEnabled()
+    assert win.wait_for_worker(60000) is True
+    qapp.processEvents()
+    assert win._result is not None and win._result.rwp < 10.0
+    assert win.canvas.has_fit
+    records = win._worker.runner.records
+    assert len(records) == 8
+    assert sum(r.status == "done" for r in records) == 6
+    assert sum(r.status == "skipped" for r in records) == 2
+    assert win._step_status.get("xyz") == "skipped"
+    assert win.btn_run_all.isEnabled()
+    assert not win.btn_cancel.isEnabled()
+
+
+def test_single_step_via_recipe(win, qapp):
+    """导航单步按钮：只执行该步（后台线程），不跑全部。"""
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_step("zero")
+    assert win.wait_for_worker(60000) is True
+    qapp.processEvents()
+    records = win._worker.runner.records
+    assert len(records) == 1 and records[0].key == "zero"
+    assert win._result is not None
+
+
+def test_cancel_stops_recipe(win, qapp):
+    """停止按钮：请求取消后线程能收尾，不残留运行中的 QThread。"""
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_recipe_all()
+    win.cancel_refine()
+    assert win.wait_for_worker(60000) is True
+    qapp.processEvents()
+    assert win._worker.is_cancelled
+    assert not win._worker.isRunning()
