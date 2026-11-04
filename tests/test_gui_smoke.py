@@ -298,6 +298,24 @@ def test_phase_edit_dialog_roundtrip(win):
     assert got2["anatase"]["point_group"] == "4/mmm"
 
 
+def test_nav_toolbar_colorized_icons(win):
+    """导航工具栏图标已按品牌色替换（8 个动作全部非空位图）。"""
+    from PySide6.QtGui import QPixmap
+
+    from xinrefinement.gui.toolbar_icons import TOOL_COLORS
+
+    tb = win._nav_toolbar
+    for callback in TOOL_COLORS:
+        act = tb._actions.get(callback)
+        assert act is not None, callback
+        pm = act.icon().pixmap(36, 36)
+        assert not pm.isNull(), callback
+        assert pm.width() == 36
+    # 关键动作可点击状态与原生语义不变
+    assert tb._actions["zoom"].isCheckable()
+    assert tb._actions["pan"].isCheckable()
+
+
 def test_open_phase_editor_applies_edits(win, monkeypatch):
     """主窗口入口：晶胞写回 struct.cell，PO 传导到精修输入。"""
     # exec 返回 Accepted，避免离屏环境真弹模态循环挂死

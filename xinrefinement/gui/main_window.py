@@ -190,7 +190,10 @@ class MainWindow(QMainWindow):
         cv = QVBoxLayout(center)
         self.canvas = PatternCanvas()
         cv.addWidget(self.canvas, 1)
-        cv.addWidget(NavigationToolbar2QT(self.canvas, center))
+        from xinrefinement.gui.toolbar_icons import colorize_nav_toolbar
+        self._nav_toolbar = NavigationToolbar2QT(self.canvas, center)
+        colorize_nav_toolbar(self._nav_toolbar)   # 品牌彩色图标
+        cv.addWidget(self._nav_toolbar)
         split.addWidget(center)
 
         # 右：导航式精修面板 + 结果区
