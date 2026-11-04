@@ -47,6 +47,8 @@ XinRefinementCLI refine <谱图> <物相.cif...> [-o out.json]
 
 ## 安装
 
+发布件见 [GitHub Releases](https://github.com/PolyXRD/XinRefinement/releases)（当前 `v1.0.0`）。
+
 ### 正式版（推荐）
 1. 下载 `XinRefinement-1.0.0-setup.exe`，双击安装（可选简体中文 / English / 日本語）；
 2. 首次启动会提示「本软件未注册，版权所有，禁止用于商业用途」——
