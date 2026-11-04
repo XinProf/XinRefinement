@@ -168,6 +168,9 @@ class MainWindow(QMainWindow):
             self._lang_actions[lang] = act
 
     def _build_toolbar(self) -> None:
+        from xinrefinement.gui.button_icons import toolbar_icon
+        from PySide6.QtCore import QSize as _QSize
+
         tb = QToolBar("main", self)
         tb.setMovable(False)
         self.addToolBar(tb)
@@ -177,6 +180,10 @@ class MainWindow(QMainWindow):
                           ("toolbar.refine", self.run_refine),
                           ("toolbar.report", self.export_report)):
             btn = QPushButton(tr(key))
+            icon = toolbar_icon(key)          # 彩色功能图标（快捷方式入口）
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setIconSize(_QSize(20, 20))
             btn.clicked.connect(slot)
             tb.addWidget(btn)
             self._toolbar_buttons[key] = btn

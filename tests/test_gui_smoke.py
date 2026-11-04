@@ -438,3 +438,21 @@ def test_axis_click_hit_zones(win, qapp):
     assert c._hit_axis(ev_r) == "y"
 
 
+
+
+def test_toolbar_buttons_have_colored_icons(win):
+    """工具栏五个功能按钮都有彩色图标（快捷方式入口）。"""
+    from xinrefinement.gui.button_icons import toolbar_icon
+
+    expected = {"toolbar.new", "toolbar.import_pattern",
+                "toolbar.import_cif", "toolbar.refine", "toolbar.report"}
+    assert set(win._toolbar_buttons) == expected
+    for key, btn in win._toolbar_buttons.items():
+        pm = btn.icon().pixmap(32, 32)
+        assert not pm.isNull(), key
+        assert pm.width() == 32, key
+    # 多尺寸齐全（高 DPI 清晰度）
+    icon = toolbar_icon("toolbar.refine")
+    sizes = {s.width() for s in icon.availableSizes()}
+    assert {16, 20, 24, 32, 48} <= sizes
+    assert toolbar_icon("unknown.key") is None
