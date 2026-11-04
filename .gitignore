@@ -42,3 +42,6 @@ Thumbs.db
 PDF2_2004.sqlite
 *.dat.bak
 cod_data/
+
+# WorkBuddy 本地工作记忆与配置（含个人工作日志，不入库、不同步远程）
+.workbuddy/
