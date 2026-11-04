@@ -266,13 +266,17 @@ def test_refine_result_uses_intensity_sticks(win, qapp):
 
 
 def test_menus_edit_refine_help(win):
-    """编辑=物相参数编辑；精修=一键连跑+停止；帮助=关于。"""
+    """编辑=物相参数编辑；精修=一键连跑+停止；帮助=注册码+关于。"""
     em = win._menus["menu.edit"]
     rm = win._menus["menu.refine"]
     hm = win._menus["menu.help"]
     assert em.actions() and em.actions()[0].text().startswith("物相参数编辑")
     assert [a.text() for a in rm.actions()] == ["一键连跑（默认配置）", "停止"]
-    assert hm.actions() and hm.actions()[0].text().startswith("关于")
+    help_texts = [a.text() for a in hm.actions() if a.text()]
+    assert "关于…" in help_texts
+    # 正式版才有「输入注册码」；内部版（测试环境默认 release）无则为内部版
+    if win._registration is not None:
+        assert any("输入注册码" in t for t in help_texts)
     # 精修菜单一键连跑与面板按钮指向同一入口
     assert win.btn_run_all.isEnabled()
 

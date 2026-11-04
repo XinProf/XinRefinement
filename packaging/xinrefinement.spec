@@ -22,8 +22,38 @@ ENTRY_GUI = str(ROOT / "xinrefinement" / "gui" / "__main__.py")
 ENTRY_CLI = str(ROOT / "xinrefinement" / "cli" / "__main__.py")
 ICON = str(SPEC_DIR / "xinrefinement.ico")
 
+# ---- 构建变体：release（正式版·含注册）/ internal（内部评估版） ----
+# 变体决定产物目录名与随包分发的 variant.txt（运行时由
+# xinrefinement.build_variant 读取；缺失按 release 处理，fail-safe）。
+#
+# build/variant.request **优先于**环境变量：COLLECT 的名字决定输出目录，
+# 若变体在本进程里读错，internal 构建会算出 release 的名字并覆盖掉另一个
+# 已建好的变体。文件是确定性的，所以让它说话（XinMatch 同款处理）。
+_VARIANT_REQUEST = SPEC_DIR.parent / "build" / "variant.request"
+
+
+def _resolve_variant() -> str:
+    if _VARIANT_REQUEST.is_file():
+        v = _VARIANT_REQUEST.read_text(encoding="utf-8").strip().lower()
+        if v in ("release", "internal"):
+            return v
+    v = os.environ.get("XR_BUILD_VARIANT", "release").strip().lower()
+    return v if v in ("release", "internal") else "release"
+
+
+BUILD_VARIANT = _resolve_variant()
+
+# 标记文件先落到 build/，再作为 datas 打进产物（onedir 下进 _internal/）
+_VARIANT_MARKER = SPEC_DIR.parent / "build" / "variant.txt"
+_VARIANT_MARKER.parent.mkdir(parents=True, exist_ok=True)
+_VARIANT_MARKER.write_text(BUILD_VARIANT, encoding="utf-8")
+
+BUNDLE_NAME = (f"XinRefinement-{VERSION}" if BUILD_VARIANT == "release"
+               else f"XinRefinement-internal-{VERSION}")
+
 datas = [
     (str(ROOT / "xinrefinement" / "data"), "xinrefinement/data"),
+    (str(_VARIANT_MARKER), "."),
 ]
 # matplotlib / PySide6 的运行时数据由各自 hook 处理；此处补 mpl 字体等
 datas += collect_data_files("matplotlib", includes=["mpl-data/**"])
@@ -33,6 +63,9 @@ hiddenimports = [
     "matplotlib.backends.backend_agg",
     "PySide6.QtSvg",
     "spglib",
+    # 注册机制：只经延迟导入，显式登记避免被裁剪
+    "xinrefinement.registration",
+    "xinrefinement.build_variant",
 ]
 
 excludes = ["tkinter", "tests", "pytest", "IPython", "notebook"]
@@ -96,5 +129,5 @@ coll = COLLECT(
     exe_cli, a_cli.binaries, a_cli.datas,
     strip=False,
     upx=False,
-    name=f"XinRefinement-{VERSION}",
+    name=BUNDLE_NAME,
 )

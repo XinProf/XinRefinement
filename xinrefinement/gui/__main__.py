@@ -30,7 +30,37 @@ def _maybe_show_splash(app) -> "QtWidgets.QSplashScreen | None":  # noqa: F821
     return splash
 
 
+def _maybe_selftest(win, app) -> bool:
+    """验收辅助：设 ``XINREFINEMENT_SELFTEST_REG_OUT=<json>`` 时导出变体
+    与注册状态后退出，便于脚本校验两种二进制而不驱动 GUI。
+
+    返回 True 表示已进入自检模式（调用方不再进入事件循环）。
+    """
+    out = os.environ.get("XINREFINEMENT_SELFTEST_REG_OUT")
+    if not out:
+        return False
+    import json
+    from pathlib import Path
+
+    from xinrefinement import build_variant
+
+    reg = getattr(win, "_registration", None)
+    payload = {
+        "variant": build_variant.current_variant(),
+        "registration_enabled": reg is not None,
+        "registered": bool(reg is not None and reg.state.registered),
+        "unit": reg.state.unit if reg is not None else "",
+        "status_text": win.registration_status_text(),
+        "state_path": str(reg.state_path) if reg is not None else "",
+    }
+    Path(out).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+    app.quit()
+    return True
+
+
 def main() -> int:
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
     from xinrefinement.gui.assets import app_icon
     from xinrefinement.gui.main_window import MainWindow
@@ -45,6 +75,11 @@ def main() -> int:
     win.show()
     if splash is not None:
         splash.finish(win)
+    if _maybe_selftest(win, app):
+        return 0
+    # 正式版启动注册检查：QTimer 保证窗口先显示完再弹提示，不阻塞冒烟；
+    # 内部评估版无注册管理器，这里直接空转。
+    QTimer.singleShot(0, win.startup_registration_check)
     return app.exec()
 
 

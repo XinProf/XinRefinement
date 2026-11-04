@@ -1,18 +1,36 @@
-"""v1.0.0 本地二进制构建（PyInstaller onedir + Inno Setup 安装包）。
+"""v1.0.0 本地双变体二进制构建。
+
+参照 XinMatch 的双产物策略，一次产出两种二进制：
+
+============  ==========================  ==============================
+变体          产物                        说明
+============  ==========================  ==============================
+release       ``dist/XinRefinement-<ver>/``       正式版（含 PolyXRD-Reg
+              ``dist/installer/XinRefinement-<ver>-setup.exe``  注册机制）
+internal      ``dist/XinRefinement-internal-<ver>/``            内部评估版
+              ``dist/installer/XinRefinement-internal-<ver>-portable.zip``
+                                                        （免注册、免安装）
+============  ==========================  ==============================
+
+变体以随包分发的 ``variant.txt`` 固化：正式版启动弹注册提示、帮助菜单有
+「输入注册码」；内部评估版状态栏红字「内部评估版本」、不接注册。
 
 **只在本地构建**：产物写入 ``dist/``，不入库、不上传、不发布；由人工
 双击验收后再决定分发。
 
 用法::
 
-    python tools/build_binaries.py                 # 全流程（exe + 安装包）
-    python tools/build_binaries.py --skip-installer # 只打 exe
-    python tools/build_binaries.py --skip-exe       # 只打安装包（复用已构建 dist）
+    python tools/build_binaries.py                    # 两个变体全流程
+    python tools/build_binaries.py --variant release  # 只构建正式版
+    python tools/build_binaries.py --skip-installer   # 只打 exe（含 zip）
+    python tools/build_binaries.py --skip-exe         # 只打安装包/zip（复用 dist）
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,10 +40,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "packaging" / "xinrefinement.spec"
 ISS = ROOT / "packaging" / "inno" / "xinrefinement.iss"
 DIST = ROOT / "dist"
+INSTALLER = DIST / "installer"
+VARIANT_REQUEST = ROOT / "build" / "variant.request"
 ISCC_CANDIDATES = (
     Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
     Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
 )
+
+VARIANTS = ("release", "internal")
 
 
 def _sha256(path: Path) -> str:
@@ -51,19 +73,47 @@ def _version() -> str:
     return __version__
 
 
-def dist_dir() -> Path:
+def bundle_name(variant: str) -> str:
+    """产物目录名（与 packaging/xinrefinement.spec 的 BUNDLE_NAME 一致）。"""
+    if variant == "internal":
+        return f"XinRefinement-internal-{_version()}"
+    return f"XinRefinement-{_version()}"
+
+
+def dist_dir(variant: str) -> Path:
     """版本化产物目录：避免覆盖旧构建（整目录删除会被安全策略拦截）。"""
-    return DIST / f"XinRefinement-{_version()}"
+    return DIST / bundle_name(variant)
 
 
-def build_exe(clean: bool) -> None:
-    import os
-    import shutil
+def _write_variant_request(variant: str) -> None:
+    """写 build/variant.request 并立即回读校验（spec 优先读它）。"""
+    VARIANT_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    VARIANT_REQUEST.write_text(variant, encoding="ascii")
+    got = VARIANT_REQUEST.read_text(encoding="ascii").strip().lower()
+    if got != variant:
+        raise SystemExit(f"variant.request 写后读不一致：{got!r} != {variant!r}")
 
-    env = dict(os.environ, XR_VERSION=_version())
+
+def _assert_marker(variant: str) -> None:
+    """校验产物里的 variant.txt（漏放会让内部版退化成强制注册版）。"""
+    marker = dist_dir(variant) / "_internal" / "variant.txt"
+    if not marker.exists():
+        marker2 = dist_dir(variant) / "variant.txt"
+        if not marker2.exists():
+            raise SystemExit(f"产物缺少 variant.txt：{dist_dir(variant)}")
+        marker = marker2
+    text = marker.read_text(encoding="utf-8").strip().lower()
+    if text != variant:
+        raise SystemExit(f"variant.txt 内容 {text!r} != 期望 {variant!r}（{marker}）")
+    print(f"  变体标记 OK：{marker.name} = {text}")
+
+
+def build_exe(variant: str, clean: bool) -> None:
+    _write_variant_request(variant)
+    env = dict(os.environ, XR_VERSION=_version(), XR_BUILD_VARIANT=variant)
     # 先构建到一次性暂存目录：PyInstaller 的 COLLECT 会先删目标目录，
     # 直接指向 dist/ 会在重建时被安全策略（批量删除）拦截。
-    stage = ROOT / "build" / "stage" / f"run-{int(time.time())}"
+    stage = ROOT / "build" / "stage" / f"{variant}-{int(time.time())}"
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm",
            "--distpath", str(stage), "--workpath", str(ROOT / "build"),
            str(SPEC)]
@@ -77,56 +127,80 @@ def build_exe(clean: bool) -> None:
         raise SystemExit(f"PyInstaller 失败（exit={proc.returncode}）")
     print(f"  完成，用时 {time.time() - t0:.0f}s")
 
-    src = stage / f"XinRefinement-{_version()}"
+    src = stage / bundle_name(variant)
     if not src.exists():
         raise SystemExit(f"暂存产物缺失：{src}")
-    dst = dist_dir()
+    dst = dist_dir(variant)
     dst.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, dirs_exist_ok=True)   # 覆盖同名文件，不删目录
     print(f"  已镜像到 {dst}")
+    _assert_marker(variant)
 
 
-def build_installer() -> Path:
+def build_installer(variant: str) -> Path:
     iscc = next((p for p in ISCC_CANDIDATES if p.exists()), None)
     if iscc is None:
         raise SystemExit("未找到 Inno Setup 的 ISCC.exe（请安装 Inno Setup 6）")
-    _run([str(iscc), "/Qp", f"/DDistDir={dist_dir()}", str(ISS)])
-    out = DIST / "installer" / f"XinRefinement-{_version()}-setup.exe"
+    _run([str(iscc), "/Qp", f"/DDistDir={dist_dir(variant)}", str(ISS)])
+    out = INSTALLER / f"XinRefinement-{_version()}-setup.exe"
     if not out.exists():
-        cands = sorted((DIST / "installer").glob("*.exe"))
-        if not cands:
-            raise SystemExit("安装包未生成")
-        out = cands[-1]
+        raise SystemExit("安装包未生成")
     return out
 
 
+def build_portable_zip(variant: str) -> Path:
+    """内部评估版：整目录打 zip（免安装，解压即用）。"""
+    name = bundle_name(variant)
+    INSTALLER.mkdir(parents=True, exist_ok=True)
+    target = INSTALLER / f"{name}-portable.zip"
+    tmp = shutil.make_archive(str(target.with_suffix("")), "zip",
+                              root_dir=str(DIST), base_dir=name)
+    produced = Path(tmp)
+    if produced != target:
+        produced.replace(target)
+    print(f"  已打包 {target}")
+    return target
+
+
+def _report(path: Path) -> None:
+    print(f"  {path.name}  {path.stat().st_size / 1e6:.1f} MB  "
+          f"sha256={_sha256(path)[:16]}…")
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="XinRefinement 本地二进制构建")
-    ap.add_argument("--skip-installer", action="store_true")
-    ap.add_argument("--skip-exe", action="store_true")
+    ap = argparse.ArgumentParser(description="XinRefinement 本地双变体构建")
+    ap.add_argument("--variant", choices=("all",) + VARIANTS, default="all",
+                    help="构建哪个变体（默认 all = release + internal）")
+    ap.add_argument("--skip-installer", action="store_true",
+                    help="不打安装包 / 便携 zip")
+    ap.add_argument("--skip-exe", action="store_true",
+                    help="只打安装包 / zip（复用已构建的 dist）")
     ap.add_argument("--no-clean", action="store_true",
-                    help="不清理 PyInstaller 缓存（默认清理）")
+                    help="不清理 PyInstaller 缓存（默认每个变体都清理）")
     args = ap.parse_args(argv)
 
-    if not args.skip_exe:
-        # 注意：不整目录删除 dist/（沙箱对批量删除有保护，且 PyInstaller
-        # 的 --noconfirm 会自行覆盖旧产物）
-        build_exe(clean=not args.no_clean)
-        gui = dist_dir() / "XinRefinement.exe"
-        cli = dist_dir() / "XinRefinementCLI.exe"
-        for p in (gui, cli):
-            if not p.exists():
-                raise SystemExit(f"缺少产物：{p}")
-        print(f"\nGUI  {gui}  {gui.stat().st_size / 1e6:.1f} MB  "
-              f"sha256={_sha256(gui)[:16]}…")
-        print(f"CLI  {cli}  {cli.stat().st_size / 1e6:.1f} MB  "
-              f"sha256={_sha256(cli)[:16]}…")
+    todo = VARIANTS if args.variant == "all" else (args.variant,)
+    installers: list[Path] = []
 
-    if not args.skip_installer:
-        inst = build_installer()
-        print(f"\n安装包 {inst}  {inst.stat().st_size / 1e6:.1f} MB")
-        print(f"sha256 = {_sha256(inst)}")
-        print("\n⚠ 本地产物仅用于人工验收：不提交、不上传、不发布。")
+    for variant in todo:
+        print(f"\n===== 构建变体：{variant}（{bundle_name(variant)}）=====")
+        if not args.skip_exe:
+            build_exe(variant, clean=not args.no_clean)
+            print()
+            _report(dist_dir(variant) / "XinRefinement.exe")
+            _report(dist_dir(variant) / "XinRefinementCLI.exe")
+        if not args.skip_installer:
+            if variant == "release":
+                installers.append(build_installer(variant))
+            else:
+                installers.append(build_portable_zip(variant))
+
+    if installers:
+        print()
+        for p in installers:
+            print(f"发布件 {p}  {p.stat().st_size / 1e6:.1f} MB")
+            print(f"sha256 = {_sha256(p)}")
+    print("\n⚠ 本地产物仅用于人工验收：不提交、不上传、不发布。")
     return 0
 
 

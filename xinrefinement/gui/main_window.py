@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
@@ -45,6 +45,7 @@ from matplotlib.backends.backend_qtagg import (
 from matplotlib.figure import Figure
 
 from xinrefinement import __version__
+from xinrefinement import build_variant
 from xinrefinement.core.patterns import load_pattern
 from xinrefinement.core.profile.cif import parse_cif
 from xinrefinement.core.profile.forward import ProfileParams
@@ -94,9 +95,23 @@ class MainWindow(QMainWindow):
         self._toolbar_buttons: dict[str, QPushButton] = {}
         self._labels: dict[str, QLabel] = {}
         self._groups: dict[str, QGroupBox] = {}
+        # 注册机制：仅正式版（release）接入；内部评估版不弹提示、不出现
+        # 「输入注册码」菜单，状态栏右端固定显示「内部评估版本」。
+        # 状态文件走 PolyXRD 家族统一目录（%APPDATA%/PolyXRD/Registration）。
+        self._registration = None
+        if build_variant.is_release():
+            from xinrefinement.registration import (
+                RegistrationManager,
+                default_state_path,
+            )
+
+            self._registration = RegistrationManager(
+                "XinRefinement", default_state_path("XinRefinement"))
+        self._registration_label: QLabel | None = None
         self._build_menu()
         self._build_toolbar()
         self._build_body()
+        self._build_statusbar()
         self.retranslate()
         self.statusBar().showMessage(tr("msg.ready"))
 
@@ -137,6 +152,10 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self.show_about)
         hm.addAction(act)
         self._menu_actions["menu.about"] = act
+        # 帮助 → 输入注册码（仅正式版；加在「关于」之前）
+        if self._registration is not None:
+            hm.insertSeparator(act)
+            self._registration.add_help_action(hm, self)
         # 设置 → 语言子菜单
         lang_menu = self._menus["menu.setting"].addMenu(tr("menu.language"))
         self._menus["menu.language"] = lang_menu
@@ -257,6 +276,39 @@ class MainWindow(QMainWindow):
         split.addWidget(right)
         split.setSizes([220, 660, 300])
 
+    # -- 状态栏 -------------------------------------------------------- #
+    def _build_statusbar(self) -> None:
+        """状态栏最右侧：注册状态（正式版）/「内部评估版本」（内部版）。"""
+        bar = self.statusBar()
+        if self._registration is not None:
+            # stretch=1 让标签吃掉剩余空白，单位名始终贴住右端。
+            self._registration_label = self._registration.attach_status_label(
+                bar, self)
+            return
+        label = QLabel(build_variant.INTERNAL_STATUS_TEXT)
+        label.setObjectName("internalBuildLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignRight
+                           | Qt.AlignmentFlag.AlignVCenter)
+        label.setToolTip("内部评估版：未启用注册机制，仅供内部测试与评估使用。")
+        # 红色加粗（与 XinMatch 内部版一致）；挂在控件上的样式优先级高于
+        # 全局 QSS，换主题不会掉色。
+        label.setStyleSheet("color: #d32f2f; font-weight: bold; padding: 0 6px;")
+        bar.addPermanentWidget(label, 1)
+        self._registration_label = label
+
+    def registration_status_text(self) -> str:
+        """状态栏右端注册文案（冒烟测试读取，不弹窗）。"""
+        if self._registration is not None:
+            return self._registration.state.status_text
+        return build_variant.INTERNAL_STATUS_TEXT
+
+    def startup_registration_check(self) -> None:
+        """启动注册检查（窗口显示后由入口 QTimer 调用；离屏自动跳过）。"""
+        if self._registration is None:
+            return
+        self._registration.startup_check(self)
+        self._registration_label = self._registration.label(self)
+
     # -- 国际化 -------------------------------------------------------- #
     def retranslate(self) -> None:
         """按当前语言刷新全部静态文案（语言切换无需重启）。"""
@@ -290,6 +342,11 @@ class MainWindow(QMainWindow):
 
     def switch_language(self, lang: str) -> None:
         set_language(lang)
+        # 注册模块自带一套三语文案（不依赖本包 i18n），单独同步
+        from xinrefinement import registration as _reg_mod
+        _reg_mod.set_language(lang)
+        if self._registration is not None:
+            self._registration.refresh()
         self.retranslate()
         self.canvas.retranslate()
         self.statusBar().showMessage(

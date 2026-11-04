@@ -61,6 +61,21 @@ class AboutDialog(QtWidgets.QDialog):
         version_label.setStyleSheet("color: #777;")
         title_col.addWidget(version_label)
 
+        # 构建变体：正式版显示注册状态，内部评估版明确标注（同 XinMatch）
+        from xinrefinement import build_variant
+
+        reg = getattr(parent, "_registration", None)
+        if build_variant.is_release():
+            status = reg.state.status_text if reg is not None else "未注册"
+            variant_text = f"正式版 · {status}"
+            variant_style = "color: #777;"
+        else:
+            variant_text = "内部评估版 · 未启用注册机制"
+            variant_style = "color: #d32f2f; font-weight: bold;"
+        variant_label = QtWidgets.QLabel(variant_text)
+        variant_label.setStyleSheet(variant_style)
+        title_col.addWidget(variant_label)
+
         title_col.addStretch(1)
         header.addLayout(title_col)
         header.addStretch(1)

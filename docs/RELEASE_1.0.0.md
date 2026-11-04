@@ -3,23 +3,45 @@
 > 产物**只在本地**：`dist/` 已被 `.gitignore` 排除，未提交、未上传、未发布。
 > 全部确认通过后，再由你决定分发方式。
 
-## 1. 产物清单
+## 1. 产物清单（双变体，参照 XinMatch）
 
-| 产物 | 路径 | 说明 |
-|---|---|---|
-| GUI | `dist/XinRefinement/XinRefinement.exe` | windowed，无控制台 |
-| CLI | `dist/XinRefinement/XinRefinementCLI.exe` | console，批处理 |
-| 运行时 | `dist/XinRefinement/_internal/` | PyInstaller onedir 依赖 |
-| 安装包 | `dist/installer/XinRefinement-1.0.0-setup.exe` | Inno Setup，zh/en/ja |
+| 变体 | 产物 | 路径 | 说明 |
+|---|---|---|---|
+| **正式版** release | GUI / CLI | `dist/XinRefinement-1.0.0/XinRefinement.exe`、`…CLI.exe` | windowed + console，onedir |
+| | 安装包 | `dist/installer/XinRefinement-1.0.0-setup.exe` | Inno Setup，zh/en/ja；**含 PolyXRD-Reg 注册机制** |
+| **内部评估版** internal | GUI / CLI | `dist/XinRefinement-internal-1.0.0/XinRefinement.exe`、`…CLI.exe` | 免注册、免安装 |
+| | 便携包 | `dist/installer/XinRefinement-internal-1.0.0-portable.zip` | 解压即用；状态栏红字「内部评估版本」 |
 
-重新构建：`python tools/build_binaries.py`（约 2.5 分钟）。
-构建后脚本会打印每个产物的 SHA-256 前 16 位；完整校验：
+变体以随包 `variant.txt` 固化（在 `_internal/` 下），运行时由
+`xinrefinement.build_variant` 读取；**缺失标记按正式版处理**（fail-safe）。
+
+重新构建：`python tools/build_binaries.py`（两个变体约 5 分钟）或
+`--variant release` / `--variant internal` 单建。
+构建后脚本会打印每个产物 SHA-256 前 16 位；完整校验：
 
 ```bash
-sha256sum dist/XinRefinement/XinRefinement.exe \
-          dist/XinRefinement/XinRefinementCLI.exe \
-          dist/installer/XinRefinement-1.0.0-setup.exe
+sha256sum dist/XinRefinement-1.0.0/XinRefinement.exe \
+          dist/XinRefinement-1.0.0/XinRefinementCLI.exe \
+          dist/installer/XinRefinement-1.0.0-setup.exe \
+          dist/installer/XinRefinement-internal-1.0.0-portable.zip
 ```
+
+### 1.1 两种变体的机器可读自检（不必驱动 GUI）
+
+```bat
+set XINREFINEMENT_SELFTEST_REG_OUT=%TEMP%\reg.json
+dist\XinRefinement-1.0.0\XinRefinement.exe
+type %TEMP%\reg.json
+:: 正式版 → {"variant":"release","registration_enabled":true,"status_text":"未注册"}
+
+dist\XinRefinement-internal-1.0.0\XinRefinement.exe
+type %TEMP%\reg.json
+:: 内部版 → {"variant":"internal","registration_enabled":false,"status_text":"内部评估版本"}
+```
+
+注册状态文件：`%APPDATA%\PolyXRD\Registration\XinRefinement.json`
+（与 XinMatch 同一家族目录，注册码互通）。
+开发方出码：`python tools/make_reg_code.py "单位部门名称"`。
 
 ## 1.5 源码模式预检（可选，先跑这一步可快速排除环境问题）
 
@@ -40,24 +62,29 @@ run_dev.bat refine <谱图> <物相.cif...> --recipe --report out_dir --esd
 
 若源码模式通过而 exe 失败 → 问题在打包（缺 hiddenimport / 数据文件）；两者都失败 → 问题在代码或数据。
 
-## 2. 五轮稳健性验收（建议顺序）
+## 2. 六轮稳健性验收（建议顺序）
 
 | 轮 | 动作 | 通过标准 |
 |---|---|---|
-| 1 · 哈希一致性 | 连续构建两次，比对三个产物 SHA-256 | GUI/CLI 两次一致（安装包因时间戳允许不同）；不一致需排查非确定性来源 |
+| 1 · 哈希一致性 | 连续构建两次，比对四个产物 SHA-256 | GUI/CLI 两次一致（安装包因时间戳允许不同）；不一致需排查非确定性来源 |
 | 2 · CLI 冷启动 | 双击或 `XinRefinementCLI.exe --version` | 输出 `XinRefinement 1.0.0`，无缺 DLL 报错 |
 | 3 · CLI 端到端 | `XinRefinementCLI.exe refine <谱图.xy> <物相.cif> -o out.json` | JSON 含 `r_factors`/`phases`；Rwp 与源码运行一致（v50 双相 = 3.409617） |
 | 4 · GUI 双击冒烟 | 双击 `XinRefinement.exe` | 主窗口出现（标题含 1.0.0）；导入谱图+CIF → ▶精修 → 图谱与结果表刷新；切换语言（设置→语言）文案即时变化 |
 | 5 · 安装/卸载 | 双击安装包 → 选简体中文 → 安装到默认目录 → 启动 → 卸载 | 安装界面为中文；开始菜单有 GUI 与 CLI 两项；卸载后目录清空 |
+| 6 · 双变体差异 | 分别跑 §1.1 的两条自检；再双击两个 GUI 看状态栏右端 | 正式版：帮助菜单有「输入注册码…」、状态栏「未注册」→ 输入注册码后变「已注册：单位名」；内部版：无注册菜单、状态栏红字「内部评估版本」 |
 
 ## 3. 已知提示
 
+- 正式版首次启动会弹「未注册，版权所有，禁止用于商业用途」提示
+  （确定=继续使用 / 输入注册码=完成注册）；离屏运行或设
+  `POLYXRD_REG_NO_PROMPT=1` 时不弹（自动化友好）。
+- 注册码为离线 HMAC 校验（密钥随软件分发，属混淆级）；同一注册码可在同单位多机使用，无机器绑定。
+- 内部评估版是**便携 zip**，不做安装包；若需要内部版安装包，可再扩 Inno 配置加一个 `--variant internal` 的 AppId。
 - 未代码签名：首次运行 Windows SmartScreen 可能提示「未知发布者」，选「仍要运行」。
 - 安装包 66.6 MB（含 matplotlib/Qt 运行时），属正常范围。
 - GUI 首次启动约 2–4 s（onedir 冷启动，PyInstaller 解包依赖）。
 - 三语安装：简体中文语言文件来自社区翻译（`packaging/inno/ChineseSimplified.isl`，
   Inno Setup 官方未内置）；英文/日文用 Inno 自带语言包。
-- 若需单文件 exe（onefile）或便携 zip，另开一版构建配置，当前版本未提供。
 
 ## 4. 验收记录（人工填写）
 
@@ -68,3 +95,4 @@ run_dev.bat refine <谱图> <物相.cif...> --recipe --report out_dir --esd
 | 3 · CLI 端到端 | ⬜ | |
 | 4 · GUI 冒烟 | ⬜ | |
 | 5 · 安装/卸载 | ⬜ | |
+| 6 · 双变体差异 | ⬜ | |

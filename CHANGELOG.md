@@ -45,6 +45,18 @@
 - `XinRefinementCLI refine <pattern> <cif...>`：`--recipe`（配方分步）、`--report`（HTML/PNG/JSON 目录）、`--quant`（WPF 定量）、`--esd`（Schur e.s.d.）、`--version`
 - 公开库 API：`xinrefinement/api.py`（`RefineRequest`/`RefineResponse`、`refine`/`quant`/`report`/`capabilities`、`API_VERSION`）
 
+### 双变体与注册（参照 XinMatch）
+
+- **正式版（release）**：Inno Setup 安装包；接入 PolyXRD-Reg 离线注册机制
+  （`xinrefinement/registration.py` 与 XinMatch 逐字同源、密钥一致，注册码互通），
+  启动弹未注册版权提示，帮助菜单「输入注册码…」，状态栏右端「已注册：单位名 / 未注册」
+- **内部评估版（internal）**：免安装便携 zip，不接注册；状态栏右端红字「内部评估版本」
+- 变体由随包 `variant.txt` 固化（缺失按正式版处理，fail-safe）；冻结产物忽略环境变量，
+  防止用 `XINREFINEMENT_VARIANT` 绕过注册提示
+- 注册状态文件 `%APPDATA%\PolyXRD\Registration\XinRefinement.json`；
+  开发方出码 `tools/make_reg_code.py "单位名"`
+- 验收辅助：`XINREFINEMENT_SELFTEST_REG_OUT=<json>` 启动即导出变体/注册状态后退出
+
 ### 验收
 
 - 测试 **238 项全绿**；`bench_b` 家族 golden round-trip **8/8 PASS**（Rwp 3.41–4.04%，与移植前逐位一致）

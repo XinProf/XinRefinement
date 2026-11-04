@@ -195,6 +195,7 @@ D:/Project/XinRefinement/
 | P4.6 | 公开库 API 契约 + XinMatch 对接 demo（`xinrefinement.core` 稳定 solve/quant/report 入口 + 版本化约定） | ✅ 完成：`xinrefinement/api.py`（RefineRequest/RefineResponse + refine/quant/report/capabilities + API_VERSION）；`test_p46_public_api` 验证最小调用 |
 | P4.7 | 验收轮 GUI 增强（v1.0.0 人工验收反馈并入）：MAUD 式标记条 / 物相编辑 / 关于对话框 / 品牌 splash / 精修菜单 | ✅ 完成：① 每相标记条（左标相名按相着色、棒高∝相对强度、残差面板收窄 1→0.55）；② 编辑→物相参数编辑（晶胞写回 struct.cell、PO hkl+r 传导 ProfileParams.po_r、空间群/点群/劳厄群，双击列表项直达，.xrp 持久化）；③ 精修菜单一键连跑+停止；④ 帮助→关于（版权/许可继承 XinMatch，根目录 LICENSE/LICENSE-CN）；⑤ logo/窗口图标/splash 走 assets 三级回退（项目根→_MEIPASS→包内）；⑥ 导航工具栏图标彩色化（品牌 SVG 重着色+圆角底衬）；测试 250 项 |
 | P4.8 | 谱图轴切换：横轴 2θ ↔ d 值、纵轴 counts ↔ log ↔ √（左键循环，右键选单） | ✅ 完成：canvas 轴模式状态机 + Bragg 换算（d=λ/2sinθ，d 轴自动反向、标记条同步换算、波长取谱图 meta 缺省 Cu Kα1）；log 用对数标度（下限钳到正数据 80%），√ 用 FunctionScale；命中区=主谱左侧/最底轴下沿（轴间缝隙不误触发），平移/框选激活时点击让位工具栏；悬停提示接状态栏+手型光标；i18n 三语齐 |
+| P4.9 | 双变体构建（参照 XinMatch）：正式版（安装+注册）/ 内部评估版 | ✅ 完成：① `xinrefinement/registration.py` 逐字移植 PolyXRD-Reg（HMAC 离线码、状态 JSON 启动重校验），`tools/make_reg_code.py` 出码互通；② `xinrefinement/build_variant.py`（env→variant.txt→fail-safe release）；③ 正式版：帮助「输入注册码…」+ 状态栏注册状态 + 启动提示（离屏/`POLYXRD_REG_NO_PROMPT=1` 跳过）；内部版：状态栏红字「内部评估版本」、无注册菜单；④ spec 支持 `variant.request`/`XR_BUILD_VARIANT`，产物 `XinRefinement-<ver>` / `XinRefinement-internal-<ver>` + `variant.txt` 随包并回读校验；⑤ 构建脚本双变体（release=安装包，internal=便携 zip）+ `XINREFINEMENT_SELFTEST_REG_OUT` 自检钩子；测试 260 项 |
 
 ---
 
