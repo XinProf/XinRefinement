@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -48,6 +49,15 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--refine-strain", action="store_true")
     r.add_argument("--peak-height", action="store_true",
                    help="峰高口径（默认积分强度口径；合成 bench 数据用此项）")
+    r.add_argument("--recipe", action="store_true",
+                   help="按标准导航配方分步精修（P3.3 RecipeRunner），"
+                        "输出每步 Rwp；省略则单次整体精修")
+    r.add_argument("--report", metavar="DIR", default=None,
+                   help="导出 HTML+PNG+JSON 报告目录（P4.1）")
+    r.add_argument("--quant", action="store_true",
+                   help="在报告中显著输出物相质量分数表（WPF 定量）")
+    r.add_argument("--esd", action="store_true",
+                   help="计算并输出参数 e.s.d. 与相关系数（P1.5 Schur 补）")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,17 +200,97 @@ def to_text(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _esd_val(v: float, n: int = 6):
+    """e.s.d. 值序列化：TCH 边界参数为 NaN -> None（JSON null）。"""
+    v = float(v)
+    return _round(v, n) if math.isfinite(v) else None
+
+
+def _esd_section(esd) -> list[str]:
+    """e.s.d. 表格（文本 / HTML 共用的 markdown 片段）。"""
+    rows = ["", "## 参数 e.s.d.", "| 参数 | 值 | e.s.d. |",
+            "|---|---:|---:|"]
+    for lab, v, e in zip(esd.labels, esd.esd, esd.esd):
+        ev = "—（TCH 边界，无定义）" if not math.isfinite(e) else f"±{e:.3g}"
+        rows.append(f"| {lab} | {v:.6g} | {ev} |")
+    if esd.weight_esd_pct is not None:
+        rows += ["", "### 物相含量 e.s.d.（百分点）"]
+        rows += [f"- ±{w:.3g}" for w in esd.weight_esd_pct]
+    rows.append(f"- s² = {esd.variance_factor:.4g}  "
+                f"Schur 一致性 = {esd.schur_consistency:.2e}")
+    return rows
+
+
 def _run(args) -> int:
-    res = solve(_build_inputs(args))
+    from xinrefinement.core.refine.recipe import RecipeRunner
+
+    inputs = _build_inputs(args)
+    recipe_rows: list[tuple[str, str, float | None, float | None]] = []
+    if args.recipe:
+        runner = RecipeRunner()
+        res = None
+        for step in runner.state.steps:
+            res, rec = runner.run_step(step, inputs, res)
+            recipe_rows.append((rec.key, rec.status, rec.rwp_before,
+                                rec.rwp_after))
+            if rec.status == "failed" or res is None:
+                print(f"步骤 {rec.key} 失败：{rec.note}", file=sys.stderr)
+                return 1
+        res = res  # noqa: PLW0127 — 最后一步的结果
+    else:
+        res = solve(inputs)
+
+    esd = None
+    if args.esd:
+        from xinrefinement.core.refine.esd import estimate_esd
+        esd = estimate_esd(inputs.phases, res)
+
     report = to_report(res, args)
+    if recipe_rows:
+        report["recipe"] = [
+            {"step": k, "status": s,
+             "rwp_before": None if b is None else _round(b, 4),
+             "rwp_after": None if a is None else _round(a, 4)}
+            for k, s, b, a in recipe_rows]
+    if esd is not None:
+        report["esd"] = {
+            "labels": list(esd.labels),
+            "esd": [_esd_val(v) for v in esd.esd],
+            "scale_esd": [_esd_val(v, 8) for v in esd.scale_esd],
+            "weight_esd_pct": (None if esd.weight_esd_pct is None
+                               else [_esd_val(v, 4)
+                                     for v in esd.weight_esd_pct]),
+            "variance_factor": _round(esd.variance_factor),
+            "schur_consistency": _round(esd.schur_consistency, 8),
+        }
+
     out = Path(args.out)
     fmt = args.format
     if fmt == "auto":
         fmt = "json" if out.suffix.lower() == ".json" else "txt"
     text = (json.dumps(report, ensure_ascii=False, indent=2)
             if fmt == "json" else to_text(report))
+    if fmt == "txt" and esd is not None:
+        text += "\n".join(_esd_section(esd))
+    if args.quant:
+        print()
+        print("## 物相质量分数（WPF）")
+        for p in report["phases"]:
+            wt = "—" if p["weight_pct"] is None else f"{p['weight_pct']:.3f}%"
+            print(f"  {p['name']:<24s} {wt}")
+        if esd is not None and esd.weight_esd_pct is not None:
+            for p, w in zip(report["phases"], esd.weight_esd_pct):
+                print(f"    ± {w:.3g}")
     out.write_text(text, encoding="utf-8")
     print(text)
+
+    if args.report:
+        from xinrefinement.core.report import export_report
+        paths = export_report(res, args.report, esd=esd)
+        print()
+        print("报告已导出：")
+        for kind, p in paths.items():
+            print(f"  {kind}: {p}")
     return 0 if res.success else 1
 
 

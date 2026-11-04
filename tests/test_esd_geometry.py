@@ -161,3 +161,37 @@ def test_diagnose_from_solve():
     assert d.n_evals > 0
     assert 0.0 <= d.dw <= 4.0
     assert d.verdict
+
+
+# ---- TCH 切换边界（X/Y 停在 0）下的 e.s.d. 回归 ----------------------- #
+def test_esd_tch_boundary_excluded():
+    """X/Y 恰为 0（TCH 分支开关处）时：一致性检查剔除边界列且 < 0.05，
+    边界参数 e.s.d. 为 NaN，其余参数 e.s.d. 有限。
+
+    复现路径：配方链 micro 步（refine_po/size/strain 全开）后 LM 把
+    X/Y 留在 0 —— 未修复时 Schur 一致性实测 0.36。
+    """
+    from dataclasses import replace as dreplace
+
+    from xinrefinement.core.refine.recipe import DEFAULT_STEPS, RecipeRunner
+
+    inp = _inputs()
+    runner = RecipeRunner()
+    res = None
+    for step in DEFAULT_STEPS:
+        res, rec = runner.run_step(step, inp, res)
+        if rec.status == "failed" or res is None:
+            pytest.skip(f"配方步骤 {step.key} 未执行成功")
+        if step.key == "micro":
+            break
+    if res.params.X != 0.0 and res.params.Y != 0.0:
+        pytest.skip("本数据集 X/Y 未停在 TCH 边界，用例不适用")
+    esd = estimate_esd(inp.phases, res)
+    assert esd.schur_consistency < 0.05, esd.schur_consistency
+    labels = list(esd.labels)
+    for lab, v in zip(labels, esd.esd):
+        if lab.endswith(".micro.X") or lab.endswith(".micro.Y"):
+            assert not np.isfinite(v), (lab, v)
+        else:
+            assert np.isfinite(v), (lab, v)
+    assert all(np.isfinite(e) for e in esd.scale_esd)

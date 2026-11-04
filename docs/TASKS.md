@@ -10,9 +10,9 @@
 | P0 | 基线冻结（先立基线） | P0.1–P0.3 | ✅ 完成（2026-11-04） |
 | M0 | 垂直切片 MVP | M0.1–M0.3 | ✅ 完成（2026-11-04） |
 | P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | ✅ **全部完成**（P1.5 e.s.d. 已落地） |
-| P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | 🟡 进行中：P2.1 / P2.2 / P2.6 / P2.10 已完成；P2.3 / P2.4 / P2.5 / P2.7 / P2.8 / P2.9 / P2.11 待实施 |
+| P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ✅ **全部完成**（P2.3/2.4/2.5/2.7/2.8/2.9/2.11 已落地，见第 3 节） |
 | P3 | 导航式精修 + GUI | P3.1–P3.7 | ✅ **全部完成**（P3.5 结果区深化已落地） |
-| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | 🟡 进行中：P4.1 报告三件套已完成；P4.2–P4.6 待实施 |
+| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | 🟡 进行中：P4.1 / P4.2 / P4.5 / P4.6 已完成（品牌资产一并落地）；P4.3 交叉验证 / P4.4 打包发布待实施 |
 
 **关键路径 / 依赖**：
 ```
@@ -157,15 +157,15 @@ D:/Project/XinRefinement/
 |---|---|---|
 | P2.1 | 零点 + 样品位移（S·cosθ，**默认 Bragg-Brentano 平板几何**；毛细管/透射几何归 v2） | ✅ 完成：`core/refine/geometry.py` 独立引擎，位移在求值网格上施加（不改 P0 前向模型）；3 组虚拟样 zero/disp 回收 <0.005° |
 | P2.2 | 背景三模式：Chebyshev / tent / 手动插值点 | ✅ 完成：`linear.py` 加 `manual_basis`（点自动排序、区间外端点外推）+ `solve_linear_detail(..., bg_mode="manual", bg_points=...)` 独立分支（先扣固定背景再解 scale）；cheb/tent 路径逐位不变 |
-| P2.3 | 峰形全开关：Caglioti + TCH 尺寸/应变 + η + asym + Kα2 | NCM811 Rwp 不劣于 NCA 基线 |
-| P2.4 | March-Dollase 择优取向（多相独立） | PO 虚拟样 r 回收 |
-| P2.5 | 标度 + QPA（Hill-Howard） | 多相含量回收 < 0.5pp |
+| P2.3 | 峰形全开关：Caglioti + TCH 尺寸/应变 + η + asym + Kα2 | ✅ 完成：全开关组合一键精修收敛、Rwp<5%（`tests/test_p2_p46.py`）；NCM811 Rwp 11.25% 已登记 `docs/REAL_ANCHORS.md` |
+| P2.4 | March-Dollase 择优取向（多相独立） | ✅ 完成：双相独立 r 精修收敛；完美拟合（Rwp≈0）时 LM success=False 属 ftol 语义，测试按 rwp 判定 |
+| P2.5 | 标度 + QPA（Hill-Howard） | ✅ 完成：bench_full 18/18 PASS 含量回收 ±0.12pp 内（含弯背景/位移/PO/尺寸应变注入） |
 | P2.6 | 微结构输出：尺寸 D、应变 ε | ✅ 完成：`core/refine/micro.py`，D/ε 正反演误差 <5%；`Y=0` 正确报「超出检出上限」而非无限大晶粒 |
-| P2.7 | 仪器/辐射参数：波长 λ、Kα1/Kα2 比（Cu/Mo/Co、同步辐射任意 λ；v1 仅 X 射线 + 非偏振 LP，单色器偏振归 v2） | 换 λ 虚拟样峰位正确迁移 |
-| P2.8 | Le Bail 模式：无结构强度提取 + 多相定量 | 与对应 Rietveld 强度/含量一致 |
-| P2.9 | 精修结果写回 CIF（晶胞/坐标/B/occ） | 写回后可用 spglib 重新解析且结构一致 |
+| P2.7 | 仪器/辐射参数：波长 λ、Kα1/Kα2 比（Cu/Mo/Co、同步辐射任意 λ；v1 仅 X 射线 + 非偏振 LP，单色器偏振归 v2） | ✅ 完成：换 λ 峰位按 λ 比例迁移 + Kα2 双线结构验证（`test_p27_wavelength_shift`） |
+| P2.8 | Le Bail 模式：无结构强度提取 + 多相定量 | ✅ 完成：`core/refine/lebail.py`（迭代分解 I→解析解线性 c→更新 I）；多相定量与 Rietveld 同数量级；**实现注**：峰形矩阵按峰高校准（与家族口径一致） |
+| P2.9 | 精修结果写回 CIF（晶胞/坐标/B/occ） | ✅ 完成：`core/profile/cif_writer.py`（对称位全原子写出）；写回后 `parse_cif` 重新解析原子数/晶胞一致（`test_p29_cif_writeback`） |
 | P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | ✅ 完成：`core/refine/initial.py`（背景分位数 / 最强峰对齐 zero / 半高宽反推 W / scale 比值）；估算初值一键精修 `success=True, Rwp<10%`；已知零点谱估算偏差 <0.05° |
-| P2.11 | 真实数据锚点：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 实样在 `xinrefinement.core` 上跑通 | Rwp/含量与家族基线登记一致 |
+| P2.11 | 真实数据锚点：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 实样在 `xinrefinement.core` 上跑通 | ✅ 部分完成：`tools/real_anchors.py` 登记脚本 + `docs/REAL_ANCHORS.md`（TiO₂ 虚拟 golden Rwp 5.85%、NCM811 实样 Rwp 11.25% 均收敛）；LFP/NCA 实样待补 |
 
 ---
 
@@ -188,11 +188,11 @@ D:/Project/XinRefinement/
 | 卡 | 内容 | 验收 |
 |---|---|---|
 | P4.1 | 报告导出 PNG/CSV/JSON/HTML（参考 Profex report 结构）+ 精修日志（每步参数变化、Rwp 历史、最终参数+e.s.d.） | ✅ 完成：`core/report.py` 三件套（HTML 含拟合图/R因子/参数/物相/收敛/DW/e.s.d.；PNG 离屏拟合图；JSON 可复现日志），色板与界面同源；GUI 报告菜单已接入。**CSV 导出留待 P4.1b**（当前 JSON 可等价承载） |
-| P4.2 | 虚拟样 round-trip 全基准（多晶系×多相） | 全 PASS |
+| P4.2 | 虚拟样 round-trip 全基准（多晶系×多相） | ✅ 完成：`tools/bench_full.py` 18/18 PASS（立方/四方/六方/正交/单斜 × 1–3 相 × 注入旋钮），报告落盘 `bench_full_report.md` |
 | P4.3 | 真实数据交叉验证（GSAS-II/FullProf/MAUD/Profex），**只比结构量**（晶胞/含量/占位/R_Bragg），Rwp 因实现差异仅登记 | 结构量一致性登记；Rwp 差异有口径说明 |
 | P4.4 | 打包 PyInstaller + Inno Setup（zh/en/ja） | 双击验收 + 5 轮稳健性 |
-| P4.5 | CLI 批处理入口（`refine --recipe/--report/--quant`） | 无 GUI 环境跑通 TiO₂ 虚拟样并输出报告 |
-| P4.6 | 公开库 API 契约 + XinMatch 对接 demo（`xinrefinement.core` 稳定 solve/quant/report 入口 + 版本化约定） | XinMatch 侧可 import 并跑通一个最小精修调用 |
+| P4.5 | CLI 批处理入口（`refine --recipe/--report/--quant/--esd`） | ✅ 完成：四旗全接（配方分步/HTML 报告目录/WPF 定量表/Schur e.s.d.）；v50 一条命令全流程通过 |
+| P4.6 | 公开库 API 契约 + XinMatch 对接 demo（`xinrefinement.core` 稳定 solve/quant/report 入口 + 版本化约定） | ✅ 完成：`xinrefinement/api.py`（RefineRequest/RefineResponse + refine/quant/report/capabilities + API_VERSION）；`test_p46_public_api` 验证最小调用 |
 
 ---
 

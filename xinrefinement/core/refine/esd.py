@@ -80,7 +80,17 @@ def _num_jacobian(fn, x: np.ndarray, h: float = 1e-5) -> np.ndarray:
 def estimate_esd(phases: list[CifStructure], res: SolveResult,
                  formulas: dict[str, str] | None = None,
                  step: float = 1e-5) -> EsdResult:
-    """由一次精修结果估计全参数 e.s.d.（含被消去的线性参数）。"""
+    """由一次精修结果估计全参数 e.s.d.（含被消去的线性参数）。
+
+    TCH 切换边界（实测发现）：引擎在 ``X == Y == 0`` 时关闭 TCH 合并
+    （``tch_on`` 切换），且 TCH-on 分支的 η 是**计算值**而非 ``prm.eta``
+    ——两分支在原点不连续（v50 配方链实测：轻推 X/Y 到 0.01 后 Rwp 从
+    5.85% 劣化到 14.4%）。若精修后 X/Y 恰好停在 0（LM 触界），其导数
+    在数学上无定义，任何 ±h 扰动都会跨越分支切换，使「reduced
+    Jacobian ≡ Schur 补」恒等式失效（实测一致性 0.36）。处理：**不做
+    轻推**（那会改变模型、虚高 s²），而是把停在边界的 X/Y 列从 e.s.d.
+    与一致性检查中**剔除**（其 e.s.d. 记为 NaN），其余参数照常。
+    """
     cfg = res.config
     pat = res.pattern
     prm_base = res.params
@@ -100,6 +110,13 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
     reg = build_registry_from_config(cfg, prm_base, n_phase, po_names)
     x_final = reg.pack(prm_base, cell_scales=cell, po_r=prm_base.po_r)
     p = x_final.size
+
+    # TCH 切换边界列：恰为 0 的 X/Y（tch_on 分支开关处导数无定义）
+    keep = np.ones(p, dtype=bool)
+    for j, lab in enumerate(reg.labels()):
+        if lab.endswith(".micro.X") or lab.endswith(".micro.Y"):
+            if x_final[j] == 0.0:
+                keep[j] = False
 
     def design(x: np.ndarray):
         """返回 (r, Ã, c, ycalc)；c 每次重解（reduced 路径）。"""
@@ -122,7 +139,6 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
 
     # ---- 路径 1：reduced 残差 Jacobian（c 随 x 重解）----
     j_red = _num_jacobian(lambda x: design(x)[0], x_final, step)
-    s_red = j_red.T @ j_red
 
     # ---- 路径 2：固定 c 的 ycalc Jacobian -> Schur 补 ----
     def ycalc_fixed(x: np.ndarray) -> np.ndarray:
@@ -137,33 +153,48 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
 
     jf = _num_jacobian(ycalc_fixed, x_final, step)  # ∂(A c/σ)/∂x
     B = Aw.T @ Aw
-    B_inv = np.linalg.pinv(B)
-    P_perp = np.eye(m) - Aw @ B_inv @ Aw.T
-    s_schur = jf.T @ P_perp @ jf
+    # 列均衡化：相标度 ~1e-2 与背景系数 ~1e2 量级悬殊（cond(B) ~ 1e9），
+    # 直接 pinv 会损失投影精度；投影到 col(A) 对列缩放不变，均衡化是安全的。
+    d_col = np.sqrt(np.abs(np.diag(B)))
+    d_col = np.where(d_col > 0, d_col, 1.0)
+    Aw_e = Aw / d_col[None, :]
+    B_e = Aw_e.T @ Aw_e
+    B_e_inv = np.linalg.pinv(B_e)
+    B_inv = (1.0 / d_col)[:, None] * B_e_inv * (1.0 / d_col)[None, :]
+    P_perp = np.eye(m) - Aw_e @ B_e_inv @ Aw_e.T
+
+    # 边界列（TCH 切换处的 X/Y）在一致性检查与协方差中剔除
+    jr_k = j_red[:, keep]
+    jf_k = jf[:, keep]
+    s_red = jr_k.T @ jr_k
+    s_schur = jf_k.T @ P_perp @ jf_k
     consistency = (float(np.linalg.norm(s_red - s_schur))
                    / max(float(np.linalg.norm(s_schur)), 1e-12))
 
-    # ---- 协方差组装 ----
+    # ---- 协方差组装（只对 well-defined 列）----
     n_total = p + q
     dof = max(m - n_total, 1)
     s2 = float(r0 @ r0) / dof
-    s_inv = np.linalg.pinv(s_schur) if p else np.zeros((0, 0))
-    jta = jf.T @ Aw if p else np.zeros((0, q))
+    pk = int(keep.sum())
+    s_inv = np.linalg.pinv(s_schur) if pk else np.zeros((0, 0))
+    jta = jf_k.T @ Aw if pk else np.zeros((0, q))
     cov_xx = s2 * s_inv
-    cov_xc = (-s2 * (s_inv @ jta @ B_inv)) if p else np.zeros((0, q))
-    cov_cc = s2 * (B_inv + B_inv @ (jta.T @ s_inv @ jta) @ B_inv) if p \
+    cov_xc = (-s2 * (s_inv @ jta @ B_inv)) if pk else np.zeros((0, q))
+    cov_cc = s2 * (B_inv + B_inv @ (jta.T @ s_inv @ jta) @ B_inv) if pk \
         else s2 * B_inv
 
-    cov = np.zeros((n_total, n_total))
-    if p:
-        cov[:p, :p] = cov_xx
-        cov[:p, p:] = cov_xc
-        cov[p:, :p] = cov_xc.T
+    cov = np.full((n_total, n_total), np.nan)
+    if pk:
+        k_idx = np.flatnonzero(keep)
+        cov[np.ix_(k_idx, k_idx)] = cov_xx
+        cov[np.ix_(k_idx, np.arange(p, n_total))] = cov_xc
+        cov[np.ix_(np.arange(p, n_total), k_idx)] = cov_xc.T
     cov[p:, p:] = cov_cc
 
-    d = np.sqrt(np.abs(np.diag(cov)))
-    d_safe = np.where(d > 0, d, 1.0)
-    corr = cov / np.outer(d_safe, d_safe)
+    d = np.sqrt(np.abs(np.diag(cov)))          # 边界列为 NaN
+    d_finite = np.where(np.isfinite(d), d, 0.0)
+    d_safe = np.where(d_finite > 0, d_finite, 1.0)
+    corr = np.where(np.isfinite(cov), cov, 0.0) / np.outer(d_safe, d_safe)
 
     labels = (tuple(reg.labels())
               + tuple(f"scale[{i}]" for i in range(n_phase))
