@@ -92,7 +92,9 @@ def _s_po(name: str):
     def _fn(prm, cell, po, v):
         e = po[name]
         po[name] = (e[0], e[1], e[2], float(v))
-        return prm, cell, po
+        # 同步回写 ProfileParams.po_r：让 registry.unpack 返回的 prm 自带
+        # 更新后的择优取向参数，调用方无需二次 replace（P1.0c 主路径依赖）。
+        return replace(prm, po_r=po), cell, po
     return _fn
 
 

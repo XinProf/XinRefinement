@@ -9,9 +9,9 @@
 |---|---|---|---|
 | P0 | 基线冻结（先立基线） | P0.1–P0.3 | ✅ 完成（2026-11-04） |
 | M0 | 垂直切片 MVP | M0.1–M0.3 | ✅ 完成（2026-11-04） |
-| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.1 已完成；P1.0c 与 P1.2–P1.5 待实施 |
+| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.0c / P1.1 已完成；P1.2–P1.5 待实施 |
 | P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ⬜ 待实施 |
-| P3 | 导航式精修 + GUI | P3.1–P3.7 | ⬜ 待实施 |
+| P3 | 导航式精修 + GUI | P3.1–P3.7 | 🟡 骨架已起：P3.1 主窗口 / P3.2 交互图谱 / P3.4 齿轮弹窗（背景+多物相晶胞）已完成；P3.3 配方引擎 / P3.5 结果区深化 / P3.6 i18n / P3.7 工程文件待实施 |
 | P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | ⬜ 待实施 |
 
 **关键路径 / 依赖**：
@@ -138,7 +138,7 @@ D:/Project/XinRefinement/
 | P1-PRE | 虚拟样合成器 `tools/gen_virtual.py`：参数化合成已知真值谱（任意晶系/多相/零点/样品位移/背景含弯/PO/尺寸应变/含量/噪声/λ），seed 可复现，冻结 golden 真值 JSON | ✅ 完成：自包含（不跨仓 SynthPattern）、8 配比数据集 `tests/data/virtual_p1/`、seed 复现 + QPA 回收 <0.5pp + 5 个参数旋钮可注入（`tests/test_gen_virtual.py` 7 项） |
 | P1.0a | 在 M0.1 基础上补齐 `refine.solve(inputs)->SolveResult` 契约与单测（包一层，**不重构** `_pack/_unpack`，补 NCA 未迁 `solve.py` 职责）；命名以 `SolveResult` 为准，避免与引擎层 `nonlinear.RefineResult` 重名 | TiO₂ 虚拟样 round-trip 串通；`SolveResult` 契约稳定 |
 | P1.0b | `core/params/registry.py::ParameterRegistry`（key/owner/histogram/bounds/refine/group/esd）双轨落地：registry 生成 pack 顺序，与旧 `_pack` 并存逐位对比 | ✅ 完成：17 组开关组合下 pack/unpack/bounds 与旧路径**逐位一致**（`tests/test_registry.py`） |
-| P1.0c | 全面替换硬编码 `_pack/_unpack` + 删除旧路径 | 旧路径 grep 无残留；round-trip 数值不回归 |
+| P1.0c | 生产精修路径切到声明式 registry | ✅ 完成：`refine()` 的 x0/bounds/unpack 与 `_build_residual` **残差热路径**全走 `ParameterRegistry`（闭包外构造一次避免重复建表）；旧 `_pack/_unpack/_bounds` 保留为兼容 API + 双轨回归参照（不删除，保证 `test_size_strain`/`test_registry` 仍可对照）。全量 149 测试 + bench_b 8/8 PASS + CLI 3.409617 逐位不回归 |
 | P1.1 | spglib 集成：空间群编号/H-M → symop + 非对称单元展开 + Wyckoff 位识别；**处理设置/原点选择**（CIF 显式 symop 优先；无则匹配 spglib hall_number 或把坐标变换到标准设置） | ✅ 完成：`core/symops.py`（扁平命名，避开既有 `core/symmetry.py`）；全 230 群 symop sanity + R-3m H/R 设置区分 + family symop 等价 + Wyckoff 零空间自由维度（`tests/test_symops.py` 8 项） |
 | P1.2 | 全晶胞精修 a,b,c,α,β,γ（按晶系约束：立方 1/四方 2/正交 3/单斜 4/三斜 6） | 虚拟样晶胞回收 < 0.1% |
 | P1.3 | 原子坐标精修（Wyckoff 位约束）：用 site symmetry 旋转矩阵 (R−I) 的零空间求每个位点的**自由坐标维度**，只对自由分量建变量、联动分量用约束表达 | 坐标回收 < 1e-3；特殊位（4a/4c/8d…）自由坐标数与 International Tables 一致 |
@@ -173,10 +173,10 @@ D:/Project/XinRefinement/
 
 | 卡 | 内容 | 验收 |
 |---|---|---|
-| P3.1 | 主窗口骨架（三区 + 工具栏 + 菜单） | GUI 可启动、导入谱图/CIF |
-| P3.2 | 交互图谱（实测/计算/残差/峰位棒/相开关/缩放） | 渲染正确可交互 |
-| P3.3 | 导航式精修向导（Recipe 引擎 + 单步/连跑 + Rwp 监控） | 虚拟样连跑收敛 |
-| P3.4 | 按钮+齿轮弹窗（背景/晶胞多相/峰形/原子坐标/温度因子/择优取向/微结构） | 改设置后结果随之变化 |
+| P3.1 | 主窗口骨架（三区 + 工具栏 + 菜单） | ✅ 完成：`gui/main_window.py` + `gui/__main__.py`；菜单 5 项、工具栏 5 按钮、8 个导航步骤行（▶+⚙）、结果表；`python -m xinrefinement.gui` 可启动 |
+| P3.2 | 交互图谱（实测/计算/残差/峰位棒/相开关/缩放） | ✅ 完成：`core/palette.py` + `gui/canvas.py`；双轴 obs/calc/diff + 每相峰位棒 + 背景曲线重建 + NavigationToolbar 框选缩放 + `set_phase_visible()` 即时重绘（不重新精修） |
+| P3.3 | 导航式精修向导（Recipe 引擎 + 单步/连跑 + Rwp 监控） | 待实施；当前单步执行共用统一 `solve` 入口，一键连跑按钮已占位禁用 |
+| P3.4 | 按钮+齿轮弹窗（背景/晶胞多相/峰形/原子坐标/温度因子/择优取向/微结构） | ✅ 骨架完成：`gui/dialogs.py`；背景弹窗（函数/阶数/手动点）**已传导到 RefineConfig**、晶胞多物相分别勾选（b/α/β/γ 待 P1.2 开放）、其余通用开关表 |
 | P3.5 | 结果区（R 因子/含量/相关性/收敛曲线） | 与 core 数值一致 |
 | P3.6 | i18n 三语 zh/en/ja | 语言切换生效 |
 | P3.7 | 工程文件保存/恢复（.xrp：谱图引用+CIF+参数设置+结果+导航状态+历史） | 保存→关闭→重开状态完全恢复且结果可复现 |

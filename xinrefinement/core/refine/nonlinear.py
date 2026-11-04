@@ -45,6 +45,10 @@ from xinrefinement.core.profile.forward import (
 from xinrefinement.core.refine.lm import lm_minimize
 from xinrefinement.core.refine.linear import solve_linear_detail
 from xinrefinement.core.refine.rfactors import RFactors, compute_rfactors
+from xinrefinement.core.params.registry import (
+    ParameterRegistry,
+    build_registry_from_config,
+)
 
 # 参数边界（TASKS T4.4 冻结值 + v1.0.0 扩展）
 ZERO_BOUNDS = (-0.5, 0.5)
@@ -301,13 +305,39 @@ def _check_cancel(cfg: RefineConfig) -> None:
         pass
 
 
+def _registry_for(cfg: RefineConfig, prm: ProfileParams,
+                  n_phase: int) -> ParameterRegistry:
+    """由 cfg + 当前参数构造声明式注册表（P1.0c 生产路径唯一入口）。
+
+    PO 槽位名取 ``sorted(prm.po_r)``，与旧 ``_pack`` 的顺序一致；
+    ``build_registry_from_config`` 只依赖开关与槽位名，不依赖参数数值，
+    故可在残差闭包外**构造一次**复用（热路径不重复建注册表）。
+    """
+    po_names = sorted(prm.po_r) if prm.po_r else []
+    return build_registry_from_config(cfg, prm, n_phase, po_names)
+
+
+def _unpack_reg(reg: ParameterRegistry, x: np.ndarray, base: ProfileParams):
+    """registry.unpack 的三元组结果适配旧 ``_unpack`` 的二元组契约。"""
+    prm, cell, _po = reg.unpack(x, base, po_r=base.po_r)
+    return prm, cell
+
+
 def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParams,
-                    cfg: RefineConfig, history: list[float], gen: list[int]):
-    """构造变量投影残差函数（闭包，含每相晶胞缩放缓存）。"""
+                    cfg: RefineConfig, history: list[float], gen: list[int],
+                    reg: ParameterRegistry | None = None):
+    """构造变量投影残差函数（闭包，含每相晶胞缩放缓存）。
+
+    P1.0c：``reg`` 由 :func:`refine` 在外部构造并传入；残差评估这一热路径
+    只做 ``reg.unpack``，不重建注册表。``reg=None`` 时退化为就地构造（兼容
+    旧调用方/测试，不影响数值）。
+    """
     tt, yo = pat.two_theta, pat.intensity
     sig = cfg.sigma
     if sig is None:
         sig = np.sqrt(np.maximum(yo, 1.0))
+    if reg is None:
+        reg = _registry_for(cfg, base, len(phases))
     cell_cache: dict[tuple, CifStructure] = {}
 
     def scaled(si: int, fa: float, fc: float) -> CifStructure:
@@ -320,7 +350,7 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
 
     def residual_fn(x: np.ndarray) -> np.ndarray:
         _check_cancel(cfg)          # NCA 修改（T6.3a）：先看要不要中止
-        prm, cell = _unpack(x, base, cfg, len(phases))
+        prm, cell = _unpack_reg(reg, x, base)
         rows = [compute_phase_profile(
                     scaled(si, fa, fc), tt, prm, cfg.tmin, cfg.tmax)
                 for si, (fa, fc) in enumerate(cell)]
@@ -397,12 +427,15 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
     n_phase = len(phases)
     # v1.4.0: refine_po 时按内置惯习面补缺失相的 (h,k,l,1.0) 起点
     prm0 = replace(prm0, po_r=_ensure_po_r(phases, prm0, cfg))
-    x0 = _pack(prm0, cfg, n_phase)
-    residual_fn, scaled_fn = _build_residual(phases, pat, prm0, cfg, history, gen)
+    # P1.0c：生产路径全程走声明式注册表；x0 / bounds / unpack 均出自 reg，
+    # 旧 _pack/_bounds/_unpack 仅保留为兼容 API 与双轨回归参照。
+    reg = _registry_for(cfg, prm0, n_phase)
+    x0 = reg.pack(prm0, po_r=prm0.po_r)
+    residual_fn, scaled_fn = _build_residual(phases, pat, prm0, cfg, history,
+                                             gen, reg=reg)
 
     if x0.size:
-        n_po = len(prm0.po_r) if (cfg.refine_po and prm0.po_r) else 0
-        lo, hi = _bounds(cfg, n_phase, n_po)
+        lo, hi = reg.bounds()
         use_scipy = False
         if cfg.backend == "scipy":
             try:
@@ -435,7 +468,7 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
         # ---- 多起点重启（仅 refine_uvw）: 角点陷阱检测 ----
         restarted = False
         if cfg.refine_uvw:
-            prm_try, _cell = _unpack(best_x, prm0, cfg, n_phase)
+            prm_try, _cell = _unpack_reg(reg, best_x, prm0)
             stuck = (not success) or prm_try.W <= 2.0 * MIN_W
             if not stuck:
                 # 用含晶胞缩放的完整模型重评估一次（_rwp_at 不缩放晶胞，
@@ -446,8 +479,8 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
                 restarted = True
                 for cand in _restart_points(prm_try):
                     r2, _sf2 = _build_residual(phases, pat, cand, cfg,
-                                               history, gen)
-                    lm2 = lm_minimize(r2, _pack(cand, cfg, n_phase),
+                                               history, gen, reg=reg)
+                    lm2 = lm_minimize(r2, reg.pack(cand, po_r=cand.po_r),
                                       bounds=(lo, hi), max_iter=cfg.max_iter)
                     if lm2.cost < best_cost:
                         best_x, best_cost = lm2.x, lm2.cost
@@ -458,7 +491,7 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
         restarted = False
         residual_fn(best_x)
 
-    prm, cell_scales = _unpack(best_x, prm0, cfg, n_phase)
+    prm, cell_scales = _unpack_reg(reg, best_x, prm0)
     _check_cancel(cfg)          # NCA 修改（T6.3a）：合成最终计算谱前再看一次
     # NCA 修改（T3.2）：收敛点相关性矩阵（refine_corr=True 时计算）
     correlation = None
