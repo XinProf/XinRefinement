@@ -49,6 +49,26 @@ ISCC_CANDIDATES = (
 
 VARIANTS = ("release", "internal")
 
+# 可复现构建：PyInstaller 6 在 Windows 上会把「当前时间」写进 PE 头
+# （TimeDateStamp），两次构建的字节必然不同。设 SOURCE_DATE_EPOCH 可把它固定，
+# 从而做到同一 commit 下逐字节可复现（验收第 1 轮哈希一致性依赖这一点）。
+_SOURCE_DATE_FALLBACK = 1767225600  # 2026-01-01T00:00:00Z
+
+
+def source_date_epoch() -> int:
+    """固定时间戳：优先外部 SOURCE_DATE_EPOCH，其次 git HEAD 提交时间，最后回落到常量。"""
+    override = os.environ.get("SOURCE_DATE_EPOCH", "").strip()
+    if override.isdigit():
+        return int(override)
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=str(ROOT),
+                             capture_output=True, text=True, check=True).stdout.strip()
+        if out.isdigit():
+            return int(out)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _SOURCE_DATE_FALLBACK
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -110,7 +130,13 @@ def _assert_marker(variant: str) -> None:
 
 def build_exe(variant: str, clean: bool) -> None:
     _write_variant_request(variant)
-    env = dict(os.environ, XR_VERSION=_version(), XR_BUILD_VARIANT=variant)
+    epoch = source_date_epoch()
+    env = dict(os.environ, XR_VERSION=_version(), XR_BUILD_VARIANT=variant,
+               SOURCE_DATE_EPOCH=str(epoch),
+               # 字符串集合的迭代顺序受哈希随机化影响，会让 PYZ 里 marshal 后的
+               # 字节流随进程变化（压缩长度随之抖动）。固定种子以获得可复现产物。
+               PYTHONHASHSEED="0")
+    print(f"  SOURCE_DATE_EPOCH={epoch}（固定 PE 时间戳，保证可复现）")
     # 先构建到一次性暂存目录：PyInstaller 的 COLLECT 会先删目标目录，
     # 直接指向 dist/ 会在重建时被安全策略（批量删除）拦截。
     stage = ROOT / "build" / "stage" / f"{variant}-{int(time.time())}"

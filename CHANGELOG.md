@@ -1,8 +1,8 @@
 # 变更记录
 
-## v1.0.0（2026-11-04）
+## v1.0.0（2026-11-05 发布）
 
-首个完整版本：通用粉末衍射全谱拟合（Rietveld 结构精修 / 谱图精修）。
+**首个正式发布版本。** 通用粉末衍射全谱拟合（Rietveld 结构精修 / Le Bail / 谱图精修）。
 
 ### 引擎
 
@@ -62,10 +62,14 @@
 
 ### 验收
 
-- 测试 **238 项全绿**；`bench_b` 家族 golden round-trip **8/8 PASS**（Rwp 3.41–4.04%，与移植前逐位一致）
+- 测试 **259 项全绿**；`bench_b` 家族 golden round-trip **8/8 PASS**（Rwp 3.41–4.04%，与移植前逐位一致）
 - 虚拟样全基准 **18/18 PASS**（5 晶系 × 1–3 相 × 注入旋钮）
 - 真实锚点：NCM811 实样收敛（Rwp 11.25% 登记）；**GSAS-II 5.8.2 交叉验证晶胞最大相对差 0.031%（实样）/ 0.015%（双相）**
-- 本地二进制：PyInstaller onedir（GUI + CLI）+ Inno Setup 安装包（zh/en/ja）
+- 发布物：`XinRefinement-1.0.0-setup.exe`（Windows x64 安装包，zh/en/ja，含 PolyXRD-Reg 注册）；
+  内部评估版 `XinRefinement-internal-1.0.0-portable.zip` 仅内部使用，不随 Release 分发
+- **可复现构建**：构建脚本固定 `SOURCE_DATE_EPOCH`（= git HEAD 提交时间）与 `PYTHONHASHSEED=0`，
+  消除 PyInstaller 的 PE 头时间戳与字符串集合哈希随机化两处非确定性——同一 commit 连续两次构建
+  四个 exe 逐字节一致（安装包/zip 因内嵌时间戳仍会变，只做功能验收）
 
 ### 已知限制
 
