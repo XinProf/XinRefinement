@@ -25,6 +25,7 @@ from xinrefinement.core.palette import (  # noqa: E402
     apply_axis_style,
     phase_color,
 )
+from xinrefinement.i18n import tr  # noqa: E402
 
 STYLE = DEFAULT_STYLE
 
@@ -39,13 +40,14 @@ def draw_fit(ax_main, ax_diff, two_theta, yobs, ycalc,
     tt = np.asarray(two_theta, dtype=float)
     h_obs, = ax_main.plot(tt, np.asarray(yobs, dtype=float), linestyle="none",
                           marker="x", color=STYLE.obs, markersize=3.0,
-                          markeredgewidth=0.6, label="实测")
+                          markeredgewidth=0.6, label=tr("canvas.obs"))
     h_calc, = ax_main.plot(tt, np.asarray(ycalc, dtype=float), color=STYLE.calc,
-                           lw=1.0, label="计算")
-    handles, labels = [h_obs, h_calc], ["实测", "计算"]
+                           lw=1.0, label=tr("canvas.calc"))
+    handles = [h_obs, h_calc]
+    labels = [tr("canvas.obs"), tr("canvas.calc")]
     if background is not None:
         ax_main.plot(tt, np.asarray(background, dtype=float), color=STYLE.bg,
-                     lw=0.8, ls=":", label="背景")
+                     lw=0.8, ls=":", label=tr("canvas.bg"))
     if phase_sticks:
         shown = set(visible_phases) if visible_phases is not None else None
         for i, (name, positions) in enumerate(phase_sticks):
@@ -54,16 +56,16 @@ def draw_fit(ax_main, ax_diff, two_theta, yobs, ycalc,
             for pos in np.asarray(positions, dtype=float):
                 ax_main.axvline(pos, ymin=0.0, ymax=0.035,
                                 color=phase_color(i), lw=1.2, alpha=0.85)
-    ax_main.set_ylabel("Intensity (cts)")
+    ax_main.set_ylabel(tr("canvas.y_label"))
     apply_axis_style(ax_main)
     ax_main.tick_params(labelbottom=False)
     ax_main.legend(handles, labels, loc="upper right", fontsize=8, frameon=False)
 
     diff = np.asarray(yobs, dtype=float) - np.asarray(ycalc, dtype=float)
-    ax_diff.plot(tt, diff, color=STYLE.diff, lw=0.8, label="残差")
+    ax_diff.plot(tt, diff, color=STYLE.diff, lw=0.8, label=tr("canvas.diff"))
     ax_diff.axhline(0.0, color=STYLE.grid, lw=0.6)
-    ax_diff.set_xlabel("2θ (°)")
-    ax_diff.set_ylabel("差值")
+    ax_diff.set_xlabel(tr("canvas.x_label"))
+    ax_diff.set_ylabel(tr("canvas.diff"))
     apply_axis_style(ax_diff)
     ax_diff.tick_params(labelbottom=True)
 
@@ -132,10 +134,19 @@ class PatternCanvas(FigureCanvasQTAgg):
     def _show_empty(self) -> None:
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.text(0.5, 0.5, "导入谱图与 CIF 后执行精修", ha="center", va="center",
+        ax.text(0.5, 0.5, tr("canvas.empty"), ha="center", va="center",
                 color=STYLE.grid, fontsize=12, transform=ax.transAxes)
         ax.set_axis_off()
         self.draw_idle()
+
+    def retranslate(self) -> None:
+        """语言切换后按当前数据重绘（文案/图例/轴标签）。"""
+        if self.has_fit:
+            self._draw_fit()
+        elif self._yobs is not None:
+            self.show_pattern(self._two_theta, self._yobs)
+        else:
+            self._show_empty()
 
     def show_pattern(self, two_theta, intensity) -> None:
         """单谱显示（导入谱图后）。"""
@@ -144,8 +155,8 @@ class PatternCanvas(FigureCanvasQTAgg):
         self._ycalc = None
         self._reset_axes()
         self.ax_main.plot(self._two_theta, self._yobs, color=STYLE.ink, lw=0.9)
-        self.ax_main.set_ylabel("Intensity (cts)")
-        self.ax_main.set_xlabel("2θ (°)")
+        self.ax_main.set_ylabel(tr("canvas.y_label"))
+        self.ax_main.set_xlabel(tr("canvas.x_label"))
         apply_axis_style(self.ax_main)
         self.draw_idle()
 

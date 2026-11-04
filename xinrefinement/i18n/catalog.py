@@ -1,0 +1,109 @@
+"""P3.6 · 三语文案表（zh 简体 / en / ja）。
+
+键按模块分组：``app.*`` 标题与菜单、``toolbar.*`` 工具栏、
+``panel.*`` 面板、``step.*`` 导航步骤、``result.*`` 结果区、
+``dialog.*`` 齿轮弹窗、``msg.*`` 状态与提示。
+"""
+from __future__ import annotations
+
+LANGUAGES = ("zh", "en", "ja")
+
+_LABELS = {"zh": "简体中文", "en": "English", "ja": "日本語"}
+
+
+def language_label(lang: str) -> str:
+    return _LABELS.get(lang, lang)
+
+
+_ZH = {
+    "app.title": "XinRefinement · 全谱拟合（结构精修 / Rietveld）",
+    "menu.file": "文件(&F)", "menu.edit": "编辑(&E)",
+    "menu.refine": "精修(&R)", "menu.setting": "设置(&S)",
+    "menu.help": "帮助(&H)", "menu.language": "语言(&L)",
+    "menu.import_pattern": "导入谱图…", "menu.import_cif": "导入 CIF…",
+    "menu.save_project": "保存工程…", "menu.open_project": "打开工程…",
+    "toolbar.new": "新建", "toolbar.import_pattern": "导入谱图",
+    "toolbar.import_cif": "导入CIF", "toolbar.refine": "▶精修",
+    "toolbar.report": "报告导出",
+    "panel.phases": "物相列表", "panel.param_tree": "精修参数树",
+    "panel.nav": "导航式精修", "panel.results": "精修结果",
+    "panel.run_all": "▶ 一键连跑（标准配方）", "panel.cancel": "■ 停止",
+    "panel.ready": "就绪", "panel.progress_ready": "就绪",
+    "step.zero": "零点 / 样品漂移", "step.bg": "背景 + 峰形",
+    "step.scale": "标度因子", "step.cell": "晶胞参数",
+    "step.profile": "峰形参数", "step.xyz": "原子坐标",
+    "step.B": "温度因子", "step.micro": "微结构 / 应力 / 择优取向",
+    "result.rwp": "Rwp (%)", "result.rp": "Rp (%)",
+    "result.rexp": "Rexp (%)", "result.chi2": "χ²",
+    "result.iters": "迭代次数", "result.phase_weight": "物相含量",
+    "dialog.settings": "设置", "dialog.bg_title": "背景曲线",
+    "dialog.cell_title": "晶胞参数（多物相）",
+    "canvas.obs": "实测", "canvas.calc": "计算", "canvas.diff": "残差",
+    "canvas.bg": "背景", "canvas.empty": "导入谱图与 CIF 后执行精修",
+    "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (°)",
+    "msg.ready": "就绪：导入谱图与 CIF 后执行精修",
+}
+
+_EN = {
+    "app.title": "XinRefinement - Full-pattern fitting (Rietveld)",
+    "menu.file": "&File", "menu.edit": "&Edit", "menu.refine": "&Refine",
+    "menu.setting": "&Settings", "menu.help": "&Help",
+    "menu.language": "&Language",
+    "menu.import_pattern": "Import pattern…", "menu.import_cif": "Import CIF…",
+    "menu.save_project": "Save project…", "menu.open_project": "Open project…",
+    "toolbar.new": "New", "toolbar.import_pattern": "Import pattern",
+    "toolbar.import_cif": "Import CIF", "toolbar.refine": "▶ Refine",
+    "toolbar.report": "Export report",
+    "panel.phases": "Phases", "panel.param_tree": "Parameter tree",
+    "panel.nav": "Guided refinement", "panel.results": "Results",
+    "panel.run_all": "▶ Run all (recipe)", "panel.cancel": "■ Stop",
+    "panel.ready": "Ready", "panel.progress_ready": "Ready",
+    "step.zero": "Zero / sample displacement", "step.bg": "Background + profile",
+    "step.scale": "Scale factors", "step.cell": "Cell parameters",
+    "step.profile": "Profile parameters", "step.xyz": "Atomic coordinates",
+    "step.B": "Temperature factors",
+    "step.micro": "Microstructure / strain / preferred orientation",
+    "result.rwp": "Rwp (%)", "result.rp": "Rp (%)",
+    "result.rexp": "Rexp (%)", "result.chi2": "chi^2",
+    "result.iters": "Iterations", "result.phase_weight": "Phase weight",
+    "dialog.settings": "Settings", "dialog.bg_title": "Background curve",
+    "dialog.cell_title": "Cell parameters (multi-phase)",
+    "canvas.obs": "Observed", "canvas.calc": "Calculated",
+    "canvas.diff": "Difference", "canvas.bg": "Background",
+    "canvas.empty": "Import a pattern and CIF, then run refinement",
+    "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (deg)",
+    "msg.ready": "Ready: import a pattern and CIF, then refine",
+}
+
+_JA = {
+    "app.title": "XinRefinement・全パターンフィッティング（Rietveld）",
+    "menu.file": "ファイル(&F)", "menu.edit": "編集(&E)",
+    "menu.refine": "精密化(&R)", "menu.setting": "設定(&S)",
+    "menu.help": "ヘルプ(&H)", "menu.language": "言語(&L)",
+    "menu.import_pattern": "パターンを読込…", "menu.import_cif": "CIF を読込…",
+    "menu.save_project": "プロジェクトを保存…",
+    "menu.open_project": "プロジェクトを開く…",
+    "toolbar.new": "新規", "toolbar.import_pattern": "パターン読込",
+    "toolbar.import_cif": "CIF 読込", "toolbar.refine": "▶ 精密化",
+    "toolbar.report": "レポート出力",
+    "panel.phases": "相リスト", "panel.param_tree": "パラメータツリー",
+    "panel.nav": "ナビゲーション精密化", "panel.results": "精密化結果",
+    "panel.run_all": "▶ 一括実行（レシピ）", "panel.cancel": "■ 停止",
+    "panel.ready": "準備完了", "panel.progress_ready": "準備完了",
+    "step.zero": "零点 / 試料変位", "step.bg": "バックグラウンド + ピーク形",
+    "step.scale": "スケール因子", "step.cell": "格子定数",
+    "step.profile": "ピーク形パラメータ", "step.xyz": "原子座標",
+    "step.B": "温度因子", "step.micro": "微細構造 / ひずみ / 配向",
+    "result.rwp": "Rwp (%)", "result.rp": "Rp (%)",
+    "result.rexp": "Rexp (%)", "result.chi2": "χ²",
+    "result.iters": "反復回数", "result.phase_weight": "相含有量",
+    "dialog.settings": "設定", "dialog.bg_title": "バックグラウンド曲線",
+    "dialog.cell_title": "格子定数（多相）",
+    "canvas.obs": "実測", "canvas.calc": "計算", "canvas.diff": "残差",
+    "canvas.bg": "バックグラウンド",
+    "canvas.empty": "パターンと CIF を読込んでから精密化を実行",
+    "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (deg)",
+    "msg.ready": "準備完了：パターンと CIF を読込んでください",
+}
+
+TRANSLATIONS = {"zh": _ZH, "en": _EN, "ja": _JA}

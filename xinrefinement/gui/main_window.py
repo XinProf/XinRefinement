@@ -48,7 +48,15 @@ from xinrefinement.core.refine.recipe import DEFAULT_STEPS
 from xinrefinement.core.refine.solve import RefineInputs, solve
 from xinrefinement.gui.canvas import PatternCanvas
 from xinrefinement.gui.dialogs import STEPS, open_settings
+from xinrefinement.gui.project import load_project, save_project
 from xinrefinement.gui.workers import RefineWorker
+from xinrefinement.i18n import (
+    LANGUAGES,
+    get_language,
+    language_label,
+    set_language,
+    tr,
+)
 
 
 class MainWindow(QMainWindow):
@@ -56,42 +64,66 @@ class MainWindow(QMainWindow):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("XinRefinement · 全谱拟合（结构精修 / Rietveld）")
         self.resize(1180, 720)
         self._pattern = None
+        self._pattern_path: str | None = None
+        self._cif_paths: list[str] = []
         self._phases: list = []
         self._result = None
         self._settings: dict[str, dict] = {}
         self._worker: RefineWorker | None = None
         self._step_status: dict[str, str] = {}
+        self._menu_actions: dict[str, QAction] = {}
+        self._menus: dict[str, object] = {}
+        self._toolbar_buttons: dict[str, QPushButton] = {}
+        self._labels: dict[str, QLabel] = {}
+        self._groups: dict[str, QGroupBox] = {}
         self._build_menu()
         self._build_toolbar()
         self._build_body()
-        self.statusBar().showMessage("就绪：导入谱图与 CIF 后执行精修")
+        self.retranslate()
+        self.statusBar().showMessage(tr("msg.ready"))
 
     # -- 构建 ---------------------------------------------------------- #
     def _build_menu(self) -> None:
         bar = self.menuBar()
-        for name in ("文件(&F)", "编辑(&E)", "精修(&R)", "设置(&S)", "帮助(&H)"):
-            bar.addMenu(name)
-        fm = bar.actions()[0].menu()
-        act = QAction("导入谱图…", self)
-        act.triggered.connect(self.open_pattern)
-        fm.addAction(act)
-        act = QAction("导入 CIF…", self)
-        act.triggered.connect(self.open_cif)
-        fm.addAction(act)
+        for key in ("menu.file", "menu.edit", "menu.refine",
+                    "menu.setting", "menu.help"):
+            m = bar.addMenu(tr(key))
+            self._menus[key] = m
+        fm = self._menus["menu.file"]
+        for key, slot in (("menu.import_pattern", self.open_pattern),
+                          ("menu.import_cif", self.open_cif),
+                          ("menu.save_project", self.save_project_dialog),
+                          ("menu.open_project", self.open_project_dialog)):
+            act = QAction(tr(key), self)
+            act.triggered.connect(slot)
+            fm.addAction(act)
+            self._menu_actions[key] = act
+        # 设置 → 语言子菜单
+        lang_menu = self._menus["menu.setting"].addMenu(tr("menu.language"))
+        self._menus["menu.language"] = lang_menu
+        self._lang_actions: dict[str, QAction] = {}
+        for lang in LANGUAGES:
+            act = QAction(language_label(lang), self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, l=lang: self.switch_language(l))
+            lang_menu.addAction(act)
+            self._lang_actions[lang] = act
 
     def _build_toolbar(self) -> None:
-        tb = QToolBar("主工具栏", self)
+        tb = QToolBar("main", self)
         tb.setMovable(False)
         self.addToolBar(tb)
-        for label, slot in (("新建", self.new_project), ("导入谱图", self.open_pattern),
-                            ("导入CIF", self.open_cif), ("▶精修", self.run_refine),
-                            ("报告导出", self.export_report)):
-            btn = QPushButton(label)
+        for key, slot in (("toolbar.new", self.new_project),
+                          ("toolbar.import_pattern", self.open_pattern),
+                          ("toolbar.import_cif", self.open_cif),
+                          ("toolbar.refine", self.run_refine),
+                          ("toolbar.report", self.export_report)):
+            btn = QPushButton(tr(key))
             btn.clicked.connect(slot)
             tb.addWidget(btn)
+            self._toolbar_buttons[key] = btn
 
     def _build_body(self) -> None:
         split = QSplitter(Qt.Horizontal, self)
@@ -100,11 +132,15 @@ class MainWindow(QMainWindow):
         # 左：物相列表 + 参数树占位
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.addWidget(QLabel("物相列表"))
+        lbl_phases = QLabel(tr("panel.phases"))
+        self._labels["panel.phases"] = lbl_phases
+        lv.addWidget(lbl_phases)
         self.phase_list = QListWidget()
         self.phase_list.itemChanged.connect(self._on_phase_toggled)
         lv.addWidget(self.phase_list)
-        lv.addWidget(QLabel("精修参数树（P3.3 接入配方）"))
+        lbl_tree = QLabel(tr("panel.param_tree"))
+        self._labels["panel.param_tree"] = lbl_tree
+        lv.addWidget(lbl_tree)
         self.param_tree = QListWidget()
         self.param_tree.addItems(["全局：零点 / 背景 / 峰形", "结构：晶胞 / 坐标 / B"])
         lv.addWidget(self.param_tree)
@@ -121,29 +157,28 @@ class MainWindow(QMainWindow):
         # 右：导航式精修面板 + 结果区
         right = QWidget()
         rv = QVBoxLayout(right)
-        nav = QGroupBox("导航式精修")
+        nav = QGroupBox(tr("panel.nav"))
+        self._groups["panel.nav"] = nav
         nv = QVBoxLayout(nav)
         self._step_buttons: dict[str, QPushButton] = {}
         for step, title, _cat in STEPS:
             row = QWidget()
             hl = QHBoxLayout(row)
             hl.setContentsMargins(0, 0, 0, 0)
-            run = QPushButton(f"▶ {title}")
-            run.setToolTip("执行该步骤（当前调用统一精修入口）")
+            run = QPushButton(f"▶ {tr(f'step.{step}')}")
             run.clicked.connect(lambda _c=False, s=step: self.run_step(s))
             gear = QPushButton("⚙")
             gear.setFixedWidth(32)
-            gear.setToolTip(f"打开「{title}」详细设置")
             gear.clicked.connect(lambda _c=False, s=step, t=title:
                                  self.open_step_settings(s, t))
             hl.addWidget(run, 1)
             hl.addWidget(gear)
             nv.addWidget(row)
             self._step_buttons[step] = run
-        self.btn_run_all = QPushButton("▶ 一键连跑（标准配方）")
+        self.btn_run_all = QPushButton(tr("panel.run_all"))
         self.btn_run_all.setToolTip("按 8 步标准配方顺序精修，逐步回报 Rwp")
         self.btn_run_all.clicked.connect(self.run_recipe_all)
-        self.btn_cancel = QPushButton("■ 停止")
+        self.btn_cancel = QPushButton(tr("panel.cancel"))
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_refine)
         row_all = QWidget()
@@ -152,12 +187,13 @@ class MainWindow(QMainWindow):
         hl_all.addWidget(self.btn_run_all, 1)
         hl_all.addWidget(self.btn_cancel)
         nv.addWidget(row_all)
-        self.lbl_progress = QLabel("就绪")
+        self.lbl_progress = QLabel(tr("panel.ready"))
         self.lbl_progress.setWordWrap(True)
         nv.addWidget(self.lbl_progress)
         rv.addWidget(nav)
 
-        res = QGroupBox("精修结果")
+        res = QGroupBox(tr("panel.results"))
+        self._groups["panel.results"] = res
         rl = QVBoxLayout(res)
         self.result_table = QTableWidget(0, 2)
         self.result_table.setHorizontalHeaderLabels(["指标", "值"])
@@ -167,11 +203,122 @@ class MainWindow(QMainWindow):
         split.addWidget(right)
         split.setSizes([220, 660, 300])
 
+    # -- 国际化 -------------------------------------------------------- #
+    def retranslate(self) -> None:
+        """按当前语言刷新全部静态文案（语言切换无需重启）。"""
+        self.setWindowTitle(tr("app.title"))
+        for key, menu in self._menus.items():
+            if hasattr(menu, "setTitle"):
+                menu.setTitle(tr(key))
+        for key, act in self._menu_actions.items():
+            act.setText(tr(key))
+        for key, btn in self._toolbar_buttons.items():
+            btn.setText(tr(key))
+        for key, lbl in self._labels.items():
+            lbl.setText(tr(key))
+        for key, grp in self._groups.items():
+            grp.setTitle(tr(key))
+        for step, btn in self._step_buttons.items():
+            text = btn.text()
+            mark = text[:2] if text and text[0] in "✓–!" else ""
+            btn.setText(f"{mark} {tr(f'step.{step}')}".strip())
+        self.btn_run_all.setText(tr("panel.run_all"))
+        self.btn_cancel.setText(tr("panel.cancel"))
+        for lang, act in self._lang_actions.items():
+            act.setChecked(lang == get_language())
+        self.result_table.setHorizontalHeaderLabels(
+            [tr("result.rwp").replace(" (%)", ""), "Value"])
+
+    def switch_language(self, lang: str) -> None:
+        set_language(lang)
+        self.retranslate()
+        self.canvas.retranslate()
+        self.statusBar().showMessage(
+            f"{language_label(lang)} · {tr('panel.ready')}")
+
+    # -- 工程文件 ------------------------------------------------------ #
+    def project_state(self) -> dict:
+        """收集可序列化状态（供 .xrp 保存）。"""
+        result = None
+        if self._result is not None:
+            r = self._result
+            result = {"rwp": r.rwp, "rp": r.rp, "rexp": r.rexp,
+                      "chi2": r.chi2, "iters": r.iters,
+                      "phases": [{"name": p.name,
+                                  "weight_pct": p.weight_pct}
+                                 for p in r.phases]}
+        records = []
+        if self._worker is not None:
+            records = [{"key": rec.key, "status": rec.status,
+                        "rwp_after": rec.rwp_after}
+                       for rec in self._worker.runner.records]
+        return {
+            "language": get_language(),
+            "pattern": self._pattern_path,
+            "cifs": list(self._cif_paths),
+            "settings": self._settings,
+            "result": result,
+            "navigation": {"step_status": self._step_status,
+                           "records": records},
+        }
+
+    def save_project_dialog(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("menu.save_project"), "project.xrp",
+            "XinRefinement 工程 (*.xrp);;所有文件 (*)")
+        if not path:
+            return
+        save_project(self.project_state(), path)
+        self.statusBar().showMessage(f"{tr('menu.save_project')}: {path}")
+
+    def open_project_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("menu.open_project"), "",
+            "XinRefinement 工程 (*.xrp);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            data = load_project(path)
+        except Exception as exc:
+            QMessageBox.warning(self, tr("menu.open_project"), str(exc))
+            return
+        self.apply_project(data)
+
+    def apply_project(self, data: dict) -> None:
+        """把 .xrp 状态恢复到界面（缺文件时只提示，不中断）。"""
+        self.new_project()
+        if data.get("language") in LANGUAGES:
+            set_language(data["language"])
+            self.retranslate()
+            self.canvas.retranslate()
+        self._settings = dict(data.get("settings", {}))
+        if data.get("pattern") and Path(data["pattern"]).exists():
+            self._load_pattern_path(Path(data["pattern"]))
+        cifs = [c for c in data.get("cifs", []) if c and Path(c).exists()]
+        if cifs:
+            self._load_cif_paths([Path(c) for c in cifs])
+        nav = data.get("navigation", {})
+        self._step_status = dict(nav.get("step_status", {}))
+        for step, status in self._step_status.items():
+            btn = self._step_buttons.get(step)
+            if btn is not None:
+                mark = {"done": "✓", "skipped": "–", "failed": "!"}.get(status, "")
+                btn.setText(f"{mark} {tr(f'step.{step}')}".strip())
+        missing = data.get("missing", [])
+        msg = f"{tr('menu.open_project')}: {data.get('project_path', '')}"
+        if missing:
+            msg += f" | 缺失 {len(missing)} 个引用文件"
+        self.statusBar().showMessage(msg)
+
     # -- 交互 ---------------------------------------------------------- #
     def new_project(self) -> None:
         self._pattern = None
+        self._pattern_path = None
+        self._cif_paths.clear()
         self._phases.clear()
         self._result = None
+        self._settings.clear()
+        self._step_status.clear()
         self.phase_list.clear()
         self.canvas.clear()
         self.result_table.setRowCount(0)
@@ -190,6 +337,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "谱图读取失败", str(exc))
             return False
+        self._pattern_path = str(Path(path).resolve())
         self.canvas.show_pattern(self._pattern.two_theta,
                                  self._pattern.intensity)
         self.statusBar().showMessage(f"谱图：{Path(path).name} "
@@ -214,6 +362,7 @@ class MainWindow(QMainWindow):
             if any(s.name == st.name for s in self._phases):
                 continue
             self._phases.append(st)
+            self._cif_paths.append(str(Path(p).resolve()))
             item = QListWidgetItem(st.name)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)

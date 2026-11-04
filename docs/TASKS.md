@@ -9,9 +9,9 @@
 |---|---|---|---|
 | P0 | 基线冻结（先立基线） | P0.1–P0.3 | ✅ 完成（2026-11-04） |
 | M0 | 垂直切片 MVP | M0.1–M0.3 | ✅ 完成（2026-11-04） |
-| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.0c / P1.1 / **P1.2** 已完成；P1.3–P1.5 待实施 |
+| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.0c / P1.1 / P1.2 / **P1.3 / P1.4** 已完成；P1.5 e.s.d. 待实施 |
 | P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ⬜ 待实施 |
-| P3 | 导航式精修 + GUI | P3.1–P3.7 | 🟡 进行中：P3.1 / P3.2 / **P3.3** / P3.4 已完成；P3.5 结果区深化 / P3.6 i18n / P3.7 工程文件待实施 |
+| P3 | 导航式精修 + GUI | P3.1–P3.7 | 🟡 进行中：P3.1 / P3.2 / P3.3 / P3.4 / **P3.6 / P3.7** 已完成；P3.5 结果区深化（相关性/收敛曲线）待实施 |
 | P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | ⬜ 待实施 |
 
 **关键路径 / 依赖**：
@@ -141,8 +141,8 @@ D:/Project/XinRefinement/
 | P1.0c | 生产精修路径切到声明式 registry | ✅ 完成：`refine()` 的 x0/bounds/unpack 与 `_build_residual` **残差热路径**全走 `ParameterRegistry`（闭包外构造一次避免重复建表）；旧 `_pack/_unpack/_bounds` 保留为兼容 API + 双轨回归参照（不删除，保证 `test_size_strain`/`test_registry` 仍可对照）。全量 149 测试 + bench_b 8/8 PASS + CLI 3.409617 逐位不回归 |
 | P1.1 | spglib 集成：空间群编号/H-M → symop + 非对称单元展开 + Wyckoff 位识别；**处理设置/原点选择**（CIF 显式 symop 优先；无则匹配 spglib hall_number 或把坐标变换到标准设置） | ✅ 完成：`core/symops.py`（扁平命名，避开既有 `core/symmetry.py`）；全 230 群 symop sanity + R-3m H/R 设置区分 + family symop 等价 + Wyckoff 零空间自由维度（`tests/test_symops.py` 8 项） |
 | P1.2 | 全晶胞精修 a,b,c,α,β,γ（按晶系约束：立方 1/四方 2/正交 3/单斜 4/三斜 6/六方三方 2） | ✅ 完成：`core/refine/cell.py` 独立引擎（**不改 nonlinear 默认路径，golden 零风险**）；晶系判定空间群优先 + 度量兜底；`apply_cell_scales` 非自由轴跟随；LM/scipy-trf 双后端。虚拟样 round-trip 各轴相对误差 <1e-3（优于 0.1% 要求），`tests/test_cell_refine.py` 13 项 |
-| P1.3 | 原子坐标精修（Wyckoff 位约束）：用 site symmetry 旋转矩阵 (R−I) 的零空间求每个位点的**自由坐标维度**，只对自由分量建变量、联动分量用约束表达 | 坐标回收 < 1e-3；特殊位（4a/4c/8d…）自由坐标数与 International Tables 一致 |
-| P1.4 | 各向同性 B + 占位精修 | 与 seed 真值比对：B ±0.2 Å²、occ ±0.02 内（不依赖 e.s.d.） |
+| P1.3 | 原子坐标精修（Wyckoff 位约束）：用 site symmetry 旋转矩阵 (R−I) 的零空间求每个位点的**自由坐标维度**，只对自由分量建变量、联动分量用约束表达 | ✅ 完成：`core/refine/site.py` 自建**不对称单位模型**（`parse_cif` 会展开、不保留映射，故重新读 CIF 未展开位点 + symop）；`to_structure` 按 symop 重新展开→等价原子天然联动。实测 anatase Ti 特殊位 `n_free=0`、O 位 `n_free=1`；零向量重建与 `parse_cif` 原子数/峰位数/坐标逐位一致。坐标回收 <1e-3，9 项测试 |
+| P1.4 | 各向同性 B + 占位精修 | ✅ 完成：同一站点引擎按位点联动 B/occ；B 回收 ±0.2 Å²、occ ±0.02。**实测发现两个真实约束**：① `forward._PEAKS_CACHE` 的 `id(struct)` 键会让原子参数变化被缓存吞掉 → 用引擎预留的 `_variant` 盐值修复；② 单相全位点 occ 绝对标度被变量投影 scale 吸收（不可辨识）→ 实现 `occ_anchor=True` 固定首位点，只精修相对占位 |
 | P1.5 | 参数 e.s.d.（雅可比协方差 + **Schur 补纳入变量投影消去的 scale/背景线性参数**） | e.s.d. 与数值 Hessian 交叉验证误差 < 5%；scale/含量 e.s.d. 非空且量级合理 |
 
 > **P1 目录落地约定（实测修正）**：`core/symmetry.py` 是 P0 的**单文件模块**（16 项测试依赖），同目录不能并存 `symmetry/` 包。故 P1.1 以扁平 `core/symops.py` 落地，P1.0b 以新建 `core/params/` 子包落地；`core/io/`、`core/structure/` 的迁移推迟到 P1.0c 统一整理，避免来回搬文件。
@@ -178,8 +178,8 @@ D:/Project/XinRefinement/
 | P3.3 | 导航式精修向导（Recipe 引擎 + 单步/连跑 + Rwp 监控 + 快照回退 + 后台线程） | ✅ 完成：`core/refine/recipe.py`（8 步标准配方，xyz/B 标记 `available=False` 连跑跳过不做假执行；StepRecord + 快照回退 + cancel_cb）+ `gui/workers.py`（QThread 后台，5 个 Signal，可取消）+ 主窗口接入（单步/一键连跑/停止/进度）。`tests/test_recipe.py` 7 项 + GUI 冒烟 3 项。**实测修复**：取消路径的模态 QMessageBox 在离屏测试会永久阻塞（挂 12 分钟），已改为取消不弹框 |
 | P3.4 | 按钮+齿轮弹窗（背景/晶胞多相/峰形/原子坐标/温度因子/择优取向/微结构） | ✅ 骨架完成：`gui/dialogs.py`；背景弹窗（函数/阶数/手动点）**已传导到 RefineConfig**、晶胞多物相分别勾选（b/α/β/γ 待 P1.2 开放）、其余通用开关表 |
 | P3.5 | 结果区（R 因子/含量/相关性/收敛曲线） | 与 core 数值一致 |
-| P3.6 | i18n 三语 zh/en/ja | 语言切换生效 |
-| P3.7 | 工程文件保存/恢复（.xrp：谱图引用+CIF+参数设置+结果+导航状态+历史） | 保存→关闭→重开状态完全恢复且结果可复现 |
+| P3.6 | i18n 三语 zh/en/ja | ✅ 完成：`i18n/catalog.py` 三语字典（键集合一致、无空值）+ `tr()` 回退链 + `set_language`；主窗口 `retranslate()` 刷新标题/菜单/工具栏/导航步骤/结果表，画布 `retranslate()` 刷新图例/轴标签/空态。**语言切换无需重启**，10 项测试 |
+| P3.7 | 工程文件保存/恢复（.xrp：谱图引用+CIF+设置+结果摘要+导航状态+步骤记录+语言） | ✅ 完成：`gui/project.py` JSON 格式（含 `format`/`format_version`/`app_version` 校验）；路径相对化（跨盘符回退绝对）、缺文件报 `missing` 不中断；主窗口 `project_state()` / `apply_project()`。保存→新建→恢复全状态还原，10 项测试 |
 
 ---
 
