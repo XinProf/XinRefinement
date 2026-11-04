@@ -43,6 +43,7 @@ from matplotlib.backends.backend_qtagg import (
 )
 from matplotlib.figure import Figure
 
+from xinrefinement import __version__
 from xinrefinement.core.patterns import load_pattern
 from xinrefinement.core.profile.cif import parse_cif
 from xinrefinement.core.profile.forward import ProfileParams
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
     # -- 国际化 -------------------------------------------------------- #
     def retranslate(self) -> None:
         """按当前语言刷新全部静态文案（语言切换无需重启）。"""
-        self.setWindowTitle(tr("app.title"))
+        self.setWindowTitle(f"XinRefinement {__version__} · {tr('app.title')}")
         for key, menu in self._menus.items():
             if hasattr(menu, "setTitle"):
                 menu.setTitle(tr(key))
