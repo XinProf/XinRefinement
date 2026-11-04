@@ -177,3 +177,40 @@ def test_cancel_stops_recipe(win, qapp):
     qapp.processEvents()
     assert win._worker.is_cancelled
     assert not win._worker.isRunning()
+
+
+def test_p35_result_tabs_and_diagnostics(win, qapp):
+    """P3.5：结果区三页（摘要/收敛曲线/相关性），摘要含 DW 与含量 e.s.d.。"""
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_refine()
+    qapp.processEvents()
+    assert win.result_tabs.count() == 3
+    labels = [win.result_table.item(r, 0).text()
+              for r in range(win.result_table.rowCount())]
+    assert any("Durbin-Watson" in s for s in labels)
+    assert any("e.s.d." in s for s in labels)
+    assert win.conv_canvas.figure.axes  # 收敛曲线已绘制
+    assert win.corr_table.rowCount() >= 1
+
+
+def test_p35_retranslate_tab_titles(win, qapp):
+    win.switch_language("en")
+    qapp.processEvents()
+    assert win.result_tabs.tabText(0) == "Summary"
+    assert win.result_tabs.tabText(1) == "Convergence"
+    assert win.result_table.horizontalHeaderItem(0).text() == "Metric"
+    win.switch_language("zh")
+    qapp.processEvents()
+
+
+def test_p41_report_export_via_core(win, qapp, tmp_path):
+    """P4.1：报告三件套可由 GUI 结果直接导出（含 e.s.d. 段）。"""
+    from xinrefinement.core.report import export_report
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_refine()
+    qapp.processEvents()
+    paths = export_report(win._result, tmp_path, stem="gui")
+    assert all(Path(p).exists() for p in paths.values())
+    assert "Durbin-Watson" in Path(paths["html"]).read_text(encoding="utf-8")

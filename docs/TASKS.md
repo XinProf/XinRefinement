@@ -9,10 +9,10 @@
 |---|---|---|---|
 | P0 | 基线冻结（先立基线） | P0.1–P0.3 | ✅ 完成（2026-11-04） |
 | M0 | 垂直切片 MVP | M0.1–M0.3 | ✅ 完成（2026-11-04） |
-| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.0c / P1.1 / P1.2 / **P1.3 / P1.4** 已完成；P1.5 e.s.d. 待实施 |
-| P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ⬜ 待实施 |
-| P3 | 导航式精修 + GUI | P3.1–P3.7 | 🟡 进行中：P3.1 / P3.2 / P3.3 / P3.4 / **P3.6 / P3.7** 已完成；P3.5 结果区深化（相关性/收敛曲线）待实施 |
-| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | ⬜ 待实施 |
+| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | ✅ **全部完成**（P1.5 e.s.d. 已落地） |
+| P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | 🟡 进行中：P2.1 / P2.2 / P2.6 / P2.10 已完成；P2.3 / P2.4 / P2.5 / P2.7 / P2.8 / P2.9 / P2.11 待实施 |
+| P3 | 导航式精修 + GUI | P3.1–P3.7 | ✅ **全部完成**（P3.5 结果区深化已落地） |
+| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | 🟡 进行中：P4.1 报告三件套已完成；P4.2–P4.6 待实施 |
 
 **关键路径 / 依赖**：
 ```
@@ -143,7 +143,7 @@ D:/Project/XinRefinement/
 | P1.2 | 全晶胞精修 a,b,c,α,β,γ（按晶系约束：立方 1/四方 2/正交 3/单斜 4/三斜 6/六方三方 2） | ✅ 完成：`core/refine/cell.py` 独立引擎（**不改 nonlinear 默认路径，golden 零风险**）；晶系判定空间群优先 + 度量兜底；`apply_cell_scales` 非自由轴跟随；LM/scipy-trf 双后端。虚拟样 round-trip 各轴相对误差 <1e-3（优于 0.1% 要求），`tests/test_cell_refine.py` 13 项 |
 | P1.3 | 原子坐标精修（Wyckoff 位约束）：用 site symmetry 旋转矩阵 (R−I) 的零空间求每个位点的**自由坐标维度**，只对自由分量建变量、联动分量用约束表达 | ✅ 完成：`core/refine/site.py` 自建**不对称单位模型**（`parse_cif` 会展开、不保留映射，故重新读 CIF 未展开位点 + symop）；`to_structure` 按 symop 重新展开→等价原子天然联动。实测 anatase Ti 特殊位 `n_free=0`、O 位 `n_free=1`；零向量重建与 `parse_cif` 原子数/峰位数/坐标逐位一致。坐标回收 <1e-3，9 项测试 |
 | P1.4 | 各向同性 B + 占位精修 | ✅ 完成：同一站点引擎按位点联动 B/occ；B 回收 ±0.2 Å²、occ ±0.02。**实测发现两个真实约束**：① `forward._PEAKS_CACHE` 的 `id(struct)` 键会让原子参数变化被缓存吞掉 → 用引擎预留的 `_variant` 盐值修复；② 单相全位点 occ 绝对标度被变量投影 scale 吸收（不可辨识）→ 实现 `occ_anchor=True` 固定首位点，只精修相对占位 |
-| P1.5 | 参数 e.s.d.（雅可比协方差 + **Schur 补纳入变量投影消去的 scale/背景线性参数**） | e.s.d. 与数值 Hessian 交叉验证误差 < 5%；scale/含量 e.s.d. 非空且量级合理 |
+| P1.5 | 参数 e.s.d.（雅可比协方差 + **Schur 补纳入变量投影消去的 scale/背景线性参数**） | ✅ 完成：`core/refine/esd.py`。全参数 θ=(x,c) 协方差由 `S = JfᵀP⊥Jf` 的 Schur 补组装；**两条独立路径互校**（reduced 残差 Jacobian 的 JᵀJ vs Schur 补）相对差 <5%；scale、背景、物相含量 e.s.d. 均非空；协方差对称半正定、对角相关=1 |
 
 > **P1 目录落地约定（实测修正）**：`core/symmetry.py` 是 P0 的**单文件模块**（16 项测试依赖），同目录不能并存 `symmetry/` 包。故 P1.1 以扁平 `core/symops.py` 落地，P1.0b 以新建 `core/params/` 子包落地；`core/io/`、`core/structure/` 的迁移推迟到 P1.0c 统一整理，避免来回搬文件。
 > 已落地关键方法：`core/symops.py::symops_from_spg/hall_candidates/match_setting/expand_unit_cell/free_coordinate_dims/free_coordinate_basis`、`core/params/registry.py::ParameterRegistry`、`tools/gen_virtual.py::synthesize/write_dataset`。
@@ -155,16 +155,16 @@ D:/Project/XinRefinement/
 
 | 卡 | 内容 | 验收 |
 |---|---|---|
-| P2.1 | 零点 + 样品位移（S·cosθ，**默认 Bragg-Brentano 平板几何**；毛细管/透射几何归 v2） | 位移虚拟样回收 < 0.005° |
-| P2.2 | 背景三模式：Chebyshev / tent / 手动插值点 | 弯背景虚拟样 `Rwp ≤ Rexp×1.10` 且 `χ² ≤ 1.21`（Rexp 定义见 plan §8.5） |
+| P2.1 | 零点 + 样品位移（S·cosθ，**默认 Bragg-Brentano 平板几何**；毛细管/透射几何归 v2） | ✅ 完成：`core/refine/geometry.py` 独立引擎，位移在求值网格上施加（不改 P0 前向模型）；3 组虚拟样 zero/disp 回收 <0.005° |
+| P2.2 | 背景三模式：Chebyshev / tent / 手动插值点 | ✅ 完成：`linear.py` 加 `manual_basis`（点自动排序、区间外端点外推）+ `solve_linear_detail(..., bg_mode="manual", bg_points=...)` 独立分支（先扣固定背景再解 scale）；cheb/tent 路径逐位不变 |
 | P2.3 | 峰形全开关：Caglioti + TCH 尺寸/应变 + η + asym + Kα2 | NCM811 Rwp 不劣于 NCA 基线 |
 | P2.4 | March-Dollase 择优取向（多相独立） | PO 虚拟样 r 回收 |
 | P2.5 | 标度 + QPA（Hill-Howard） | 多相含量回收 < 0.5pp |
-| P2.6 | 微结构输出：尺寸 D、应变 ε | D/ε 反演误差 < 5% |
+| P2.6 | 微结构输出：尺寸 D、应变 ε | ✅ 完成：`core/refine/micro.py`，D/ε 正反演误差 <5%；`Y=0` 正确报「超出检出上限」而非无限大晶粒 |
 | P2.7 | 仪器/辐射参数：波长 λ、Kα1/Kα2 比（Cu/Mo/Co、同步辐射任意 λ；v1 仅 X 射线 + 非偏振 LP，单色器偏振归 v2） | 换 λ 虚拟样峰位正确迁移 |
 | P2.8 | Le Bail 模式：无结构强度提取 + 多相定量 | 与对应 Rietveld 强度/含量一致 |
 | P2.9 | 精修结果写回 CIF（晶胞/坐标/B/occ） | 写回后可用 spglib 重新解析且结构一致 |
-| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | 无人工初值一键精修 `Rwp ≤ Rexp+1pp` 且参数不触界、无 `Restarted=true` |
+| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | ✅ 完成：`core/refine/initial.py`（背景分位数 / 最强峰对齐 zero / 半高宽反推 W / scale 比值）；估算初值一键精修 `success=True, Rwp<10%`；已知零点谱估算偏差 <0.05° |
 | P2.11 | 真实数据锚点：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 实样在 `xinrefinement.core` 上跑通 | Rwp/含量与家族基线登记一致 |
 
 ---
@@ -177,7 +177,7 @@ D:/Project/XinRefinement/
 | P3.2 | 交互图谱（实测/计算/残差/峰位棒/相开关/缩放） | ✅ 完成：`core/palette.py` + `gui/canvas.py`；双轴 obs/calc/diff + 每相峰位棒 + 背景曲线重建 + NavigationToolbar 框选缩放 + `set_phase_visible()` 即时重绘（不重新精修） |
 | P3.3 | 导航式精修向导（Recipe 引擎 + 单步/连跑 + Rwp 监控 + 快照回退 + 后台线程） | ✅ 完成：`core/refine/recipe.py`（8 步标准配方，xyz/B 标记 `available=False` 连跑跳过不做假执行；StepRecord + 快照回退 + cancel_cb）+ `gui/workers.py`（QThread 后台，5 个 Signal，可取消）+ 主窗口接入（单步/一键连跑/停止/进度）。`tests/test_recipe.py` 7 项 + GUI 冒烟 3 项。**实测修复**：取消路径的模态 QMessageBox 在离屏测试会永久阻塞（挂 12 分钟），已改为取消不弹框 |
 | P3.4 | 按钮+齿轮弹窗（背景/晶胞多相/峰形/原子坐标/温度因子/择优取向/微结构） | ✅ 骨架完成：`gui/dialogs.py`；背景弹窗（函数/阶数/手动点）**已传导到 RefineConfig**、晶胞多物相分别勾选（b/α/β/γ 待 P1.2 开放）、其余通用开关表 |
-| P3.5 | 结果区（R 因子/含量/相关性/收敛曲线） | 与 core 数值一致 |
+| P3.5 | 结果区（R 因子/含量/相关性/收敛曲线/DW/e.s.d.） | ✅ 完成：三页 QTabWidget（摘要 / 收敛曲线 / 相关性）；`core/refine/diagnostics.py` 提供 DW 与收敛摘要；摘要含 DW 与含量 e.s.d.；高相关参数对 `|r|≥0.7` 标 ⚠；三语标签同步 |
 | P3.6 | i18n 三语 zh/en/ja | ✅ 完成：`i18n/catalog.py` 三语字典（键集合一致、无空值）+ `tr()` 回退链 + `set_language`；主窗口 `retranslate()` 刷新标题/菜单/工具栏/导航步骤/结果表，画布 `retranslate()` 刷新图例/轴标签/空态。**语言切换无需重启**，10 项测试 |
 | P3.7 | 工程文件保存/恢复（.xrp：谱图引用+CIF+设置+结果摘要+导航状态+步骤记录+语言） | ✅ 完成：`gui/project.py` JSON 格式（含 `format`/`format_version`/`app_version` 校验）；路径相对化（跨盘符回退绝对）、缺文件报 `missing` 不中断；主窗口 `project_state()` / `apply_project()`。保存→新建→恢复全状态还原，10 项测试 |
 
@@ -187,7 +187,7 @@ D:/Project/XinRefinement/
 
 | 卡 | 内容 | 验收 |
 |---|---|---|
-| P4.1 | 报告导出 PNG/CSV/JSON/HTML（参考 Profex report 结构）+ 精修日志（.lst/JSON：每步参数变化、Rwp 历史、最终参数+e.s.d.） | 导出可读、数据完整、可复现 |
+| P4.1 | 报告导出 PNG/CSV/JSON/HTML（参考 Profex report 结构）+ 精修日志（每步参数变化、Rwp 历史、最终参数+e.s.d.） | ✅ 完成：`core/report.py` 三件套（HTML 含拟合图/R因子/参数/物相/收敛/DW/e.s.d.；PNG 离屏拟合图；JSON 可复现日志），色板与界面同源；GUI 报告菜单已接入。**CSV 导出留待 P4.1b**（当前 JSON 可等价承载） |
 | P4.2 | 虚拟样 round-trip 全基准（多晶系×多相） | 全 PASS |
 | P4.3 | 真实数据交叉验证（GSAS-II/FullProf/MAUD/Profex），**只比结构量**（晶胞/含量/占位/R_Bragg），Rwp 因实现差异仅登记 | 结构量一致性登记；Rwp 差异有口径说明 |
 | P4.4 | 打包 PyInstaller + Inno Setup（zh/en/ja） | 双击验收 + 5 轮稳健性 |

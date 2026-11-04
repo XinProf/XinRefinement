@@ -54,14 +54,44 @@ def tent_basis(two_theta: np.ndarray, n_nodes: int) -> np.ndarray:
     return basis
 
 
+def manual_basis(two_theta: np.ndarray,
+                 points: list[tuple[float, float]] | tuple) -> np.ndarray:
+    """P2.2 手动插值点背景基：用户放置的 (2θ, 强度) 点之间线性插值。
+
+    返回 shape ``(N, 1)`` 的**固定背景曲线**（不再作为线性参数求解），
+    由 solve_linear_detail 把它当作已知背景从 y_obs 中扣除。这样齿轮弹窗里
+    拖拽的背景点与 cheb/tent 的「可精修系数」是两种正交的工作方式。
+
+    ``points`` 需 ≥2 个且 2θ 严格递增；区间外按端点值常值外推。
+    """
+    tt = np.asarray(two_theta, dtype=np.float64)
+    pts = sorted(((float(x), float(y)) for x, y in points), key=lambda t: t[0])
+    if len(pts) < 2:
+        raise ValueError("手动背景至少需要 2 个点")
+    xs = np.array([p[0] for p in pts])
+    ys = np.array([p[1] for p in pts])
+    if np.any(np.diff(xs) <= 0):
+        raise ValueError("手动背景点的 2θ 必须严格递增")
+    return np.interp(tt, xs, ys).reshape(-1, 1)
+
+
 def background_basis(two_theta: np.ndarray, n_terms: int,
-                     mode: str = "cheb") -> np.ndarray:
-    """背景基统一入口：mode="cheb"（默认）或 "tent"。"""
+                     mode: str = "cheb",
+                     points: list[tuple[float, float]] | None = None) -> np.ndarray:
+    """背景基统一入口：``cheb`` / ``tent`` / ``manual``（P2.2）。
+
+    ``manual`` 需给 ``points``；返回固定背景曲线 (N,1)，其系数恒为 1，
+    由调用方作为已知背景扣除（见 :func:`solve_linear_detail` 的 manual 分支）。
+    """
     if mode == "cheb":
         return chebyshev_basis(two_theta, n_terms)
     if mode == "tent":
         return tent_basis(two_theta, n_terms)
-    raise ValueError(f"未知背景模式: {mode}（可选 cheb / tent）")
+    if mode == "manual":
+        if not points:
+            raise ValueError("manual 背景模式需要提供背景插值点 points")
+        return manual_basis(two_theta, points)
+    raise ValueError(f"未知背景模式: {mode}（可选 cheb / tent / manual）")
 
 
 def _solve(A: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -72,21 +102,38 @@ def _solve(A: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
 
 def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
                         yobs: np.ndarray, sigma: np.ndarray | None,
-                        n_bg: int = 3, bg_mode: str = "cheb"
+                        n_bg: int = 3, bg_mode: str = "cheb",
+                        bg_points: list[tuple[float, float]] | None = None
                         ) -> tuple[np.ndarray, np.ndarray, list[int]]:
     """线性求解（完整版，带负标度剔除）。
 
     basis_phases: shape (P, N) 各相 profile（单相允许 (N,)）
-    bg_mode     : "cheb"（默认）或 "tent"（真实数据推荐，n_bg=节点数）
+    bg_mode     : "cheb"（默认）/ "tent" / "manual"（P2.2，需 bg_points）
     返回 (coeffs, ycalc, dropped)：
       coeffs = [S_1..S_P, b_0..b_{n_bg-1}]（相位在前，背景在后）
       dropped: scale 被置 0 的相下标（剔除重解 + 重解后仍为负的相）
+
+    P2.2 ``manual`` 分支：用户放置的背景点是**固定曲线**（非可解系数），
+    先从 y_obs 扣除再解 scale，返回 coeffs 里背景位恒为 [1.0] 作占位；
+    ycalc 已包含该背景。cheb/tent 路径逐位不变（golden 保护）。
     """
     bp = np.atleast_2d(np.asarray(basis_phases, dtype=np.float64))
     y = np.asarray(yobs, dtype=np.float64)
     g = np.asarray(grid, dtype=np.float64)
     n_phase = bp.shape[0]
     n_bg = int(n_bg)
+
+    if bg_mode == "manual":
+        fixed_bg = manual_basis(g, bg_points or []).ravel()
+        w_m = np.ones_like(y) if sigma is None else 1.0 / np.asarray(sigma, float)
+        y_res = y - fixed_bg
+        sol = _solve(bp.T, y_res, w_m)
+        scales = np.where(sol < 0.0, 0.0, sol)
+        dropped = [int(i) for i in np.flatnonzero(sol < 0.0)]
+        coeffs = np.concatenate([scales, np.ones(1)])
+        ycalc = bp.T @ scales + fixed_bg
+        return coeffs, ycalc, dropped
+
     bg = background_basis(g, n_bg, bg_mode)
     w = np.ones_like(y) if sigma is None else 1.0 / np.asarray(sigma, float)
 
@@ -126,8 +173,10 @@ def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
 
 def solve_linear(basis_phases: np.ndarray, grid: np.ndarray, yobs: np.ndarray,
                  sigma: np.ndarray | None, n_bg: int = 3,
-                 bg_mode: str = "cheb") -> tuple[np.ndarray, np.ndarray]:
+                 bg_mode: str = "cheb",
+                 bg_points: list[tuple[float, float]] | None = None
+                 ) -> tuple[np.ndarray, np.ndarray]:
     """契约版入口：返回 (coeffs, ycalc)，coeffs = [S_1..S_P, b_0..b_{n_bg-1}]。"""
     coeffs, ycalc, _dropped = solve_linear_detail(
-        basis_phases, grid, yobs, sigma, n_bg, bg_mode)
+        basis_phases, grid, yobs, sigma, n_bg, bg_mode, bg_points)
     return coeffs, ycalc

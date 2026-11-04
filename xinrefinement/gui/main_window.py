@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -36,7 +37,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg,
+    NavigationToolbar2QT,
+)
+from matplotlib.figure import Figure
 
 from xinrefinement.core.patterns import load_pattern
 from xinrefinement.core.profile.cif import parse_cif
@@ -195,10 +200,20 @@ class MainWindow(QMainWindow):
         res = QGroupBox(tr("panel.results"))
         self._groups["panel.results"] = res
         rl = QVBoxLayout(res)
+        self.result_tabs = QTabWidget()
         self.result_table = QTableWidget(0, 2)
         self.result_table.setHorizontalHeaderLabels(["指标", "值"])
         self.result_table.horizontalHeader().setStretchLastSection(True)
-        rl.addWidget(self.result_table)
+        self.result_tabs.addTab(self.result_table, tr("result.tab.summary"))
+        # P3.5：收敛曲线
+        self.conv_canvas = FigureCanvasQTAgg(Figure(figsize=(3.2, 1.8),
+                                                    layout="constrained"))
+        self.result_tabs.addTab(self.conv_canvas, tr("result.tab.convergence"))
+        # P3.5：相关性矩阵
+        self.corr_table = QTableWidget(0, 1)
+        self.corr_table.horizontalHeader().setStretchLastSection(True)
+        self.result_tabs.addTab(self.corr_table, tr("result.tab.correlation"))
+        rl.addWidget(self.result_tabs)
         rv.addWidget(res, 1)
         split.addWidget(right)
         split.setSizes([220, 660, 300])
@@ -227,7 +242,12 @@ class MainWindow(QMainWindow):
         for lang, act in self._lang_actions.items():
             act.setChecked(lang == get_language())
         self.result_table.setHorizontalHeaderLabels(
-            [tr("result.rwp").replace(" (%)", ""), "Value"])
+            [tr("result.metric"), tr("result.value")])
+        self.result_tabs.setTabText(0, tr("result.tab.summary"))
+        self.result_tabs.setTabText(1, tr("result.tab.convergence"))
+        self.result_tabs.setTabText(2, tr("result.tab.correlation"))
+        self.corr_table.setHorizontalHeaderLabels(
+            [tr("result.metric"), tr("result.value")])
 
     def switch_language(self, lang: str) -> None:
         set_language(lang)
@@ -538,31 +558,94 @@ class MainWindow(QMainWindow):
             f"精修完成：Rwp={res.rwp:.3f}%  success={res.success}")
 
     def _fill_results(self, res) -> None:
-        rows = [("Rwp (%)", f"{res.rwp:.4f}"), ("Rp (%)", f"{res.rp:.4f}"),
-                ("Rexp (%)", f"{res.rexp:.4f}"), ("χ²", f"{res.chi2:.4f}"),
-                ("迭代次数", str(res.iters))]
-        for p in res.phases:
+        """P3.5：摘要 + 收敛曲线 + 相关性矩阵 + DW/e.s.d.。"""
+        from xinrefinement.core.refine.diagnostics import diagnose
+        from xinrefinement.core.refine.esd import estimate_esd
+
+        diag = diagnose(res)
+        rows = [(tr("result.rwp"), f"{res.rwp:.4f}"),
+                (tr("result.rp"), f"{res.rp:.4f}"),
+                (tr("result.rexp"), f"{res.rexp:.4f}"),
+                (tr("result.chi2"), f"{res.chi2:.4f}"),
+                (tr("result.iters"), str(res.iters)),
+                (tr("result.dw"), f"{diag.dw:.4f}")]
+        weight_esd = None
+        try:
+            esd = estimate_esd(self._phases, res)
+            weight_esd = esd.weight_esd_pct
+            rows.append(("Rwp 下降 (pp)", f"{diag.rwp_drop:.4f}"))
+        except Exception:
+            esd = None
+        for i, p in enumerate(res.phases):
             wt = "—" if p.weight_pct is None else f"{p.weight_pct:.3f}"
-            rows.append((f"物相含量 · {p.name} (%)", wt))
+            rows.append((f"{tr('result.phase_weight')} · {p.name} (%)", wt))
+            if weight_esd:
+                rows.append((f"e.s.d. · {p.name} (pp)",
+                             f"{weight_esd[i]:.4f}"))
         self.result_table.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
             self.result_table.setItem(r, 0, QTableWidgetItem(k))
             self.result_table.setItem(r, 1, QTableWidgetItem(v))
+        self._draw_convergence(res)
+        self._draw_correlation(esd)
+
+    def _draw_convergence(self, res) -> None:
+        """收敛曲线（Rwp 历史）。"""
+        fig = self.conv_canvas.figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+        h = np.asarray(res.history, dtype=float)
+        if h.size:
+            ax.plot(np.arange(h.size), h, color="#1f77b4", lw=1.0)
+            ax.set_ylabel("Rwp (%)")
+            ax.set_xlabel("eval")
+            ax.grid(True, color="#e0e0e0", lw=0.5)
+        self.conv_canvas.draw_idle()
+
+    def _draw_correlation(self, esd) -> None:
+        """高相关参数对（|r| ≥ 0.7）+ e.s.d. 摘要。"""
+        rows = []
+        if esd is not None:
+            C, labels = esd.correlation, esd.labels
+            n_x = len([l for l in labels if not l.startswith(("scale[", "bg["))])
+            for i in range(n_x):
+                rows.append((labels[i], f"e.s.d.={esd.esd[i]:.5g}"))
+                for j in range(i + 1, n_x):
+                    if abs(C[i, j]) >= 0.7:
+                        rows.append((f"⚠ {labels[i]} ↔ {labels[j]}",
+                                     f"r={C[i, j]:+.3f}"))
+        else:
+            rows.append(("—", "e.s.d. 不可用"))
+        self.corr_table.setColumnCount(2)
+        self.corr_table.setHorizontalHeaderLabels([tr("result.metric"),
+                                                   tr("result.value")])
+        self.corr_table.setRowCount(len(rows))
+        for r, (k, v) in enumerate(rows):
+            self.corr_table.setItem(r, 0, QTableWidgetItem(k))
+            self.corr_table.setItem(r, 1, QTableWidgetItem(v))
 
     def export_report(self) -> None:
+        """P4.1：HTML + PNG + JSON 精修日志三件套（core/report.py）。"""
         if self._result is None:
             QMessageBox.information(self, "无结果", "请先执行精修")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出报告", "refine_report.txt", "文本 (*.txt);;所有文件 (*)")
+            self, tr("toolbar.report"), "refine_report.html",
+            "HTML 报告 (*.html);;所有文件 (*)")
         if not path:
             return
-        res = self._result
-        lines = ["# XinRefinement 精修报告", "",
-                 f"Rwp = {res.rwp:.4f}%  Rp = {res.rp:.4f}%  "
-                 f"Rexp = {res.rexp:.4f}%  chi2 = {res.chi2:.4f}", ""]
-        for p in res.phases:
-            lines.append(f"{p.name}: scale={p.scale:.6f} "
-                         f"weight={p.weight_pct}")
-        Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self.statusBar().showMessage(f"报告已导出：{path}")
+        from xinrefinement.core.refine.esd import estimate_esd
+        from xinrefinement.core.report import export_report as _export
+
+        try:
+            esd = estimate_esd(self._phases, self._result)
+        except Exception:
+            esd = None
+        out = Path(path)
+        try:
+            paths = _export(self._result, out.parent, stem=out.stem, esd=esd)
+        except Exception as exc:
+            QMessageBox.warning(self, tr("toolbar.report"), str(exc))
+            return
+        self.statusBar().showMessage(
+            f"{tr('toolbar.report')}: {', '.join(Path(p).name for p in paths.values())}")
