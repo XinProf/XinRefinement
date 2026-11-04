@@ -193,6 +193,8 @@ class MainWindow(QMainWindow):
         from xinrefinement.gui.toolbar_icons import colorize_nav_toolbar
         self._nav_toolbar = NavigationToolbar2QT(self.canvas, center)
         colorize_nav_toolbar(self._nav_toolbar)   # 品牌彩色图标
+        self.canvas.nav_toolbar = self._nav_toolbar  # 平移/缩放时让出轴点击
+        self.canvas.axisHint.connect(self.statusBar().showMessage)
         cv.addWidget(self._nav_toolbar)
         split.addWidget(center)
 
@@ -408,6 +410,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "谱图读取失败", str(exc))
             return False
         self._pattern_path = str(Path(path).resolve())
+        # d 值换算波长：优先谱图 meta，其次默认 Cu Kα1
+        self.canvas.set_wavelength(
+            (self._pattern.meta or {}).get("wavelength"))
         self.canvas.show_pattern(self._pattern.two_theta,
                                  self._pattern.intensity)
         self.statusBar().showMessage(f"谱图：{Path(path).name} "

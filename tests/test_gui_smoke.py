@@ -339,3 +339,98 @@ def test_open_phase_editor_applies_edits(win, monkeypatch):
     assert inputs.profile.po_r == {st.name: (0, 0, 1, 0.9)}
     # 标记条已按新晶胞/PO 重算（无异常即达意）
     assert len(win.canvas.phase_names) == 2
+
+
+# ---------------------------------------------------------------- v1.1b --
+def test_axis_x_d_mode_conversion(win, qapp):
+    """横轴 2θ ↔ d：Bragg 换算、反向轴、轴标签、标记条同步换算。"""
+    from xinrefinement.gui.canvas import two_theta_to_d
+
+    # Bragg 定律：Cu Kα1 下 25.28° ≈ 锐钛矿 (101) d≈3.52 Å
+    d = float(two_theta_to_d(25.28, 1.5406))
+    assert abs(d - 3.521) < 0.01
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_refine()
+    qapp.processEvents()
+    c = win.canvas
+    c.set_x_mode("d")
+    qapp.processEvents()
+    assert c.x_mode == "d"
+    x0, x1 = c.ax_main.get_xlim()
+    assert x0 > x1            # d 随 2θ 递减 → 轴反向
+    assert "d (Å)" in c.ax_main.get_xlabel()
+    # 标记条峰位同样换算到 d
+    names = c.phase_names
+    sticks = dict((n, e) for n, e in c._phase_sticks)
+    entry = sticks[names[0]][0]
+    pos2t = entry[0][0] if isinstance(entry[0], (list, tuple)) else entry[0]
+    conv = c._sticks_in_units([(names[0], sticks[names[0]], 0)])[0][1][0]
+    pos_d = conv[0] if isinstance(conv, (list, tuple)) else conv
+    assert abs(float(pos_d) - float(two_theta_to_d(pos2t, c.wavelength))) < 1e-9
+    c.set_x_mode("2theta")
+    assert "2θ" in c.ax_main.get_xlabel()
+
+
+def test_axis_y_log_sqrt_modes(win, qapp):
+    """纵轴 counts ↔ log ↔ √：标度、量程与轴标签。"""
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_refine()
+    qapp.processEvents()
+    c = win.canvas
+    c.set_y_mode("log")
+    qapp.processEvents()
+    assert c.ax_main.get_yscale() == "log"
+    assert c.ax_main.get_ylim()[0] > 0
+    assert "log" in c.ax_main.get_ylabel()
+    c.set_y_mode("sqrt")
+    qapp.processEvents()
+    assert c.ax_main.get_yscale() == "function"
+    assert "√" in c.ax_main.get_ylabel()
+    c.set_y_mode("linear")
+    qapp.processEvents()
+    assert c.ax_main.get_yscale() == "linear"
+    # 循环：linear → log → sqrt → linear
+    assert c.cycle_y_mode() == "log"
+    assert c.cycle_y_mode() == "sqrt"
+    assert c.cycle_y_mode() == "linear"
+    # 非法模式不生效
+    c.set_y_mode("bogus")
+    assert c.y_mode == "linear"
+
+
+def test_axis_click_hit_zones(win, qapp):
+    """轴区命中：纵轴标签侧/横轴标签侧命中，轴间缝隙不误触发。"""
+    import types
+
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A, CIF_R])
+    win.run_refine()
+    qapp.processEvents()
+    c = win.canvas
+    mb = c.ax_main.get_window_extent()
+    db = c.ax_diff.get_window_extent()
+    ev_y = types.SimpleNamespace(x=mb.x0 - 20, y=(mb.y0 + mb.y1) / 2,
+                                 inaxes=None, button=1, guiEvent=None)
+    ev_x = types.SimpleNamespace(x=(mb.x0 + mb.x1) / 2, y=db.y0 - 20,
+                                 inaxes=None, button=1, guiEvent=None)
+    ev_gap = types.SimpleNamespace(x=(mb.x0 + mb.x1) / 2,
+                                   y=(mb.y0 + db.y1) / 2,
+                                   inaxes=None, button=1, guiEvent=None)
+    assert c._hit_axis(ev_y) == "y"
+    assert c._hit_axis(ev_x) == "x"
+    assert c._hit_axis(ev_gap) is None
+    # 左键循环（经完整交互路径）
+    c._on_button_press(ev_y)
+    assert c.y_mode == "log"
+    c._on_button_press(ev_x)
+    assert c.x_mode == "d"
+    # 右键不直接改模式（只弹菜单，离屏下无 guiEvent 用中心兜底，安全跳过执行）
+    ev_r = types.SimpleNamespace(x=mb.x0 - 20, y=(mb.y0 + mb.y1) / 2,
+                                 inaxes=None, button=3, guiEvent=None)
+    c._hover_axis = None
+    # 不实际 exec 菜单：离屏 exec 会阻塞，只验证路径识别
+    assert c._hit_axis(ev_r) == "y"
+
+

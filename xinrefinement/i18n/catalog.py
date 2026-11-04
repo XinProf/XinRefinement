@@ -47,6 +47,15 @@ _ZH = {
     "canvas.obs": "实测", "canvas.calc": "计算", "canvas.diff": "残差",
     "canvas.bg": "背景", "canvas.empty": "导入谱图与 CIF 后执行精修",
     "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (°)",
+    "canvas.x_label_d": "d (Å)",
+    "canvas.y_label_log": "Intensity (log)",
+    "canvas.y_label_sqrt": "Intensity (√cts)",
+    "axis.menu_x": "横轴单位", "axis.menu_y": "纵轴标度",
+    "axis.x_2theta": "2θ 角度 (°)", "axis.x_d": "d 面间距 (Å)",
+    "axis.y_linear": "计数 counts", "axis.y_log": "对数 log",
+    "axis.y_sqrt": "方根 √",
+    "axis.hint_x": "横轴：左键循环切换 2θ ↔ d，右键选择单位",
+    "axis.hint_y": "纵轴：左键循环切换 counts → log → √，右键选择标度",
     "msg.ready": "就绪：导入谱图与 CIF 后执行精修",
 }
 
@@ -85,6 +94,15 @@ _EN = {
     "canvas.diff": "Difference", "canvas.bg": "Background",
     "canvas.empty": "Import a pattern and CIF, then run refinement",
     "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (deg)",
+    "canvas.x_label_d": "d (Å)",
+    "canvas.y_label_log": "Intensity (log)",
+    "canvas.y_label_sqrt": "Intensity (√cts)",
+    "axis.menu_x": "X axis unit", "axis.menu_y": "Y axis scale",
+    "axis.x_2theta": "2θ angle (deg)", "axis.x_d": "d spacing (Å)",
+    "axis.y_linear": "Counts (cts)", "axis.y_log": "Logarithmic (log)",
+    "axis.y_sqrt": "Square root (√)",
+    "axis.hint_x": "X axis: click to cycle 2θ <-> d, right-click to choose",
+    "axis.hint_y": "Y axis: click to cycle counts -> log -> sqrt, right-click to choose",
     "msg.ready": "Ready: import a pattern and CIF, then refine",
 }
 
@@ -123,6 +141,15 @@ _JA = {
     "canvas.bg": "バックグラウンド",
     "canvas.empty": "パターンと CIF を読込んでから精密化を実行",
     "canvas.y_label": "Intensity (cts)", "canvas.x_label": "2θ (deg)",
+    "canvas.x_label_d": "d (Å)",
+    "canvas.y_label_log": "Intensity (log)",
+    "canvas.y_label_sqrt": "Intensity (√cts)",
+    "axis.menu_x": "横軸の単位", "axis.menu_y": "縦軸スケール",
+    "axis.x_2theta": "2θ 角度 (°)", "axis.x_d": "d 面間隔 (Å)",
+    "axis.y_linear": "カウント counts", "axis.y_log": "対数 log",
+    "axis.y_sqrt": "平方根 √",
+    "axis.hint_x": "横軸：クリックで 2θ ↔ d を切替、右クリックで選択",
+    "axis.hint_y": "縦軸：クリックで counts → log → √ を切替、右クリックで選択",
     "msg.ready": "準備完了：パターンと CIF を読込んでください",
 }
 
