@@ -301,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in ("-V", "--version"):
+        from xinrefinement import __version__
+        print(f"XinRefinement {__version__}")
+        return 0
     if argv and argv[0] not in ("refine", "-h", "--help"):
         argv = ["refine", *argv]
     parser = build_parser()

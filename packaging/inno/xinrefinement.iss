@@ -8,6 +8,10 @@
 #define AppPublisher "PolyXRD"
 #define AppExe "XinRefinement.exe"
 #define AppCli "XinRefinementCLI.exe"
+; 产物目录（构建脚本用 ISCC /DDistDir=... 覆盖；默认按版本约定）
+#ifndef DistDir
+  #define DistDir "..\..\dist\XinRefinement-1.0.0"
+#endif
 
 [Setup]
 AppId={{CF28301D-078D-46B1-BCEE-C8734B6DE0E6}
@@ -47,7 +51,7 @@ japanese.CliHint=コマンドライン入口（バッチ）: XinRefinementCLI.ex
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\..\dist\{#AppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

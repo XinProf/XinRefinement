@@ -12,7 +12,7 @@
 | P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | ✅ **全部完成**（P1.5 e.s.d. 已落地） |
 | P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ✅ **全部完成**（P2.3/2.4/2.5/2.7/2.8/2.9/2.11 已落地，见第 3 节） |
 | P3 | 导航式精修 + GUI | P3.1–P3.7 | ✅ **全部完成**（P3.5 结果区深化已落地） |
-| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | 🟡 进行中：P4.1 / P4.2 / P4.5 / P4.6 已完成（品牌资产一并落地）；P4.3 交叉验证 / P4.4 打包发布待实施 |
+| P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | 🟡 进行中：P4.1 / P4.2 / P4.3 / P4.5 / P4.6 已完成；**P4.4 二进制已本地构建（v1.0.0），待人工验收** |
 
 **关键路径 / 依赖**：
 ```
@@ -189,8 +189,8 @@ D:/Project/XinRefinement/
 |---|---|---|
 | P4.1 | 报告导出 PNG/CSV/JSON/HTML（参考 Profex report 结构）+ 精修日志（每步参数变化、Rwp 历史、最终参数+e.s.d.） | ✅ 完成：`core/report.py` 三件套（HTML 含拟合图/R因子/参数/物相/收敛/DW/e.s.d.；PNG 离屏拟合图；JSON 可复现日志），色板与界面同源；GUI 报告菜单已接入。**CSV 导出留待 P4.1b**（当前 JSON 可等价承载） |
 | P4.2 | 虚拟样 round-trip 全基准（多晶系×多相） | ✅ 完成：`tools/bench_full.py` 18/18 PASS（立方/四方/六方/正交/单斜 × 1–3 相 × 注入旋钮），报告落盘 `bench_full_report.md` |
-| P4.3 | 真实数据交叉验证（GSAS-II/FullProf/MAUD/Profex），**只比结构量**（晶胞/含量/占位/R_Bragg），Rwp 因实现差异仅登记 | 结构量一致性登记；Rwp 差异有口径说明 |
-| P4.4 | 打包 PyInstaller + Inno Setup（zh/en/ja） | 双击验收 + 5 轮稳健性 |
+| P4.3 | 真实数据交叉验证（GSAS-II/FullProf/MAUD/Profex），**只比结构量**（晶胞/含量/占位/R_Bragg），Rwp 因实现差异仅登记 | ✅ GSAS-II 部分完成：`tools/gsas2_reference.py`（GSASIIscriptable 5.8.2 脚本化精修）+ `tools/cross_validate.py` + `docs/CROSS_VALIDATION.md`。**NCM811 实样晶胞最大相对差 0.031%、v50 双相 0.015%（门限 0.5%）→ PASS**；Rwp/wR 差异已写明口径。FullProf/MAUD/Profex 与多相 QPA 属人工步骤 |
+| P4.4 | 打包 PyInstaller + Inno Setup（zh/en/ja） | 🟡 已本地构建 v1.0.0（`packaging/xinrefinement.spec` + `packaging/inno/xinrefinement.iss` + `tools/build_binaries.py`）：GUI/CLI 双 exe（onedir）+ 安装包 66.6 MB，zh/en/ja 三语；**产物不入库不上传，待人工双击验收** |
 | P4.5 | CLI 批处理入口（`refine --recipe/--report/--quant/--esd`） | ✅ 完成：四旗全接（配方分步/HTML 报告目录/WPF 定量表/Schur e.s.d.）；v50 一条命令全流程通过 |
 | P4.6 | 公开库 API 契约 + XinMatch 对接 demo（`xinrefinement.core` 稳定 solve/quant/report 入口 + 版本化约定） | ✅ 完成：`xinrefinement/api.py`（RefineRequest/RefineResponse + refine/quant/report/capabilities + API_VERSION）；`test_p46_public_api` 验证最小调用 |
 

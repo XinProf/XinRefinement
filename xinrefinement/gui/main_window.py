@@ -222,7 +222,7 @@ class MainWindow(QMainWindow):
     # -- 国际化 -------------------------------------------------------- #
     def retranslate(self) -> None:
         """按当前语言刷新全部静态文案（语言切换无需重启）。"""
-        self.setWindowTitle(f"XinRefinement {__version__} · {tr('app.title')}")
+        self.setWindowTitle(f"{tr('app.title')} · v{__version__}")
         for key, menu in self._menus.items():
             if hasattr(menu, "setTitle"):
                 menu.setTitle(tr(key))

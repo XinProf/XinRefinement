@@ -9,9 +9,12 @@
 不内嵌数据库：v1.0.0 只依赖 `xinrefinement/data` 下的内置 CIF 与空间群表
 （已随 datas 打入）。构建命令见 tools/build_binaries.py。
 """
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
+
+VERSION = os.environ.get("XR_VERSION", "dev")
 
 SPEC_DIR = Path(SPECPATH).resolve()
 ROOT = SPEC_DIR.parent
@@ -93,5 +96,5 @@ coll = COLLECT(
     exe_cli, a_cli.binaries, a_cli.datas,
     strip=False,
     upx=False,
-    name="XinRefinement",
+    name=f"XinRefinement-{VERSION}",
 )
