@@ -1,0 +1,44 @@
+# Python 缓存与字节码
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 构建与分发产物
+build/
+dist/
+*.egg-info/
+.eggs/
+*.spec.bak
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 过程数据：bench 生成的拟合图、临时输出
+tests/out/
+tests/tmp/
+*.log
+.DS_Store
+Thumbs.db
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+
+# 说明（勿忽略，以下为基准数据/源码资产，必须入库）：
+#   tests/golden/                  golden 基线 JSON
+#   tests/data/virtual_b/*.xy      虚拟样谱（test_solve / test_cli 直接依赖）
+#   xinrefinement/data/            spacegroups.json、cif/、内置 TiO2 CIF
+#   docs/、tools/、bench_report_b.md
+
+# 合规红线（防御性，避免误入库）：ICDD PDF2-2004 及原始 .dat 永不入库
+PDF2_2004.sqlite
+*.dat.bak
+cod_data/

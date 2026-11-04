@@ -1,0 +1,207 @@
+{
+  "seed": 20260701,
+  "n_ratios": 8,
+  "samples": [
+    {
+      "wa_nominal": 0.1,
+      "wr_nominal": 99.9,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v0.1_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 1.0,
+      "wr_nominal": 99.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v1_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 5.0,
+      "wr_nominal": 95.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v5_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 25.0,
+      "wr_nominal": 75.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v25_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 50.0,
+      "wr_nominal": 50.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v50_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 75.0,
+      "wr_nominal": 25.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v75_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 95.0,
+      "wr_nominal": 5.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v95_wide.xy",
+      "seed": 20260701
+    },
+    {
+      "wa_nominal": 99.0,
+      "wr_nominal": 1.0,
+      "profile": {
+        "tmin": 5.0,
+        "tmax": 90.0,
+        "step": 0.02,
+        "U": 0.02,
+        "V": 0.0,
+        "W": 0.02,
+        "eta": 0.5,
+        "zero": 0.03,
+        "anode": "Cu",
+        "ka_ratio": 0.5,
+        "noise": "poisson",
+        "target_peak": 50000.0,
+        "bg": [
+          300.0,
+          1.0,
+          0.0
+        ]
+      },
+      "file": "v99_wide.xy",
+      "seed": 20260701
+    }
+  ],
+  "note": "B 法自用虚拟样（物理标度见脚本头）"
+}

@@ -1,0 +1,802 @@
+{
+  "meta": {
+    "schema": "nca.spacegroups/1",
+    "note": "空间群 -> (晶系, 点群, 劳厄群, 布拉维格子)。数值为 International Tables for Crystallography Vol.A 的标准数据；本表是项目范围内的权威来源，symmetry.lookup 的规则推导仅作未登记符号的兜底。",
+    "bravais_notation": "Pearson-Bravais 简写：aP/mP/mC/oP/oC/oF/oI/tP/tI/hP/hR/cP/cF/cI",
+    "point_groups": "-1, 2, m, 2/m, 222, mm2, mmm, 4, -4, 4/m, 422, 4mm, -42m, 4/mmm, 3, -3, 32, 3m, -3m, 6, -6, 6/m, 622, 6mm, -6m2, 6/mmm, 23, m-3, 432, -43m, m-3m"
+  },
+  "space_groups": {
+    "Aba2": {
+      "number": 41,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Abm2": {
+      "number": 39,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Ama2": {
+      "number": 40,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Amm2": {
+      "number": 38,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "C2": {
+      "number": 5,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2",
+      "laue_group": "2/m",
+      "bravais": "mC"
+    },
+    "C2/c": {
+      "number": 15,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mC"
+    },
+    "C2/m": {
+      "number": 12,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mC"
+    },
+    "Cc": {
+      "number": 9,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "m",
+      "laue_group": "2/m",
+      "bravais": "mC"
+    },
+    "Ccc2": {
+      "number": 37,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cccm": {
+      "number": 66,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cm": {
+      "number": 8,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "m",
+      "laue_group": "2/m",
+      "bravais": "mC"
+    },
+    "Cmc21": {
+      "number": 36,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cmce": {
+      "number": 64,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cmcm": {
+      "number": 63,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cmm2": {
+      "number": 35,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "Cmmm": {
+      "number": 65,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oC"
+    },
+    "F-43m": {
+      "number": 216,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "-43m",
+      "laue_group": "m-3m",
+      "bravais": "cF"
+    },
+    "Fd-3m": {
+      "number": 227,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3m",
+      "laue_group": "m-3m",
+      "bravais": "cF"
+    },
+    "Fdd2": {
+      "number": 43,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oF"
+    },
+    "Fddd": {
+      "number": 70,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oF"
+    },
+    "Fm-3": {
+      "number": 202,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3",
+      "laue_group": "m-3m",
+      "bravais": "cF"
+    },
+    "Fm-3m": {
+      "number": 225,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3m",
+      "laue_group": "m-3m",
+      "bravais": "cF"
+    },
+    "Fmm2": {
+      "number": 42,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oF"
+    },
+    "I-43m": {
+      "number": 217,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "-43m",
+      "laue_group": "m-3m",
+      "bravais": "cI"
+    },
+    "I4": {
+      "number": 79,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4",
+      "laue_group": "4/mmm",
+      "bravais": "tI"
+    },
+    "I4/mmm": {
+      "number": 139,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tI"
+    },
+    "Ia-3": {
+      "number": 206,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "-43m",
+      "laue_group": "m-3m",
+      "bravais": "cI"
+    },
+    "Iba2": {
+      "number": 45,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oI"
+    },
+    "Im-3": {
+      "number": 204,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3",
+      "laue_group": "m-3m",
+      "bravais": "cI"
+    },
+    "Im-3m": {
+      "number": 229,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3m",
+      "laue_group": "m-3m",
+      "bravais": "cI"
+    },
+    "Ima2": {
+      "number": 46,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oI"
+    },
+    "Imm2": {
+      "number": 44,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oI"
+    },
+    "Imma": {
+      "number": 74,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oI"
+    },
+    "P-1": {
+      "number": 2,
+      "crystal_system": "triclinic",
+      "crystal_system_zh": "三斜",
+      "point_group": "-1",
+      "laue_group": "-1",
+      "bravais": "aP"
+    },
+    "P-31c": {
+      "number": 163,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hP"
+    },
+    "P-31m": {
+      "number": 162,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hP"
+    },
+    "P-3c1": {
+      "number": 165,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hP"
+    },
+    "P-3m1": {
+      "number": 164,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hP"
+    },
+    "P-4": {
+      "number": 81,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "-4",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P2": {
+      "number": 3,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P2/c": {
+      "number": 13,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P2/m": {
+      "number": 10,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P21": {
+      "number": 4,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P21/a": {
+      "number": 14,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P21/c": {
+      "number": 14,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P21/m": {
+      "number": 11,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P21/n": {
+      "number": 14,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "2/m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "P213": {
+      "number": 198,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "23",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "P222": {
+      "number": 16,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "222",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "P4": {
+      "number": 75,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P4/m": {
+      "number": 85,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/m",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P4/mbm": {
+      "number": 127,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P4/mmm": {
+      "number": 123,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P4/nbm": {
+      "number": 125,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P4/nnm": {
+      "number": 129,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P41": {
+      "number": 76,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P41212": {
+      "number": 92,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "422",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P42/mcm": {
+      "number": 132,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P42/mmc": {
+      "number": 131,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P42/mnm": {
+      "number": 136,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P42/nbc": {
+      "number": 133,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P42/nnm": {
+      "number": 134,
+      "crystal_system": "tetragonal",
+      "crystal_system_zh": "四方",
+      "point_group": "4/mmm",
+      "laue_group": "4/mmm",
+      "bravais": "tP"
+    },
+    "P6": {
+      "number": 168,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "P6/mmm": {
+      "number": 191,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6/mmm",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "P61": {
+      "number": 169,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "P63": {
+      "number": 173,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "P63/mmc": {
+      "number": 194,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6/mmm",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "P63mc": {
+      "number": 186,
+      "crystal_system": "hexagonal",
+      "crystal_system_zh": "六方",
+      "point_group": "6mm",
+      "laue_group": "6/mmm",
+      "bravais": "hP"
+    },
+    "Pa-3": {
+      "number": 205,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "-43m",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "Pba2": {
+      "number": 32,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pban": {
+      "number": 50,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pbca": {
+      "number": 61,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pbcn": {
+      "number": 60,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pc": {
+      "number": 7,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "Pca21": {
+      "number": 29,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pcc2": {
+      "number": 27,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pccn": {
+      "number": 49,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pm": {
+      "number": 6,
+      "crystal_system": "monoclinic",
+      "crystal_system_zh": "单斜",
+      "point_group": "m",
+      "laue_group": "2/m",
+      "bravais": "mP"
+    },
+    "Pm-3": {
+      "number": 200,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "Pm-3m": {
+      "number": 221,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3m",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "Pma2": {
+      "number": 28,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pmc21": {
+      "number": 26,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pmm2": {
+      "number": 25,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pmmm": {
+      "number": 47,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pmn21": {
+      "number": 31,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pn-3": {
+      "number": 201,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "Pn-3m": {
+      "number": 224,
+      "crystal_system": "cubic",
+      "crystal_system_zh": "立方",
+      "point_group": "m-3m",
+      "laue_group": "m-3m",
+      "bravais": "cP"
+    },
+    "Pna21": {
+      "number": 33,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pnc2": {
+      "number": 30,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pnma": {
+      "number": 62,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pnmb": {
+      "number": 62,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pnn2": {
+      "number": 34,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mm2",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "Pnnn": {
+      "number": 48,
+      "crystal_system": "orthorhombic",
+      "crystal_system_zh": "正交",
+      "point_group": "mmm",
+      "laue_group": "mmm",
+      "bravais": "oP"
+    },
+    "R-3": {
+      "number": 148,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    },
+    "R-3c": {
+      "number": 167,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    },
+    "R-3m": {
+      "number": 166,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "-3m",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    },
+    "R3": {
+      "number": 146,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "3",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    },
+    "R3c": {
+      "number": 161,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "3m",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    },
+    "R3m": {
+      "number": 160,
+      "crystal_system": "trigonal",
+      "crystal_system_zh": "三方",
+      "point_group": "3m",
+      "laue_group": "-3m",
+      "bravais": "hR"
+    }
+  }
+}
