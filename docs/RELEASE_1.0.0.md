@@ -21,6 +21,25 @@ sha256sum dist/XinRefinement/XinRefinement.exe \
           dist/installer/XinRefinement-1.0.0-setup.exe
 ```
 
+## 1.5 源码模式预检（可选，先跑这一步可快速排除环境问题）
+
+`run_dev.bat` 不打包、不冻结，直接用工作树源码运行，用于区分「代码问题」与「打包问题」：
+
+```bat
+run_dev.bat                                    :: 启动 GUI（标题应含 v1.0.0）
+run_dev.bat --version                          :: 应输出 XinRefinement 1.0.0
+run_dev.bat refine tests\data\virtual_b\v50_wide.xy ^
+    xinrefinement\data\anatase.cif xinrefinement\data\rutile.cif ^
+    --peak-height -o out.json                  :: Rwp 应为 3.409617
+run_dev.bat refine <谱图> <物相.cif...> --recipe --report out_dir --esd
+```
+
+解释器按以下顺序自动选取（首个命中即用）：`%XINREFINEMENT_DEV_PYTHON%` →
+`.venv\Scripts\python.exe` → `venv\Scripts\python.exe` → `D:\Project\XRD\python310\python.exe` → PATH 上的 `python`。
+换解释器只需设环境变量：`set XINREFINEMENT_DEV_PYTHON=D:\path\to\python.exe`。
+
+若源码模式通过而 exe 失败 → 问题在打包（缺 hiddenimport / 数据文件）；两者都失败 → 问题在代码或数据。
+
 ## 2. 五轮稳健性验收（建议顺序）
 
 | 轮 | 动作 | 通过标准 |
