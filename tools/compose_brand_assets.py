@@ -45,11 +45,12 @@ FONT_REG = FONT_DIR / "segoeui.ttf"
 FONT_CJK = FONT_DIR / "msyh.ttc"
 
 #: 科技蓝加深系数（逐通道）。家族原渐变 #256DE7 → #0E3BA1，
-#: 前一版 #205CCB → #0C338E，本版再加深一档 #1C55C2 → #0B2E87；
+#: 经 #205CCB→#0C338E、#1C55C2→#0B2E87 两档后，本版再深一档至
+#: #0D285C → #051640，仅比 splash 主题色（#0A2350/#04102A）略浅；
 #: 白色图形通过软掩码保持不变。
-BLUE_DEEPEN = (0.76, 0.78, 0.84)
-BRAND_BLUE_TOP = "#1C55C2"
-BRAND_BLUE_BOTTOM = "#0B2E87"
+BLUE_DEEPEN = (0.36, 0.37, 0.40)
+BRAND_BLUE_TOP = "#0D285C"
+BRAND_BLUE_BOTTOM = "#051640"
 SPLASH_CENTER = "#0A2350"
 SPLASH_EDGE = "#04102A"
 
