@@ -1,0 +1,73 @@
+{
+  "phases": [
+    {
+      "cif": "xinrefinement/data/anatase.cif",
+      "weight_pct": 0.1,
+      "formula": "O2 Ti",
+      "po_hkl": null,
+      "po_r": 1.0
+    },
+    {
+      "cif": "xinrefinement/data/rutile.cif",
+      "weight_pct": 99.9,
+      "formula": "O2 Ti",
+      "po_hkl": null,
+      "po_r": 1.0
+    }
+  ],
+  "tmin": 5.0,
+  "tmax": 90.0,
+  "step": 0.02,
+  "zero": 0.03,
+  "disp": 0.0,
+  "U": 0.02,
+  "V": 0.0,
+  "W": 0.02,
+  "eta": 0.5,
+  "X": 0.0,
+  "Y": 0.0,
+  "asym": 0.0,
+  "bfactor": 0.0,
+  "anode": "Cu",
+  "ka_ratio": 0.5,
+  "wavelength": 1.5406,
+  "integrated": false,
+  "bg_mode": "cheb",
+  "bg_coeffs": [
+    300.0,
+    1.0,
+    0.0
+  ],
+  "noise": "poisson",
+  "noise_strength": 1.0,
+  "target_peak": 50000.0,
+  "seed": 20260711,
+  "name": "v",
+  "n_points": 4250,
+  "gain": 0.3151274272074827,
+  "rwp_noise_theory": 3.646718352760616,
+  "rwp_noise_definition": "Rexp with P=0; 100*sqrt(N/sum(w*y^2)), w=1/max(y,1)",
+  "phases_detail": [
+    {
+      "name": "phase0",
+      "cif": "xinrefinement/data/anatase.cif",
+      "weight_pct_true": 0.1,
+      "Z": 4,
+      "M": 79.865,
+      "V": 136.37993151,
+      "scale": 7.210950584773194e-05,
+      "po_r": 1.0
+    },
+    {
+      "name": "phase1",
+      "cif": "xinrefinement/data/rutile.cif",
+      "weight_pct_true": 99.9,
+      "Z": 2,
+      "M": 79.865,
+      "V": 62.366540904216,
+      "scale": 0.315055317701635,
+      "po_r": 1.0
+    }
+  ],
+  "file": "v0.1.xy"
+}

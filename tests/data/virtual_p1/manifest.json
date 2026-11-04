@@ -1,0 +1,63 @@
+{
+  "generator": "tools/gen_virtual.py",
+  "n": 8,
+  "note": "P1-PRE 参数化虚拟样；真值见 *_truth.json",
+  "samples": [
+    {
+      "stem": "v0.1",
+      "file": "v0.1.xy",
+      "truth": "v0.1_truth.json",
+      "weight_pct_true": 0.1,
+      "seed": 20260711
+    },
+    {
+      "stem": "v1",
+      "file": "v1.xy",
+      "truth": "v1_truth.json",
+      "weight_pct_true": 1.0,
+      "seed": 20260801
+    },
+    {
+      "stem": "v5",
+      "file": "v5.xy",
+      "truth": "v5_truth.json",
+      "weight_pct_true": 5.0,
+      "seed": 20261201
+    },
+    {
+      "stem": "v25",
+      "file": "v25.xy",
+      "truth": "v25_truth.json",
+      "weight_pct_true": 25.0,
+      "seed": 20263201
+    },
+    {
+      "stem": "v50",
+      "file": "v50.xy",
+      "truth": "v50_truth.json",
+      "weight_pct_true": 50.0,
+      "seed": 20265701
+    },
+    {
+      "stem": "v75",
+      "file": "v75.xy",
+      "truth": "v75_truth.json",
+      "weight_pct_true": 75.0,
+      "seed": 20268201
+    },
+    {
+      "stem": "v95",
+      "file": "v95.xy",
+      "truth": "v95_truth.json",
+      "weight_pct_true": 95.0,
+      "seed": 20270201
+    },
+    {
+      "stem": "v99",
+      "file": "v99.xy",
+      "truth": "v99_truth.json",
+      "weight_pct_true": 99.0,
+      "seed": 20270601
+    }
+  ]
+}

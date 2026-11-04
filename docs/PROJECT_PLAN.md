@@ -102,7 +102,7 @@ xinrefinement/
 └── data/                      # 内置资源
 ```
 
-> 注：P0 落地时 core 为**扁平结构**（`core/patterns.py`、`core/symmetry.py` 在 core 根），`io/symmetry/structure/params` 子包在 P1 阶段逐步建立并迁移（见 `TASKS.md` P0.2 映射表标注）。
+> **落地约定（2026-11-04 实测修正）**：P0 落地时 core 为**扁平结构**（`core/patterns.py`、`core/symmetry.py` 在 core 根）。因 `core/symmetry.py` 是单文件模块（被 16 项测试依赖），同目录不能并存 `symmetry/` 包，故 P1.1 的 symop 生成以扁平 `core/symops.py` 落地、P1.0b 以新建 `core/params/` 子包落地；`io/`、`structure/` 的迁移统一推迟到 P1.0c，避免来回搬文件。上图为**目标分层**，当前实际目录以 `TASKS.md` §2 落地注记为准。
 
 分层纪律（沿用 XinMatch `docs/CONVENTIONS.md`）：core 不读写文件、绝对导入、类型注解、mypy 通过、numpy.float64、pytest+hypothesis、`logging`、**无 GPL 依赖**（双许可兼容）。
 
@@ -244,7 +244,7 @@ Parameter {
 | 步 | 内容 | 验收 |
 |---|---|---|
 | P1-PRE | **虚拟样合成器 `tools/gen_virtual.py`**：参数化合成已知真值谱（任意晶系/多相/零点/样品位移/背景含弯/PO/尺寸应变/含量/噪声/λ），seed 可复现，冻结 golden 真值 JSON | 合成谱可被引擎读入并回读 seed 真值；为 P1/P2 验收提供地基 |
-| P1.0a | 在 M0.1 基础上补齐 `solve(inputs)->RefineResult` 契约与单测（包一层，**不重构** `_pack/_unpack`，补 NCA 未迁 `solve.py` 职责） | TiO₂ 虚拟样 round-trip 串通；RefineResult 契约稳定 |
+| P1.0a | 在 M0.1 基础上补齐 `solve(inputs)->SolveResult` 契约与单测（包一层，**不重构** `_pack/_unpack`，补 NCA 未迁 `solve.py` 职责）；命名统一为 `SolveResult`，避免与引擎层 `nonlinear.RefineResult` 重名 | TiO₂ 虚拟样 round-trip 串通；`SolveResult` 契约稳定 |
 | P1.0b | `ParameterRegistry` 双轨落地（registry 生成 pack 顺序，与旧 `_pack` 并存逐位对比） | registry 单测（注册/开关/边界/pack-unpack）全绿；与旧 `_pack` 逐位一致 |
 | P1.0c | 全面替换硬编码 `_pack/_unpack` + 删除旧路径 | 旧路径 grep 无残留；round-trip 数值不回归 |
 | P1.1 | spglib 集成：由空间群编号/H-M 符号生成 symop + 非对称单元展开 + Wyckoff 位识别；保留家族显式 symop 路径 | 全 230 群 symop 数 sanity check + 手验 golden 多重度子集（少量 ICSD 结构人工核对），不引入 pymatgen/GSAS-II 重依赖 |
@@ -258,7 +258,7 @@ Parameter {
 | 步 | 内容 | 验收 |
 |---|---|---|
 | P2.1 | 零点 + 样品位移精修（S·cosθ） | 位移虚拟样回收 < 0.005° |
-| P2.2 | 背景：Chebyshev/tent/**手动插值点** 三模式 | 含弯背景虚拟样 Rwp ≤ 噪声理论 Rwp + 0.5pp |
+| P2.2 | 背景：Chebyshev/tent/**手动插值点** 三模式 | 含弯背景虚拟样 `Rwp ≤ Rexp×1.10` 且 `χ² ≤ 1.21`（口径见 §8.5；**不得**用"噪声理论 Rwp"这类未定义量） |
 | P2.3 | 峰形：Caglioti + TCH 尺寸/应变 + η + asym + Kα2 全开关 | NCM811 实样 Rwp 不劣于 NCA 基线 |
 | P2.4 | 择优取向 March-Dollase（多相独立） | PO 虚拟样 r 回收 |
 | P2.5 | 标度 + QPA（Hill-Howard 定量） | 多相虚拟样含量回收 < 0.5pp |
@@ -266,7 +266,7 @@ Parameter {
 | P2.7 | 仪器/辐射参数：波长 λ、Kα1/Kα2 比（Cu/Mo/Co、同步辐射任意 λ；v1 仅 X 射线 + 非偏振 LP，单色器偏振归 v2） | 换 λ 虚拟样峰位正确迁移 |
 | P2.8 | Le Bail 模式：无结构强度提取 + 多相定量 | 与对应 Rietveld 强度/含量一致 |
 | P2.9 | 精修结果写回 CIF（晶胞/坐标/B/occ） | 写回后 CIF 可用 spglib 重新解析且结构一致 |
-| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | 无人工初值时一键精修可收敛到阈值内 |
+| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | 无人工初值时一键精修：`Rwp ≤ Rexp + 1pp` 且所有精修参数不触边界、无 `Restarted=true`（阈值明确定义） |
 | P2.11 | 真实数据锚点：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 实样在 `xinrefinement.core` 上跑通 | Rwp/含量与家族基线登记一致 |
 
 ### 阶段 P3 · 导航式精修 + GUI
@@ -301,8 +301,14 @@ Parameter {
 2. **虚拟样（round-trip）**：`tools/gen_virtual.py`（seed 可复现）合成已知结构谱 → 精修回收真值。
 3. **真实锚点**：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 家族实样。
 4. **交叉验证**：GSAS-II / FullProf / MAUD / Profex 同谱对照；**只比结构量**（晶胞、含量、占位、R_Bragg），Rwp 因背景/峰形/权重实现不同仅登记不硬比；统一同数据、同初始结构、同背景点数。
-5. **判定档位**（沿用 RutAna verdict）：Rwp <10% 很好 / 10–15% 良好 / 15–20% 尚可 / >20% 不佳；虚拟样另设「Rwp ≤ 噪声理论 Rwp + 0.5pp」的严格档。
-6. **性能基准**：大谱（≥10^4 点）× 多相（5+）× 多参数（100+）的耗时/内存登记，纳入「高效性」验收。
+5. **判定档位**（沿用 RutAna verdict）：Rwp <10% 很好 / 10–15% 良好 / 15–20% 尚可 / >20% 不佳。
+   **虚拟样严格档（口径定义，替换原"噪声理论 Rwp"这一未定义量）**：泊松计数噪声下
+   `Rexp = 100·√((N−P)/Σ w·y_o²)` 即理论最小 Rwp（完美模型 χ²=1）。验收统一用
+   **`Rwp ≤ 1.10·Rexp` 且 `χ² ≤ 1.21`**（`χ²=(Rwp/Rexp)²`）；`rwp_noise_theory`
+   由 `tools/gen_virtual.py` 冻结进 `*_truth.json`（P=0 上界估计）供对照。
+6. **性能基准（量化门槛）**：大谱 `10⁴ 点 × 5 相 × 100 参数`，单次精修
+   **≤ 30 s、峰值内存 ≤ 1.5 GB**（家族 venv / 本机基准机）；另登记 `10³ 点 × 2 相`
+   常规谱 **≤ 3 s**。超出门槛须给出 profile 报告并在 P4 优化，不静默放过。
 7. **数值稳健性**：病态矩阵/发散保护/多起点重启在新参数（晶胞/坐标/B/PO）上的边界回归（hypothesis）。
 8. **草图逐条核对**：P3 GUI 交付时，截图对照 `pre-temp/0.jpg` 逐条打钩（按钮+齿轮/背景曲线/多物相晶胞/导航式），避免 UI 与草图构想脱节。
 9. **残差统计**：结果区输出 Durbin-Watson（DW）统计量；权重方案可选（默认 1/σ² Poisson，可切 1/y）。

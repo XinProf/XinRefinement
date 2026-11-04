@@ -42,7 +42,10 @@ def test_solve_virtual_b_two_phase_roundtrip():
     inp = _two_phase_inputs()
     res = solve(inp)
     assert res.success
-    assert res.rwp < 5.0
+    # golden 锁定：M0.3 声称逐位一致 3.4096%，此处用窄容差断言，
+    # 防止引擎/CLI 改动悄悄放宽拟合质量（plan §8 golden 回归要求）。
+    assert res.rwp == pytest.approx(3.409617, abs=0.01), (
+        f"v50 双相 Rwp 偏离 golden: {res.rwp:.6f}")
     assert res.ycalc.shape == inp.pattern.intensity.shape
     assert len(res.phases) == 2
     # QPA 用 CIF 自带化学式（内置 rutile CIF 为 O2 Ti0.992），与 bench 显式

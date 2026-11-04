@@ -9,7 +9,7 @@
 |---|---|---|---|
 | P0 | 基线冻结（先立基线） | P0.1–P0.3 | ✅ 完成（2026-11-04） |
 | M0 | 垂直切片 MVP | M0.1–M0.3 | ✅ 完成（2026-11-04） |
-| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | ⬜ 待实施 |
+| P1 | 通用化引擎（结构精修） | P1-PRE、P1.0a/b/c、P1.1–P1.5 | 🟡 进行中：P1-PRE / P1.0b / P1.1 已完成；P1.0c 与 P1.2–P1.5 待实施 |
 | P2 | 精修参数模块（谱图精修） | P2.1–P2.11 | ⬜ 待实施 |
 | P3 | 导航式精修 + GUI | P3.1–P3.7 | ⬜ 待实施 |
 | P4 | 报告 + 验收 + 发布 | P4.1–P4.6 | ⬜ 待实施 |
@@ -87,7 +87,7 @@ D:/Project/XinRefinement/
 | `nca/core/refine/occ.py` | `core/refine/occ.py` | 占位精修 |
 | `nca/core/refine/plan.py` | `core/refine/plan.py` | 段配置翻译 |
 | `nca/core/refine/valley.py` | `core/refine/valley.py` | 谷扫描（P1 用） |
-| `lfp/core/symmetry.py` | `core/symmetry.py` | 230 空间群元数据（**实际采用 NCA 版**，依赖 `data/spacegroups.json`） |
+| `nca/core/symmetry.py` + `nca/data/spacegroups.json` | `core/symmetry.py` + `data/spacegroups.json` | 230 空间群元数据（**NCA 版**，非 LFP 版；LFP 版为独立全表留作 P1 兜底评估） |
 
 **关键规则**
 - 命名空间替换：`from nca.core...` / `from rutana.core...` / `from lfp.core...` → `from xinrefinement.core...`；相对 import 同步改。
@@ -135,17 +135,19 @@ D:/Project/XinRefinement/
 
 | 卡 | 内容 | 验收 |
 |---|---|---|
-| P1-PRE | 虚拟样合成器 `tools/gen_virtual.py`：参数化合成已知真值谱（任意晶系/多相/零点/样品位移/背景含弯/PO/尺寸应变/含量/噪声/λ），seed 可复现，冻结 golden 真值 JSON | 合成谱可被引擎读入并回读 seed 真值；为 P1/P2 验收提供地基 |
-| P1.0a | 在 M0.1 基础上补齐 `refine.solve(inputs)->RefineResult` 契约与单测（包一层，**不重构** `_pack/_unpack`，补 NCA 未迁 `solve.py` 职责） | TiO₂ 虚拟样 round-trip 串通；RefineResult 契约稳定 |
-| P1.0b | `params/registry.py::ParameterRegistry`（key/owner/histogram/bounds/refine/group/esd）双轨落地：registry 生成 pack 顺序，与旧 `_pack` 并存逐位对比 | registry 单测（注册/开关/边界/pack-unpack）全绿；与旧 `_pack` 逐位一致 |
+| P1-PRE | 虚拟样合成器 `tools/gen_virtual.py`：参数化合成已知真值谱（任意晶系/多相/零点/样品位移/背景含弯/PO/尺寸应变/含量/噪声/λ），seed 可复现，冻结 golden 真值 JSON | ✅ 完成：自包含（不跨仓 SynthPattern）、8 配比数据集 `tests/data/virtual_p1/`、seed 复现 + QPA 回收 <0.5pp + 5 个参数旋钮可注入（`tests/test_gen_virtual.py` 7 项） |
+| P1.0a | 在 M0.1 基础上补齐 `refine.solve(inputs)->SolveResult` 契约与单测（包一层，**不重构** `_pack/_unpack`，补 NCA 未迁 `solve.py` 职责）；命名以 `SolveResult` 为准，避免与引擎层 `nonlinear.RefineResult` 重名 | TiO₂ 虚拟样 round-trip 串通；`SolveResult` 契约稳定 |
+| P1.0b | `core/params/registry.py::ParameterRegistry`（key/owner/histogram/bounds/refine/group/esd）双轨落地：registry 生成 pack 顺序，与旧 `_pack` 并存逐位对比 | ✅ 完成：17 组开关组合下 pack/unpack/bounds 与旧路径**逐位一致**（`tests/test_registry.py`） |
 | P1.0c | 全面替换硬编码 `_pack/_unpack` + 删除旧路径 | 旧路径 grep 无残留；round-trip 数值不回归 |
-| P1.1 | spglib 集成：空间群编号/H-M → symop + 非对称单元展开 + Wyckoff 位识别；**处理设置/原点选择**（CIF 显式 symop 优先；无则匹配 spglib hall_number 或把坐标变换到标准设置） | 全 230 群 symop 数 sanity check + 同群不同设置（Pnma/Pbnm、R-3m 六方/菱方）展开一致 + 手验 golden 多重度子集 |
+| P1.1 | spglib 集成：空间群编号/H-M → symop + 非对称单元展开 + Wyckoff 位识别；**处理设置/原点选择**（CIF 显式 symop 优先；无则匹配 spglib hall_number 或把坐标变换到标准设置） | ✅ 完成：`core/symops.py`（扁平命名，避开既有 `core/symmetry.py`）；全 230 群 symop sanity + R-3m H/R 设置区分 + family symop 等价 + Wyckoff 零空间自由维度（`tests/test_symops.py` 8 项） |
 | P1.2 | 全晶胞精修 a,b,c,α,β,γ（按晶系约束：立方 1/四方 2/正交 3/单斜 4/三斜 6） | 虚拟样晶胞回收 < 0.1% |
 | P1.3 | 原子坐标精修（Wyckoff 位约束）：用 site symmetry 旋转矩阵 (R−I) 的零空间求每个位点的**自由坐标维度**，只对自由分量建变量、联动分量用约束表达 | 坐标回收 < 1e-3；特殊位（4a/4c/8d…）自由坐标数与 International Tables 一致 |
 | P1.4 | 各向同性 B + 占位精修 | 与 seed 真值比对：B ±0.2 Å²、occ ±0.02 内（不依赖 e.s.d.） |
 | P1.5 | 参数 e.s.d.（雅可比协方差 + **Schur 补纳入变量投影消去的 scale/背景线性参数**） | e.s.d. 与数值 Hessian 交叉验证误差 < 5%；scale/含量 e.s.d. 非空且量级合理 |
 
-> 关键方法（实施时细化签名）：`symmetry/ops.py::symops_from_spg()`、`structure/expand.py::expand_unit_cell()`、`params/registry.py::ParameterRegistry`、`refine/cell.py::cell_scale_from_system()`。
+> **P1 目录落地约定（实测修正）**：`core/symmetry.py` 是 P0 的**单文件模块**（16 项测试依赖），同目录不能并存 `symmetry/` 包。故 P1.1 以扁平 `core/symops.py` 落地，P1.0b 以新建 `core/params/` 子包落地；`core/io/`、`core/structure/` 的迁移推迟到 P1.0c 统一整理，避免来回搬文件。
+> 已落地关键方法：`core/symops.py::symops_from_spg/hall_candidates/match_setting/expand_unit_cell/free_coordinate_dims/free_coordinate_basis`、`core/params/registry.py::ParameterRegistry`、`tools/gen_virtual.py::synthesize/write_dataset`。
+> 待落地：`refine/cell.py::cell_scale_from_system()`（P1.2）、全晶胞/坐标/B/occ 变量接入 registry（P1.2–P1.4）。
 
 ---
 
@@ -154,7 +156,7 @@ D:/Project/XinRefinement/
 | 卡 | 内容 | 验收 |
 |---|---|---|
 | P2.1 | 零点 + 样品位移（S·cosθ，**默认 Bragg-Brentano 平板几何**；毛细管/透射几何归 v2） | 位移虚拟样回收 < 0.005° |
-| P2.2 | 背景三模式：Chebyshev / tent / 手动插值点 | 弯背景虚拟样 Rwp ≤ 噪声理论 Rwp + 0.5pp |
+| P2.2 | 背景三模式：Chebyshev / tent / 手动插值点 | 弯背景虚拟样 `Rwp ≤ Rexp×1.10` 且 `χ² ≤ 1.21`（Rexp 定义见 plan §8.5） |
 | P2.3 | 峰形全开关：Caglioti + TCH 尺寸/应变 + η + asym + Kα2 | NCM811 Rwp 不劣于 NCA 基线 |
 | P2.4 | March-Dollase 择优取向（多相独立） | PO 虚拟样 r 回收 |
 | P2.5 | 标度 + QPA（Hill-Howard） | 多相含量回收 < 0.5pp |
@@ -162,7 +164,7 @@ D:/Project/XinRefinement/
 | P2.7 | 仪器/辐射参数：波长 λ、Kα1/Kα2 比（Cu/Mo/Co、同步辐射任意 λ；v1 仅 X 射线 + 非偏振 LP，单色器偏振归 v2） | 换 λ 虚拟样峰位正确迁移 |
 | P2.8 | Le Bail 模式：无结构强度提取 + 多相定量 | 与对应 Rietveld 强度/含量一致 |
 | P2.9 | 精修结果写回 CIF（晶胞/坐标/B/occ） | 写回后可用 spglib 重新解析且结构一致 |
-| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | 无人工初值时一键精修可收敛到阈值内 |
+| P2.10 | 自动初值估算器：导入谱图+CIF 后自动估 scale/零点/背景/展宽初值 | 无人工初值一键精修 `Rwp ≤ Rexp+1pp` 且参数不触界、无 `Restarted=true` |
 | P2.11 | 真实数据锚点：TiO₂（RutAna）、NCM811（NCA）、LFP、NCA 实样在 `xinrefinement.core` 上跑通 | Rwp/含量与家族基线登记一致 |
 
 ---
