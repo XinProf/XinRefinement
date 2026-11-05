@@ -9,7 +9,8 @@
 | 文件 | 用途 |
 |---|---|
 | `XinRefinement-1.1.0-setup.exe` | 正式版安装包（含注册机制，zh/en/ja 三语安装界面） |
-| `XinRefinement-internal-1.1.0-portable.zip` | 内部评估版便携包（免安装、免注册，状态栏红字标识） |
+
+> 内部评估版便携包仅用于内部验收，不随本 Release 发布。
 
 ## 主要能力
 
