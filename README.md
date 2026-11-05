@@ -12,8 +12,9 @@ Qt6 图形界面 + 命令行 + Python 库 API 三入口，覆盖「导入谱图 
 与家族项目 XinMatch 分工：XinMatch 做峰形处理与物相分析，XinRefinement 只做全谱拟合（结构精修、谱图精修、定量）。
 
 当前版本：**v1.3.0**（开发中，未发布）· 上一版：v1.2.0
-v1.3.0 主题：MAUD 借鉴余项——μ·r 计算器（按化学成分自动算 Brindley 输入）、
-theoreticalWeights 定权、画布点选背景锚点；EWIMV 织构规格先行（评审中），
+v1.3.0 主题：MAUD 借鉴清单全部落地——μ·r 计算器（按化学成分自动算 Brindley
+输入）、theoreticalWeights 定权、画布点选背景锚点、EWIMV 离散 ODF 织构、
+Popa LB 各向异性尺寸/应变、优化器插拔（lm/trf/dogbox），
 详见 [CHANGELOG](CHANGELOG.md)。
 v1.2.0 主题：实样对拍驱动的精修质量升级（配方晶胞真精修、积分强度口径、
 出厂默认 tent 自适应背景、定权模式、Brindley 微吸收、插值/手动背景），

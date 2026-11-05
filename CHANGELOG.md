@@ -2,8 +2,9 @@
 
 ## v1.3.0（开发中）
 
-主题：MAUD 源码复核借鉴清单余项 + 一项重要设计评审结论（μ·r 精修证伪，
-改为计算器）。测试 324 项收集 / 320 通过 / 4 skip。
+主题：MAUD 源码复核借鉴清单**全部落地**（μ·r 计算器、theoreticalWeights、
+画布点选背景、EWIMV 织构、Popa LB 各向异性、优化器插拔）+ 一项重要设计
+评审结论（μ·r 精修证伪，改为计算器）。测试 350 项收集 / 346 通过 / 4 skip。
 
 ### 设计评审（重要）
 
@@ -33,10 +34,68 @@
   d 轴模式自动换算（存 2θ）；锚点回写 settings.bg 并自动切 manual 模式，
   经既有 `bg_points` 引擎路径下次精修生效；工程保存/恢复闭环；zh/en/ja
 
+### EWIMV 离散 ODF 织构（任务 #14）
+
+规格见 [`docs/规格-EWIMV织构-v1.md`](docs/规格-EWIMV织构-v1.md)（已实现）。
+
+- **模型**：Bragg–Brentano 平板对称反射几何下散射矢量恒沿样品法向，织构
+  因子退化为**每反射常数** `T(χ_hkl)`——χ 为晶面法向与织构轴夹角（0–90°，
+  用倒易基矢算，非正交晶系正确）。每相 19 点网格（5° 步长）线性插值
+- **正则化**：二阶差分光滑罚 `√λ·(T[k−1]−2T[k]+T[k+1])`（λ 默认 1.0，
+  CLI/GUI 可调）+ **末端节点锚定 1.0**（权重 100）。锚定不只是物理论断
+  （远场回归无织构），它还**消除「T 整体乘常数 ↔ 该相 scale 除常数」这条
+  零空间**——没有它 T 的水平不可辨识，LM 会沿平盘漂移
+- **护栏**：相内独立 χ 桶数（5° 分桶）< 3 直接 `ValueError`（欠定不给结果）；
+  开织构的相忽略 March–Dollase r 并告警（同一自由度不给两套模型）
+- **落点**：`ProfileParams.texture` / `compute_peaks(with_dirs=)` 的峰方向 /
+  `RefineConfig.refine_texture`+`texture_lambda` / registry `texture` 组
+  （19 槽/相）/ GUI 物相编辑「织构 (EWIMV)」/ CLI `--texture 相名=h,k,l`
+- **实测**（合成谱，anatase (001) 方向 T=3）：无织构模型 17.91% → 开织构
+  0.002%，T(0) 精确回收 3.000，末端 1.000
+
+### Popa LB 各向异性尺寸/应变（任务 #15）
+
+- **模型**：2 阶球谐截断 + **Cholesky 参数化**（`L` 行优先下三角 6 参）：
+
+  `1/D² = |L_sᵀn|²`、`ε² = |L_εᵀn|²` → `Y = (180/π)·Kλ/√(1/D²)`、
+  `X = (180/π)·4ε`（与标量 TCH 同单位同语义，逐位可退化验证）
+
+  用 Cholesky 而非直接二次型系数，是因为 `|Lᵀn|` 对参数**处处可导**，
+  直接二次型在 q=0 处 `sqrt` 导数发散、LM 数值差分会被放大
+- **可辨识性护栏**（本任务的硬要求）：`aniso_mode` 默认 `"size"`（6 参）；
+  窗口内独立晶向 < 8 直接报错；`"both"`（12 参）给出「size 与 strain 会
+  互相吸收」告警。实测印证：纯尺寸合成数据 + both 模式 → Rwp 0.14% 但
+  L 矩阵乱、比值 52 而非 3.3；只放 size → 参数与比值都正确
+- **落点**：`ProfileParams.aniso` / registry `aniso` 槽（6 或 12/相，
+  对角/非对角分别给界）/ GUI「各向异性尺寸/应变 (Popa LB)」/ CLI `--aniso`
+- **实测**（合成 D_a=200 Å、D_c=60 Å）：各向同性 30.80% → 各向异性 0.06%，
+  `size` 对角回收 4.999e-3 / 1.664e-2（真值 5.000e-3 / 1.667e-2），
+  Dmax/Dmin 3.346（真值 3.333）
+
+### 优化器插拔（任务 #16）
+
+- 新增 `core/refine/optimizers.py`：`OPTIMIZERS = {lm, trf, dogbox}` +
+  别名 `scipy = trf`，统一入口 `minimize()`；cost 一律 `0.5·||r||²`
+  （重启比较才能直接比）；未知方法**报错并列出可用项**，不静默回退；
+  scipy 缺失时自动回退自研 LM（历史行为）
+- `nonlinear.refine` 与 `cell.refine_cell_full` 均改走注册表；CLI
+  `--backend lm|trf|dogbox|scipy`；新增优化器只需写一个 `_run_xxx` 登记
+- 三方法在同一良态问题上收敛到同一解（cost 到 1e-4 相对一致），边界投影
+  一致；端到端 trf/dogbox 与 lm 的 Rwp 同盆收敛
+
+### 修复
+
+- **重启起点丢扩展字段**（`nonlinear._restart_points`）：此前手工重建
+  `ProfileParams`，把 X/Y、microabs、texture、aniso 静默清零——重启后
+  registry.pack 直接崩溃（v1.3 各向异性实测暴露）。改为 `dataclasses.replace`
+  只改 U/V/W，其余字段全部保留
+- **解除 `registry` ↔ `nonlinear` 模块级循环导入**：registry 改为用到时
+  局部导入 nonlinear，使「谁先被 import」都不影响可导入性
+
 ### 文档
 
-- `docs/规格-EWIMV织构-v1.md`：EWIMV 离散 ODF 织构规格（任务 #14 先规格
-  后实现，评审中）——纤维 1D ODF + 光滑罚正则化 + 六条验收标准
+- `docs/规格-EWIMV织构-v1.md`：EWIMV 离散 ODF 织构规格 + 实现落地记录
+  （纤维 1D ODF + 光滑罚 + 六条验收 A1–A6 及实测值）
 
 ## v1.2.0（未发布）
 
