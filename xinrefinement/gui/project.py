@@ -25,9 +25,25 @@ _ZIP_MAGIC = b"PK"
 
 _PATTERN_MEMBER = "pattern/pattern.csv"
 _CIF_DIR = "cifs"
+_RESULT_MEMBER = "result/refine.json"
 
 #: zip 容器解压内容上限（防 zip 炸弹）。
 _MAX_TOTAL_BYTES = 512 * 1024 * 1024
+
+
+def _jsonable(obj):
+    """把 numpy 标量/数组转成 JSON 可序列化对象（``result_full`` 用）。"""
+    import numpy as np
+
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    raise TypeError(f"无法序列化为 JSON: {type(obj).__name__}")
 
 
 def _rel(path, base: Path) -> str:
@@ -91,6 +107,7 @@ def _load_json_v1(p: Path) -> dict:
         "settings": data.get("settings", {}),
         "phase_edits": data.get("phase_edits", {}),
         "result": data.get("result"),
+        "result_full": None,
         "navigation": data.get("navigation", {}),
         "missing": missing,
         "project_path": str(p.resolve()),
@@ -129,6 +146,7 @@ def _save_zip(state: dict, out: Path) -> Path:
         cif_members.append({"name": src.stem, "member": member,
                             "source_path": str(src.resolve())})
     pattern_rel = _rel(state["pattern"], base) if state.get("pattern") else None
+    result_full = state.get("result_full")
     manifest = {
         "format": FORMAT,
         "format_version": 2,
@@ -137,6 +155,7 @@ def _save_zip(state: dict, out: Path) -> Path:
         "settings": state.get("settings", {}),
         "phase_edits": state.get("phase_edits", {}),
         "result": state.get("result"),
+        "result_full": _RESULT_MEMBER if result_full else None,
         "navigation": state.get("navigation", {}),
         "pattern": {"member": _PATTERN_MEMBER,
                     "source_path": pattern_rel or ""},
@@ -149,8 +168,11 @@ def _save_zip(state: dict, out: Path) -> Path:
                         _pattern_csv_text(state["pattern"]))
         for cm in cif_members:
             zf.write(cm["source_path"], cm["member"])
+        if result_full:
+            zf.writestr(_RESULT_MEMBER, json.dumps(
+                result_full, ensure_ascii=False, indent=2, default=_jsonable))
         zf.writestr("manifest.json", json.dumps(
-            manifest, ensure_ascii=False, indent=2))
+            manifest, ensure_ascii=False, indent=2, default=_jsonable))
     return out
 
 
@@ -213,6 +235,13 @@ def _load_zip(p: Path) -> dict:
                     cif_paths.append(src)
                 else:
                     missing.append(str(src))
+        result_full = None
+        rm = manifest.get("result_full")
+        if rm and rm in zf.namelist():
+            try:
+                result_full = json.loads(zf.read(rm).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                result_full = None
     return {
         "language": manifest.get("language", "zh"),
         "pattern": pattern_path,
@@ -220,6 +249,7 @@ def _load_zip(p: Path) -> dict:
         "settings": manifest.get("settings", {}),
         "phase_edits": manifest.get("phase_edits", {}),
         "result": manifest.get("result"),
+        "result_full": result_full,
         "navigation": manifest.get("navigation", {}),
         "missing": missing,
         "project_path": str(p.resolve()),

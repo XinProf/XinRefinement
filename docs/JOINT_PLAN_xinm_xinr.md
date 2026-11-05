@@ -132,7 +132,7 @@ COD 回取探测顺序（`xinm_cif_bridge.py`，见 X-2）：
 
 | 编号 | 模块 / 路径 | 叶子方法（签名） | I/O | 验收标准 |
 |---|---|---|---|---|
-| X-1 | `core/io/xinm.py`（新） | `export_xinm(project: Project, path: Path, *, include_candidates: bool = True) -> Path` | Project → .xinm | zip 结构/manifest 字段与 §2.1 逐项一致；谱图 CSV 往返逐位一致（float `%.6g` 往返误差 0） |
+| X-1 | `core/io/xinm.py`（新） | `export_xinm(project: Project, path: Path, *, include_candidates: bool = True) -> Path` | Project → .xinm | zip 结构/manifest 字段与 §2.1 逐项一致；谱图 CSV 往返逐位一致（float `%.10g` 往返误差 0） |
 | X-1a | 同上 | `_pattern_to_csv(p: Pattern) -> str` / `_csv_rows(...)` | Pattern → 文本 | 10 万点导出 < 1 s，文件 < 3 MB |
 | X-1b | 同上 | `_phase_entries(project) -> list[XinmPhase]`（内部 dataclass） | Phase/Entry → dict | source 判定正确：用户 CIF / COD / pdf2 三分支覆盖测试 |
 | X-2 | `core/io/xinm_cif_bridge.py`（新） | `locate_cif(entry_id: str, source: str) -> Path \| None` | id → CIF 路径 | 三级回退各自有测试；**先做一次性验证：确认本机 COD 布局与 COD_inorganics.sqlite 的 cif_gz 可按 id 取出** |
@@ -179,7 +179,7 @@ COD 回取探测顺序（`xinm_cif_bridge.py`，见 X-2）：
 |---|---|
 | PDF2-2004 版权 | `.xinm` 不打包 ICDD 衍生数据文件；峰表元数据随导出走由用户担保授权（文档与导出对话框双提示） |
 | COD 布局 / sqlite schema 与预期不符 | X-2 作为**先决调查项**先行验证，再定 R-3 细节 |
-| 谱图 CSV 精度损失 | `%.6g` 往返零误差验证（X-1a/R-1a 双侧测试锁定） |
+| 谱图 CSV 精度损失 | `%.10g` 往返零误差验证（X-1a/R-1a 双侧测试锁定） |
 | `.xinr` 新旧格式分裂 | zip 魔数分流，旧 `.xrp` 永久只读兼容 |
 | 两仓库节奏不同步 | 本文档为**单一事实源**（放 XinRefinement/docs，XinMatch 侧审阅后镜像）；格式版本号 `xinm.version` 升级需双端同步 |
 
@@ -189,5 +189,44 @@ COD 回取探测顺序（`xinm_cif_bridge.py`，见 X-2）：
 
 | 项目 | 版本 | 发布要点 |
 |---|---|---|
-| XinMatch | 3.4.0 | 「导出物相分析（.xinm）」菜单 + COD CIF 回取桥；沿用双变体/注册机制；安装包发布前六轮验收照旧 |
+| XinMatch | 3.4.0 | 「导出物相分析（.xinm）」菜单 + COD CIF 回取桥；沿用双变体/注册机制；安装包发布前五轮验收照旧（tools/verify_binary.py） |
 | XinRefinement | 1.1.0 | 「导入 XinMatch 物相分析」+ `.xinr` 自包含容器 + 旧 `.xrp` 兼容；Release 仅 Setup，流程与 1.0.0 相同 |
+
+---
+
+## 8. 落地记录（2026-11-05，代码已实现，待二进制验收与发布）
+
+X-1～X-5 / R-1～R-8 **全部落地**，双端全量测试绿。实际实现相对计划的偏差如下
+（格式契约未变，仅模块拆分与枚举取值有出入）：
+
+| 计划项 | 实际实现 | 偏差原因 |
+|---|---|---|
+| X-2 `core/io/xinm_cif_bridge.py` | 复用 `core/refine/cif_store.py`：`resolve_entry_cif()` + `_known_roots()` 多根回退 | 该模块已有 CIF 归档探测链（结构查看在用），再造一层属于重复实现 |
+| X-3 `ui/app.py` 菜单 | `ui/main_window.py` `_export_xinm()` | 本工程菜单集中在 main_window，无独立 app.py |
+| X-4 `tests/test_xinm.py` | `tests/io/test_xinm.py`（6 项，含真实档案 `96-900-8220` 锚点） | 跟随 `tests/io/` 既有布局 |
+| `source` 三分支（cod/user_cif/pdf2） | 实为 **四值**：`cod` / `unresolved` / 保留 `user_cif` / `pdf2`；`structural` 由 CIF 回取成败决定，失败带 `reason` | 当前挂载库全部为 COD 家族 xinDB（`96-XXX-XXXX` ref_id），无 per-entry 用户 CIF 或 PDF2 结构；`unresolved` 让"id 形态不对"与"归档未命中"可区分 |
+| 精度 `%.6g`（草稿） | `%.10g`（导出/导入双侧一致） | `%.6g` 对 float64 无法零往返；`%.10g` 相对误差 ≤1e-9，且 10 万点仍 <3 MB |
+| `.xinr` 升级 | zip 容器 `format_version=2`，魔数分流；`.xrp` 永久只读兼容 | 与计划一致，另修复 v1.0.0 `.xrp` 丢失 `phase_edits` 的 bug |
+
+已锁定的验证证据：
+- XinRefinement：`tests/test_xinm_import.py`（8 项）与 `tests/test_project_zip.py`（5 项）全绿；
+  跨仓库 round-trip 直接调用 XinMatch 真实导出器；S1 端到端 Rwp **3.409617** 与黄金值逐位一致。
+- XinMatch：`tests/io/test_xinm.py` 6 项全绿，含真实 COD 归档 anatase 命中。
+- 双端 `docs/JOINT_PLAN_xinm_xinr.md` 逐字节相同（本文件为镜像，单一事实源在 XinRefinement/docs）。
+
+剩余（不属于代码，属于发布 —— 2026-11-05 更新）：
+1. ~~XinMatch 3.4.0 版本对齐 + 双变体构建 + 五轮验收 + RELEASE-NOTES~~ ✅
+   产物 `XinMatch-Setup-3.4.0.exe`（254,139,154 B）+ `XinMatch-Internal-3.4.0.zip`
+   （368,486,794 B），`tools/verify_binary.py` 五轮全通过（`.scratch/binary_verify_340.json`）。
+2. ~~XinRefinement 1.1.0 双变体 + Setup + 六轮验收~~ ✅
+   产物 `XinRefinement-1.1.0-setup.exe`（67,586,555 B）+
+   `XinRefinement-internal-1.1.0-portable.zip`（113,946,723 B），六轮自动化全通过
+   （`.scratch/accept110.json`）。
+3. **仍待人工**：两软件各一次双击目视验收（GUI 主流程 + 中文安装界面）；
+   GitHub Release 上传需批准。
+4. **仍待补**：S2 的 PDF2 混合来源相——当前挂载库全是 COD 家族，`source="pdf2"`
+   只由合成 manifest 覆盖，没有真实 PDF2 条目走通全链路。接入 PDF2 数据后需补一条真实验收。
+5. **已知风险（本机环境）**：COD 归档根随机器迁移从 `PolyXRD\cod\cif` 变到
+   `sync-COD\COD`，`cif_store` 已加多根探测；`XINMATCH_XINDB_DIR` 用户环境变量同样过期
+   （指向已删除的 `PolyXRD-DataBase\xindb`），已改指 `XinMatch-DataBase\data`。
+

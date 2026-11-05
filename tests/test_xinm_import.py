@@ -146,6 +146,100 @@ def test_read_xinm_bad_csv(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # 与 XinMatch 真实导出器的联调（XinMatch 可导入时执行）
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# S2 · 混合来源相（COD + 用户 CIF + PDF2）
+# --------------------------------------------------------------------------- #
+def _write_mixed(tmp_path: Path) -> Path:
+    """按 §2.1 契约构造三来源混合 .xinm（PDF2 相不带任何 CIF）。"""
+    m = _manifest()
+    m["phases"] = [
+        m["phases"][0],                                  # cod + cif
+        {"name": "userphase", "source": "user_cif",
+         "entry_id": "", "cif_file": "cifs/user_my.cif",
+         "structural": True, "reason": "", "fom": None,
+         "scale_factor": 1.0, "two_theta_shift": 0.0,
+         "weight_fraction": 0.3, "cell": None,
+         "space_group": None, "formula": "Fe2 O3", "mineral_name": None},
+        m["phases"][1],                                  # pdf2 无 CIF
+    ]
+    out = tmp_path / "mixed.xinm"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pattern/pattern.csv",
+                    "two_theta,intensity\n5,10\n6,20\n7,30\n")
+        zf.writestr("cifs/4001849.cif", "data_4001849\n_cell_length_a 3.785\n")
+        zf.writestr("cifs/user_my.cif", "data_user\n_cell_length_a 5.0\n")
+        zf.writestr("manifest.json", json.dumps(m, ensure_ascii=False))
+    return out
+
+
+def test_s2_mixed_sources_only_structural_packaged(tmp_path: Path) -> None:
+    """S2：COD / 用户 CIF 相参与精修；PDF2 相仅参照，包内无 ICDD 衍生文件。"""
+    p = _write_mixed(tmp_path)
+    payload = read_xinm(p)
+    assert {ph.name for ph in payload.structural_phases} == {
+        "anatase", "userphase"}
+    ref = payload.reference_only_phases
+    assert [ph.name for ph in ref] == ["pdf2card"]
+    assert ref[0].source == "pdf2" and ref[0].cif_member is None
+    # 版权边界：zip 内 CIF 成员恰为两个有结构相，PDF2 不产生任何文件
+    with zipfile.ZipFile(p) as zf:
+        members = [n for n in zf.namelist() if n.startswith("cifs/")]
+    assert sorted(members) == ["cifs/4001849.cif", "cifs/user_my.cif"]
+    mapping = extract_cifs(payload, tmp_path / "out")
+    assert set(mapping) == {"anatase", "userphase"}
+
+
+# --------------------------------------------------------------------------- #
+# S3 · 异常边界（缺 CIF / 损坏 / 版本过高）
+# --------------------------------------------------------------------------- #
+def test_s3_structural_phase_without_member_degrades(tmp_path: Path) -> None:
+    """manifest 声称有结构但包内缺 CIF → 降级「仅参照」并给出可读原因。"""
+    m = _manifest()
+    m["phases"][0]["cif_file"] = "cifs/absent.cif"   # 包里没有这个成员
+    p = tmp_path / "absent.xinm"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(m, ensure_ascii=False))
+        zf.writestr("pattern/pattern.csv", "two_theta,intensity\n5,10\n6,20\n")
+    payload = read_xinm(p)
+    assert payload.structural_phases == []
+    names = [ph.name for ph in payload.reference_only_phases]
+    assert names == ["anatase", "pdf2card"]
+    reason = payload.reference_only_phases[0].reason
+    assert "缺少" in reason and "absent.cif" in reason
+
+
+def test_s3_corrupt_zip_message_is_readable(tmp_path: Path) -> None:
+    """损坏 zip → 明确提示"不是有效的 .xinm"，不抛 BadZipFile 裸异常。"""
+    p = tmp_path / "broken.xinm"
+    p.write_bytes(b"PK\x03\x04truncated")
+    with pytest.raises(XinmImportError, match="不是有效的 .xinm"):
+        read_xinm(p)
+
+
+def test_s3_missing_pattern_member(tmp_path: Path) -> None:
+    """manifest 指向的谱图成员缺失 → 指出缺哪个文件。"""
+    m = _manifest()
+    m["pattern"]["file"] = "pattern/missing.csv"
+    p = tmp_path / "nopat.xinm"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(m, ensure_ascii=False))
+    with pytest.raises(XinmImportError, match="缺少谱图数据"):
+        read_xinm(p)
+
+
+# --------------------------------------------------------------------------- #
+# S4 · 家族注册：注册码互通、状态文件各自独立
+# --------------------------------------------------------------------------- #
+def test_s4_registration_state_files_are_separate() -> None:
+    from xinrefinement.registration import default_state_path
+
+    a = default_state_path("XinRefinement")
+    b = default_state_path("XinMatch")
+    assert a.name == "XinRefinement.json"
+    assert b.name == "XinMatch.json"
+    assert a != b and a.parent == b.parent   # 同目录、不同文件
+
+
 def test_roundtrip_with_real_xinmatch_exporter(tmp_path: Path) -> None:
     """构造最小 Project 走 XinMatch export_xinm → 本项目 read_xinm。"""
     try:

@@ -196,6 +196,11 @@ def read_xinm(
             member = ph.cif_member
             if member and member in names:
                 cif_bytes[member] = zf.read(member)
+            elif ph.structural:
+                # S3 边界：manifest 声称有结构，但包内没有该 CIF（导出侧写入
+                # 失败/被裁掉）→ 降级为「仅参照」，保留可读原因而不是静默丢弃
+                ph.structural = False
+                ph.reason = f"包内缺少该相的 CIF（{member or '未声明'}）"
 
         return XinmPayload(
             two_theta=tt, intensity=ii, meta=meta,

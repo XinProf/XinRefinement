@@ -465,3 +465,136 @@ def test_toolbar_buttons_have_colored_icons(win):
     sizes = {s.width() for s in icon.availableSizes()}
     assert {16, 20, 24, 32, 48} <= sizes
     assert toolbar_icon("unknown.key") is None
+
+
+# ---------------------------------------------------------------- v1.1 R-3 --
+def _build_xinm(tmp_path: Path, *, anatase_cell: dict | None = None) -> Path:
+    """按联合计划 §2.1 契约构造 .xinm（内嵌真实包内 CIF）。"""
+    import json
+    import zipfile
+
+    cell = anatase_cell or {"a": 3.785, "b": 3.785, "c": 9.5196,
+                            "alpha": 90.0, "beta": 90.0, "gamma": 90.0}
+    manifest = {
+        "format": "xinm", "version": 1,
+        "created": "2026-11-05T12:00:00",
+        "app": {"name": "XinMatch", "version": "3.4.0"},
+        "pattern": {"file": "pattern/pattern.csv",
+                    "source_path": "D:/data/demo.xy", "wavelength": 1.5406,
+                    "anode": "Cu", "tmin": 5.0, "tmax": 90.0, "step": 0.5,
+                    "metadata": {"sample": "demo"}},
+        "peaks": [],
+        "phases": [
+            {"name": "anatase", "source": "cod", "entry_id": "96-900-8211",
+             "cif_file": "cifs/anatase.cif", "structural": True, "reason": "",
+             "fom": None, "scale_factor": 1.0, "two_theta_shift": 0.0,
+             "weight_fraction": 0.5, "cell": cell,
+             "space_group": "I41/amd", "formula": "O2 Ti",
+             "mineral_name": "anatase"},
+            {"name": "rutile", "source": "cod", "entry_id": "96-900-4143",
+             "cif_file": "cifs/rutile.cif", "structural": True, "reason": "",
+             "fom": None, "scale_factor": 1.0, "two_theta_shift": 0.0,
+             "weight_fraction": 0.5,
+             "cell": {"a": 4.5922, "b": 4.5922, "c": 2.9574,
+                      "alpha": 90.0, "beta": 90.0, "gamma": 90.0},
+             "space_group": "P4_2/mnm", "formula": "O2 Ti",
+             "mineral_name": "rutile"},
+            {"name": "pdf2card", "source": "pdf2", "entry_id": "01-070-1234",
+             "cif_file": None, "structural": False,
+             "reason": "ICDD 条目无结构数据", "fom": None,
+             "scale_factor": 1.0, "two_theta_shift": 0.0,
+             "weight_fraction": None, "cell": None,
+             "space_group": "P4_2/mnm", "formula": "O2 Ti",
+             "mineral_name": None},
+        ],
+        "candidates_summary": [], "restraints": {}, "notes": "",
+    }
+    tt = [5.0 + 0.5 * i for i in range(171)]
+    ii = [100.0 + 30.0 * (i % 7) for i in range(171)]
+    out = tmp_path / "analysis.xinm"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pattern/pattern.csv",
+                    "two_theta,intensity\n"
+                    + "\n".join(f"{x:.10g},{y:.10g}"
+                                for x, y in zip(tt, ii)))
+        zf.writestr("cifs/anatase.cif", CIF_A.read_bytes())
+        zf.writestr("cifs/rutile.cif", CIF_R.read_bytes())
+        zf.writestr("manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, indent=2))
+    return out
+
+
+def test_apply_xinm_payload_prefills_edits(win, qapp, tmp_path):
+    """R-3a：谱图 + 两相 CIF 装载，PDF2 相仅参照，晶胞/空间群一致即预填。"""
+    from xinrefinement.core.io.xinm_import import read_xinm
+
+    payload = read_xinm(_build_xinm(tmp_path))
+    report = win._apply_xinm_payload(payload, stem="joint")
+    qapp.processEvents()
+    assert report is not None
+    assert report["n_points"] == 171
+    assert len(win._phases) == 2
+    assert len(report["structural"]) == 2
+    assert [p.name for p in report["reference_only"]] == ["pdf2card"]
+    # wavelength 传导（画布 d 轴换算依赖它）
+    assert win._pattern.meta["wavelength"] == pytest.approx(1.5406)
+    # 晶胞一致 → phase_edits 预填，且无 mismatch（空间群 :1/下划线归一化后不误报）
+    assert set(win._phase_edits) == {st.name for st in win._phases}
+    assert report["mismatch"] == []
+
+
+def test_apply_xinm_payload_flags_cell_mismatch(win, qapp, tmp_path):
+    """XinMatch 侧晶胞与 CIF 显著不符：不覆盖 CIF，列清单提示。"""
+    from xinrefinement.core.io.xinm_import import read_xinm
+
+    bad = {"a": 3.90, "b": 3.90, "c": 9.60,
+           "alpha": 90.0, "beta": 90.0, "gamma": 90.0}
+    payload = read_xinm(_build_xinm(tmp_path, anatase_cell=bad))
+    report = win._apply_xinm_payload(payload, stem="mismatch")
+    qapp.processEvents()
+    assert report is not None
+    names = [n for n, _ in report["mismatch"]]
+    assert "anatase" in names
+    # 以 CIF 为准：晶胞仍为 CIF 值
+    st = next(s for s in win._phases if s.name == "anatase")
+    assert abs(st.cell[0] - 3.785) < 1e-6
+    assert "anatase" not in win._phase_edits
+
+
+def test_restore_result_panel_from_project(tmp_path):
+    """R-2a：打开工程后回填结果摘要与收敛曲线（无需重新精修）。"""
+    import json
+    import zipfile
+
+    from xinrefinement.gui.project import FORMAT, load_project
+
+    full = {
+        "r_factors": {"rwp": 3.409617, "rp": 2.1, "rexp": 1.9, "chi2": 3.2},
+        "fit": {"iters": 14},
+        "phases": [{"name": "anatase", "weight_pct": 50.03}],
+        "rwp_history": [9.0, 5.0, 3.409617],
+        "diagnostics": {"dw": 1.85, "verdict": "ok",
+                        "rwp_start": 9.0, "rwp_final": 3.409617},
+        "esd": {"weight_esd_pct": [0.21]},
+    }
+    p = tmp_path / "r.xinr"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({
+            "format": FORMAT, "format_version": 2,
+            "result": {"rwp": 3.409617}, "result_full": "result/refine.json",
+            "pattern": {}, "cifs": [], "settings": {}, "phase_edits": {},
+            "navigation": {}}))
+        zf.writestr("result/refine.json", json.dumps(full))
+    data = load_project(p)
+    assert data["result_full"]["r_factors"]["rwp"] == pytest.approx(3.409617)
+
+    from xinrefinement.gui.main_window import MainWindow
+
+    w = MainWindow()
+    w._restore_result_panel(data)
+    labels = [w.result_table.item(r, 0).text()
+              for r in range(w.result_table.rowCount())]
+    assert "Rwp (%)" in labels
+    assert any("物相含量" in s for s in labels)
+    assert w.conv_canvas.figure.axes[0].lines   # 收敛曲线已绘制
+    w.close()

@@ -76,6 +76,20 @@ def _log_dict(res: SolveResult, diagnostics, esd=None) -> dict:
     }
 
 
+def solve_result_dict(res: SolveResult, *, esd=None,
+                      input_info: dict | None = None) -> dict:
+    """完整精修结果 JSON（与 CLI ``--out`` / ``export_report`` 同族 schema）。
+
+    GUI 保存 ``.xinr`` 时把本函数结果写入 ``result/refine.json``（联合计划
+    R-2a），使工程文件自带可与 CLI 报告对照的完整精修记录，而不只是
+    R 因子摘要。``input_info`` 非空时置于 ``input`` 段（CLI 报告同位置）。
+    """
+    data = _log_dict(res, diagnose(res), esd)
+    if input_info is not None:
+        data = {"input": dict(input_info), **data}
+    return data
+
+
 def _html(res: SolveResult, diagnostics, png_name: str, esd=None) -> str:
     esc = html.escape
 

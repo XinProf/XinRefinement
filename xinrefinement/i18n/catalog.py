@@ -22,6 +22,10 @@ _ZH = {
     "menu.help": "帮助(&H)", "menu.language": "语言(&L)",
     "menu.import_pattern": "导入谱图…", "menu.import_cif": "导入 CIF…",
     "menu.import_xinm": "导入 XinMatch 物相分析…",
+    "xinm.status": "导入 .xinm：谱图 {n} 点 · 相 {p} 个（{s} 个含结构）",
+    "xinm.ref_suffix": " · 仅参照（无 CIF）：{names}",
+    "xinm.ref_only_head": "以下相没有结构 CIF，不参与精修（可手动指定 CIF 后加入）：",
+    "xinm.mismatch_head": "以下相的 XinMatch 侧参数与 CIF 不一致，已以 CIF 为准（请核对）：",
     "menu.save_project": "保存工程…", "menu.open_project": "打开工程…",
     "menu.phase_edit": "物相参数编辑…", "menu.run_all": "一键连跑（默认配置）",
     "menu.stop": "停止", "menu.about": "关于…",
@@ -67,6 +71,12 @@ _EN = {
     "menu.language": "&Language",
     "menu.import_pattern": "Import pattern…", "menu.import_cif": "Import CIF…",
     "menu.import_xinm": "Import XinMatch phase analysis…",
+    "xinm.status": "Imported .xinm: {n} points · {p} phases ({s} with structure)",
+    "xinm.ref_suffix": " · reference only (no CIF): {names}",
+    "xinm.ref_only_head": "These phases have no structural CIF and are excluded "
+                          "from refinement (add a CIF manually to include them):",
+    "xinm.mismatch_head": "XinMatch parameters differ from the CIF for these "
+                          "phases; CIF values were used (please review):",
     "menu.save_project": "Save project…", "menu.open_project": "Open project…",
     "menu.phase_edit": "Phase parameters…",
     "menu.run_all": "Run all steps (defaults)", "menu.stop": "Stop",
@@ -115,6 +125,12 @@ _JA = {
     "menu.help": "ヘルプ(&H)", "menu.language": "言語(&L)",
     "menu.import_pattern": "パターンを読込…", "menu.import_cif": "CIF を読込…",
     "menu.import_xinm": "XinMatch 物相解析を取り込む…",
+    "xinm.status": ".xinm 取込：パターン {n} 点 · 物相 {p} 個（構造 {s} 個）",
+    "xinm.ref_suffix": " · 参照のみ（CIF なし）：{names}",
+    "xinm.ref_only_head": "以下の物相は構造 CIF がないため精密化に含めません"
+                          "（CIF を手動指定すれば追加できます）：",
+    "xinm.mismatch_head": "以下の物相は XinMatch 側の値と CIF が一致しません。"
+                          "CIF の値を採用しました（ご確認ください）：",
     "menu.save_project": "プロジェクトを保存…",
     "menu.open_project": "プロジェクトを開く…",
     "menu.phase_edit": "物相パラメータ編集…",

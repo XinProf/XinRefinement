@@ -194,6 +194,13 @@ def _report(path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 控制台默认 GBK：脚本末尾的 "⚠" 会让 print 抛 UnicodeEncodeError，
+    # 于是构建明明全部成功、退出码却是 1（v1.1.0 构建时踩到，CI 会误判失败）。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):  # pragma: no cover - 非标准流
+            pass
     ap = argparse.ArgumentParser(description="XinRefinement 本地双变体构建")
     ap.add_argument("--variant", choices=("all",) + VARIANTS, default="all",
                     help="构建哪个变体（默认 all = release + internal）")

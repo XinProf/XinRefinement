@@ -12,17 +12,41 @@
   并提示手动补 CIF，不参与精修；导入内核 `core/io/xinm_import.py` 不依赖 Qt，
   GUI/CLI/库 API 共用，含 zip 炸弹防护与版本协商（version > 支持值提示升级）
 - **工程文件升级 `.xinr`（自包含 zip 容器）**：默认内嵌谱图（规范 CSV，`%.10g`，
-  往返相对误差 ≤ 1e-9）+ CIF + 完整精修结果，换机器/移目录后仍可打开精修；
+  往返相对误差 ≤ 1e-9）+ CIF + 完整精修结果（`result/refine.json`，与 CLI `--out`
+  同族 schema：R 因子/参数/物相/收敛历史/diagnostics/e.s.d.），换机器/移目录后仍可
+  打开精修；打开工程即回填结果摘要与收敛曲线，**无需重新精修即可复现上次结果**；
   扩展名分流——`.xinr` 走容器、`.xrp` 保持 v1.0.0 的 JSON 路径引用（**旧文件永久只读兼容**）；
   顺带修复 v1.0.0 `.xrp` 丢失 `phase_edits` 的问题
+- **导入时晶胞/空间群一致性核对**：manifest 与 CIF 一致则预填 `phase_edits`（记录来源），
+  显著不符（>0.1% 或 >0.05°）时以 CIF 为准并列清单提示，空间群符号做 `:1`/下划线归一化
+  避免误报；`structural=true` 但包内缺 CIF 的相降级为「仅参照」并给出含文件名的原因
 - **库 API**：`capabilities()` 新增 `xinm_import: "1"` 能力位
 
 ### 验证
 
-- 新增 `tests/test_xinm_import.py`（8 项）+ `tests/test_project_zip.py`（5 项），
-  含与 XinMatch 真实导出器的跨仓库 round-trip；S1 端到端：真实 COD 档案 CIF
-  经 `.xinm` 导出 → 导入 → 精修 **Rwp 3.409617 与黄金值逐位一致**
-- 全量测试 259 → **272 项全绿**；i18n 三语补 `menu.import_xinm`
+- 新增 `tests/test_xinm_import.py`（13 项，含跨仓库 round-trip 与 S2/S3/S4 场景）、
+  `tests/test_project_zip.py`（7 项，含 `result_full` 往返与缺 source 自包含打开）、
+  `tests/test_joint_s1.py`（3 项，真实 COD 档案 7206075 + 9001681 全闭环）
+- S1 数值保真：`.xinm` 导入后走公开 API → **Rwp 3.409617019598457（与 P0 黄金值逐位一致）**，
+  定量 50.03 / 49.97 wt%；GUI 一键连跑口径下「导入路径」与「手动导入同谱图+CIF」
+  Rwp 逐位相等；保存 `.xinr` 后删除临时谱图与 `.xinm` 重开，Rwp 复现（rel 1e-9）
+- S2 混合来源：COD + 用户 CIF 相打包，PDF2 相仅参照且**包内无 ICDD 衍生文件**；
+  S3 边界：缺 CIF / 损坏 zip / 缺谱图 / version=2 均给可读提示不崩溃
+- 全量测试 259 → **286 项全绿**；i18n 三语补 `menu.import_xinm`
+
+### 二进制与六轮验收
+
+- 构建脚本修掉一处**假失败**：结尾 `print("⚠ …")` 在 GBK 控制台抛
+  `UnicodeEncodeError`，产物已全部生成但退出码为 1（CI 会误判）。`main()` 现先
+  `reconfigure(errors="replace")`。
+- 六轮自动化全通过（报告 `.scratch/accept110.json`）：同源两次构建 exe **逐字节一致**
+  （`a2c9fcc8…` / `7d1ed1ec…`）；两变体 CLI `--version` → `XinRefinement 1.1.0`；
+  CLI 端到端 `rwp = 3.409617`；离屏 GUI 自检两变体分别报 `release/未注册` 与
+  `internal/内部评估版本`；静默安装 606 文件 → 卸载 0 残留；正式版设
+  `XINREFINEMENT_VARIANT=internal` 仍报 `release`（防绕过）。
+- 发布件：`XinRefinement-1.1.0-setup.exe` 67,586,555 B
+  （`046179e6f3ef45d6…`）、`XinRefinement-internal-1.1.0-portable.zip` 113,946,723 B
+  （`a9012229b268bae3…`）。详见 `docs/RELEASE_NOTES_v1.1.0.md`。
 
 ## v1.0.0（2026-11-05 发布）
 

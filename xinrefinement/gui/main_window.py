@@ -363,8 +363,14 @@ class MainWindow(QMainWindow):
 
     # -- 工程文件 ------------------------------------------------------ #
     def project_state(self) -> dict:
-        """收集可序列化状态（供 .xrp 保存）。"""
+        """收集可序列化状态（供 ``.xinr`` / ``.xrp`` 保存）。
+
+        ``result`` 为轻量摘要（状态栏/旧格式用）；``result_full`` 为完整精修
+        JSON（联合计划 R-2a，写入 ``.xinr`` 的 ``result/refine.json``，与
+        CLI ``--out`` 同族 schema）。
+        """
         result = None
+        result_full = None
         if self._result is not None:
             r = self._result
             result = {"rwp": r.rwp, "rp": r.rp, "rexp": r.rexp,
@@ -372,6 +378,23 @@ class MainWindow(QMainWindow):
                       "phases": [{"name": p.name,
                                   "weight_pct": p.weight_pct}
                                  for p in r.phases]}
+            try:
+                from xinrefinement.core.report import solve_result_dict
+                esd = None
+                try:
+                    from xinrefinement.core.refine.esd import estimate_esd
+                    esd = estimate_esd(self._phases, r)
+                except Exception:
+                    esd = None
+                result_full = solve_result_dict(
+                    r, esd=esd,
+                    input_info={"pattern": self._pattern_path,
+                                "cif": list(self._cif_paths),
+                                "tmin": float(getattr(r.config, "tmin", 0.0)),
+                                "tmax": float(getattr(r.config, "tmax", 0.0)),
+                                "anode": str(getattr(r.params, "anode", ""))})
+            except Exception:
+                result_full = None
         records = []
         if self._worker is not None:
             records = [{"key": rec.key, "status": rec.status,
@@ -384,6 +407,7 @@ class MainWindow(QMainWindow):
             "settings": self._settings,
             "phase_edits": self._phase_edits,
             "result": result,
+            "result_full": result_full,
             "navigation": {"step_status": self._step_status,
                            "records": records},
         }
@@ -413,7 +437,6 @@ class MainWindow(QMainWindow):
         """
         from xinrefinement.core.io.xinm_import import (
             XinmImportError,
-            extract_cifs,
             read_xinm,
         )
         path, _ = QFileDialog.getOpenFileName(
@@ -426,39 +449,103 @@ class MainWindow(QMainWindow):
         except XinmImportError as exc:
             QMessageBox.warning(self, tr("menu.import_xinm"), str(exc))
             return
+        report = self._apply_xinm_payload(payload, stem=Path(path).stem)
+        if report is None:
+            return
+
+        structural = report["structural"]
+        ref_only = report["reference_only"]
+        msg = tr("xinm.status").format(
+            n=report["n_points"],
+            p=len(structural) + len(ref_only), s=len(structural))
+        if ref_only:
+            msg += tr("xinm.ref_suffix").format(
+                names="、".join(p.name for p in ref_only))
+        self.statusBar().showMessage(msg)
+        if ref_only:
+            QMessageBox.information(
+                self, tr("menu.import_xinm"),
+                tr("xinm.ref_only_head") + "\n"
+                + "\n".join(f"• {p.name}（{p.reason or '无 CIF'}）"
+                            for p in ref_only))
+        if report["mismatch"]:
+            QMessageBox.information(
+                self, tr("menu.import_xinm"),
+                tr("xinm.mismatch_head") + "\n"
+                + "\n".join(f"• {n}：{why}" for n, why in report["mismatch"]))
+
+    @staticmethod
+    def _normalize_sg(sg: str | None) -> str:
+        """空间群符号归一化（大小写/空格/下划线/设置后缀 ``:1`` 不影响比对）。"""
+        s = str(sg or "").strip()
+        if ":" in s:
+            s = s.split(":", 1)[0]
+        return s.replace(" ", "").replace("_", "").lower()
+
+    def _apply_xinm_payload(self, payload, *, stem: str = "xinm") -> dict | None:
+        """把 ``.xinm`` 载荷落到当前界面（R-3a，GUI 装配层）。
+
+        步骤：清空工程 → 谱图（wavelength 显式传导 d 轴）→ CIF 装载 → 用
+        manifest 的晶胞/空间群做一致性核对与 ``phase_edits`` 预填。
+        返回 ``{n_points, structural, reference_only, mismatch}``；
+        谱图装载失败返回 None。
+        """
+        from xinrefinement.core.io.xinm_import import extract_cifs
+
         self.new_project()
 
         # 谱图：payload 数组 → 会话 .xy → 既有装载通道（wavelength 显式传导）
         session = Path(tempfile.gettempdir()) / "xinrefinement_xinm"
         session.mkdir(parents=True, exist_ok=True)
-        xy = session / f"{Path(path).stem}_pattern.xy"
+        xy = session / f"{stem}_pattern.xy"
         with xy.open("w", encoding="utf-8", newline="\n") as fh:
             for x, y in zip(payload.two_theta.tolist(),
                             payload.intensity.tolist()):
                 fh.write(f"{x:.10g} {y:.10g}\n")
         if not self._load_pattern_path(
                 xy, wavelength=payload.meta.get("wavelength")):
-            return
+            return None
 
-        # CIF：仅 structural 相参与精修
-        cif_dir = session / f"{Path(path).stem}_cifs"
+        # CIF：仅 structural 相参与精修；装载顺序与 manifest 顺序一致
+        cif_dir = session / f"{stem}_cifs"
         name_map = extract_cifs(payload, cif_dir)
-        structural = payload.structural_phases
-        self._load_cif_paths([name_map[p.name] for p in structural
-                              if p.name in name_map])
+        structural = [p for p in payload.structural_phases
+                      if p.name in name_map]
+        before = len(self._phases)
+        self._load_cif_paths([name_map[p.name] for p in structural])
+        loaded = self._phases[before:]
 
-        ref_only = payload.reference_only_phases
-        msg = (f"导入 .xinm：谱图 {payload.two_theta.size} 点 · "
-               f"物相 {len(structural)} 个（含结构 CIF）")
-        if ref_only:
-            msg += " · 仅参照（无 CIF）：" + "、".join(p.name for p in ref_only)
-        self.statusBar().showMessage(msg)
-        if ref_only:
-            QMessageBox.information(
-                self, tr("menu.import_xinm"),
-                "以下相没有结构 CIF，不参与精修（可手动指定 CIF 后加入）：\n"
-                + "\n".join(f"• {p.name}（{p.reason or '无 CIF'}）"
-                            for p in ref_only))
+        mismatch: list[tuple[str, str]] = []
+        for spec, st in zip(structural, loaded):
+            cell = spec.cell or {}
+            try:
+                ref = [float(cell[k]) for k in
+                       ("a", "b", "c", "alpha", "beta", "gamma")]
+            except (KeyError, TypeError, ValueError):
+                ref = None
+            if ref is not None:
+                dev = [abs(float(a) - b) / max(abs(b), 1e-9)
+                       for a, b in zip(ref[:3], st.cell[:3])]
+                ang = [abs(float(a) - b) for a, b in zip(ref[3:], st.cell[3:])]
+                if max(dev) > 1e-3 or max(ang) > 0.05:
+                    mismatch.append((st.name,
+                                     f"晶胞偏差最大 {max(dev) * 100:.2f}%（CIF 已采用）"))
+                else:
+                    # 一致：预填编辑项（记录来源，不改数值）
+                    self._phase_edits[st.name] = {
+                        "cell": [float(v) for v in st.cell], "po": None}
+            sg = self._normalize_sg(spec.space_group)
+            if sg and st.spacegroup:
+                if sg != self._normalize_sg(st.spacegroup):
+                    mismatch.append((st.name,
+                                     f"空间群 {spec.space_group} vs CIF {st.spacegroup}（CIF 已采用）"))
+
+        return {
+            "n_points": int(payload.two_theta.size),
+            "structural": structural,
+            "reference_only": payload.reference_only_phases,
+            "mismatch": mismatch,
+        }
 
     def open_project_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -507,7 +594,72 @@ class MainWindow(QMainWindow):
         msg = f"{tr('menu.open_project')}: {data.get('project_path', '')}"
         if missing:
             msg += f" | 缺失 {len(missing)} 个引用文件"
+        self._restore_result_panel(data)
         self.statusBar().showMessage(msg)
+
+    def _restore_result_panel(self, data: dict) -> None:
+        """从工程文件回填结果区（R-2a：``result_full`` 优先，其次旧摘要）。
+
+        打开工程不重新精修也能看到上次的 R 因子、含量与收敛曲线；精修对象
+        ``self._result`` 不伪造（``SolveResult`` 需要完整数据），故报告导出
+        仍以"重新精修后"为准。
+        """
+        full = data.get("result_full") or {}
+        brief = data.get("result") or {}
+        rf = full.get("r_factors") or {}
+        rwp = rf.get("rwp", brief.get("rwp"))
+        if rwp is None:
+            return
+        rows = [(tr("result.rwp"), f"{rwp:.4f}")]
+        for key, label in (("rp", "result.rp"), ("rexp", "result.rexp"),
+                           ("chi2", "result.chi2")):
+            val = rf.get(key, brief.get(key))
+            if val is not None:
+                rows.append((tr(label), f"{float(val):.4f}"))
+        iters = (full.get("fit") or {}).get("iters", brief.get("iters"))
+        if iters is not None:
+            rows.append((tr("result.iters"), str(int(iters))))
+        dw = (full.get("diagnostics") or {}).get("dw")
+        if dw is not None:
+            rows.append((tr("result.dw"), f"{float(dw):.4f}"))
+        phases = full.get("phases") or brief.get("phases") or []
+        esd_pct = ((full.get("esd") or {}).get("weight_esd_pct")) or []
+        for i, p in enumerate(phases):
+            wt = p.get("weight_pct")
+            rows.append((f"{tr('result.phase_weight')} · {p.get('name', '')} (%)",
+                         "—" if wt is None else f"{float(wt):.3f}"))
+            if i < len(esd_pct) and esd_pct[i] is not None:
+                rows.append((f"e.s.d. · {p.get('name', '')} (pp)",
+                             f"{float(esd_pct[i]):.4f}"))
+        self.result_table.setRowCount(len(rows))
+        for r, (k, v) in enumerate(rows):
+            self.result_table.setItem(r, 0, QTableWidgetItem(k))
+            self.result_table.setItem(r, 1, QTableWidgetItem(v))
+        history = full.get("rwp_history") or []
+        fig = self.conv_canvas.figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+        h = np.asarray(history, dtype=float)
+        if h.size:
+            ax.plot(np.arange(h.size), h, color="#1f77b4", lw=1.0)
+            ax.set_ylabel("Rwp (%)")
+            ax.set_xlabel("eval")
+            ax.grid(True, color="#e0e0e0", lw=0.5)
+        self.conv_canvas.draw_idle()
+        self.corr_table.setColumnCount(2)
+        self.corr_table.setHorizontalHeaderLabels([tr("result.metric"),
+                                                   tr("result.value")])
+        diag = full.get("diagnostics") or {}
+        info = [("Rwp 起始", diag.get("rwp_start")),
+                ("Rwp 最终", diag.get("rwp_final")),
+                ("残差判读", diag.get("verdict"))]
+        info = [(k, v) for k, v in info if v is not None]
+        self.corr_table.setRowCount(len(info))
+        for r, (k, v) in enumerate(info):
+            self.corr_table.setItem(r, 0, QTableWidgetItem(str(k)))
+            self.corr_table.setItem(
+                r, 1, QTableWidgetItem(
+                    f"{float(v):.4f}" if isinstance(v, (int, float)) else str(v)))
 
     # -- 交互 ---------------------------------------------------------- #
     def new_project(self) -> None:

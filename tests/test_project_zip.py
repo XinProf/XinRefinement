@@ -92,6 +92,57 @@ def test_save_xinr_zip_and_reopen(workdir: Path) -> None:
         np.linspace(5.0, 90.0, 171), rel=1e-9)
 
 
+def test_save_xinr_embeds_full_result_json(workdir: Path) -> None:
+    """R-2a：完整精修结果写 result/refine.json，并在重开后读回。"""
+    full = {
+        "input": {"pattern": "demo.xy", "cif": ["anatase.cif"],
+                  "tmin": 5.0, "tmax": 90.0, "anode": "Cu"},
+        "r_factors": {"rwp": 3.409617, "rp": 2.5, "rexp": 2.0,
+                      "chi2": 2.9, "rbragg": 1.2},
+        "fit": {"success": True, "iters": 12, "restarted": False},
+        "parameters": {"zero": 0.0, "U": 0.01, "wavelength": 1.5406},
+        "background": [1.0, 2.0],
+        "phases": [{"name": "anatase", "scale": 1.0, "weight_pct": 50.03,
+                    "cell": [3.785, 3.785, 9.5196, 90, 90, 90]}],
+        "rwp_history": [10.0, 5.0, 3.409617],
+        "diagnostics": {"dw": 1.9, "verdict": "ok", "rwp_start": 10.0,
+                        "rwp_final": 3.409617},
+        "esd": {"labels": ["zero"], "esd": [0.001],
+                "weight_esd_pct": [0.12]},
+        "warnings": [],
+    }
+    state = {
+        "language": "zh", "pattern": str(workdir / "demo.xy"),
+        "cifs": [str(workdir / "anatase.cif")],
+        "settings": {}, "phase_edits": {},
+        "result": {"rwp": 3.409617}, "result_full": full, "navigation": {},
+    }
+    out = workdir / "full.xinr"
+    save_project(state, out, embed=True)
+    with zipfile.ZipFile(out) as zf:
+        assert "result/refine.json" in zf.namelist()
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    assert manifest["result_full"] == "result/refine.json"
+    data = load_project(out)
+    assert data["result_full"]["r_factors"]["rwp"] == pytest.approx(3.409617)
+    assert data["result_full"]["phases"][0]["weight_pct"] == pytest.approx(50.03)
+    # 旧摘要仍在，供 v1.0.0 风格读取
+    assert data["result"] == {"rwp": 3.409617}
+
+
+def test_load_xinr_without_result_full_is_tolerated(workdir: Path) -> None:
+    """无 result_full 的工程（如未精修）读回应为 None，不报错。"""
+    state = {
+        "language": "zh", "pattern": str(workdir / "demo.xy"),
+        "cifs": [], "settings": {}, "phase_edits": {},
+        "result": None, "navigation": {},
+    }
+    out = workdir / "empty.xinr"
+    save_project(state, out, embed=True)
+    data = load_project(out)
+    assert data["result_full"] is None
+
+
 def test_load_xinr_future_version_rejected(workdir: Path) -> None:
     out = workdir / "future.xinr"
     with zipfile.ZipFile(out, "w") as zf:

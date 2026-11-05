@@ -214,11 +214,17 @@ D:/Project/XinRefinement/
 | R-1 | `core/io/xinm_import.py`：`read_xinm()` / `extract_cifs()` / `XinmPayload`（Qt 零依赖；manifest 校验、版本协商、zip 炸弹防护 512 MB、CSV 解析） | ✅ |
 | R-2 | `gui/project.py` 升级：`.xinr` = zip 容器（format_version=2，内嵌谱图 CSV+CIF+结果）；`.xrp` JSON 永久只读兼容；修复 v1.0.0 丢失 `phase_edits` 的 bug | ✅ |
 | R-3 | `gui/main_window.py`：文件菜单「导入 XinMatch 物相分析…」+ `import_xinm_dialog()`（谱图装载 wavelength 传导、仅参照相提示）；保存对话框按扩展名分流 `.xinr`/`.xrp` | ✅ |
+| R-3a | 导入装配抽为 `_apply_xinm_payload(payload, stem=)`：谱图 → CIF → 晶胞/空间群一致性核对；一致则预填 `phase_edits`，显著不符（>0.1% / >0.05°）以 CIF 为准并列清单提示；状态栏「谱图 N 点 · 相 X 个（Y 个含结构）」 | ✅ |
+| R-2a | 完整精修结果落盘：`core/report.solve_result_dict()`（与 CLI `--out` 同族 schema）；`project_state()` 增 `result_full`；`.xinr` 写 `result/refine.json` 并在 manifest 引用；`apply_project()` 用 `_restore_result_panel()` 回填摘要/收敛曲线/diagnostics（打开工程即可复现上次结果） | ✅ |
 | R-4 | i18n 三语 `menu.import_xinm` | ✅ |
-| R-5/R-6 | `tests/test_xinm_import.py`（8 项，含跨仓库 round-trip）+ `tests/test_project_zip.py`（5 项，含移走源文件后自包含打开） | ✅ |
+| R-5/R-6 | `tests/test_xinm_import.py`（13 项，含跨仓库 round-trip）+ `tests/test_project_zip.py`（7 项，含移走源文件后自包含打开、`result_full` 往返） | ✅ |
 | R-7/R-8 | `api.py` `capabilities()` 增 `xinm_import`；版本 → 1.1.0 | ✅ |
-| S1 端到端验收 | 真实 COD 档案（anatase 7206075 + rutile 9001681）`.xinm` 导出 → 导入 → 精修 **Rwp 3.409617 与黄金值逐位一致**，Wt% 50.03/49.97 | ✅ |
-| 回归 | XinMatch 全量 **1489 项全绿**；XinRefinement 全量 **272 项全绿** | ✅ |
+| S1 端到端验收 | `tests/test_joint_s1.py`（3 项，真实 COD 档案 7206075 + 9001681）：① `.xinm` 导入 API 口径 Rwp **3.409617019598457**（与 P0 黄金值逐位一致）；② GUI 一键连跑导入路径 vs 手动导入同谱图/CIF **Rwp 逐位相等**；③ 保存 `.xinr` → 删除临时谱图与 `.xinm` → 重开再跑 Rwp 复现（rel 1e-9）。定量 50.03 / 49.97 | ✅ |
+| S2 端到端验收 | 混合来源（COD + 用户 CIF + PDF2）：两结构相打包进 `cifs/`，PDF2 相 `structural=false` 列「仅参照」，**包内无任何 ICDD 衍生文件** | ✅ |
+| S3 端到端验收 | 缺 CIF 成员（manifest 声明有结构但包内缺失）→ 降级「仅参照」并给出含文件名的可读原因；损坏 zip / 缺谱图 / version=2 各自可读报错不崩溃 | ✅ |
+| S4 家族注册 | 注册状态文件同目录不同文件（`XinRefinement.json` / `XinMatch.json`），注册码算法家族互通不变 | ✅ |
+| 回归 | XinMatch 全量 **1494 项（1492 通过 / 2 跳过 / 0 失败）**；XinRefinement 全量 **286 项全绿（0 失败 0 错误）** | ✅ |
+| 发布（二进制） | 双变体 + 安装包/便携 zip 已本地构建；六轮自动化全通过（同源两次构建 exe 逐字节一致 `a2c9fcc8…`/`7d1ed1ec…`；CLI `--version` 两变体均 1.1.0；CLI 端到端 `rwp=3.409617`；离屏 GUI 自检 release/internal 正确；静默安装 606 文件 → 卸载 0 残留；防绕过 `XINREFINEMENT_VARIANT=internal` 仍报 release）。报告 `.scratch/accept110.json`，发布说明 `docs/RELEASE_NOTES_v1.1.0.md`。**双击目视与中文安装界面仍待人工**；GitHub Release 待批准 | 🟡 产物就绪 |
 
 ---
 
