@@ -1,0 +1,80 @@
+# 规格 · EWIMV 离散 ODF 织构（v1.3 任务 #14 · 先规格后实现）
+
+> 状态：**规格评审中**（未实现）。实现前需用户确认本档。
+> 依据：`docs/MAUD源码复核-v1.md` §2.4（WIMVTexture.java + Uwimvuo 源码证据）；
+> 实样对拍样品 3（CaF₂ 111）单参数 March–Dollase 只能部分弥补，量级 −12 点 Rwp。
+
+## 1. 目标与非目标
+
+| 项 | 内容 |
+|---|---|
+| 目标 | 每条布拉格反射一个织构因子（替代每相单 March–Dollase (hkl, r)），修复多反射织构样品的相对强度失配 |
+| 几何范围 | v1 仅 **Bragg–Brentano 平板对称**反射几何——散射矢量恒沿样品法向，织构因子退化为每反射一个常数 `F(hkl)`（这正是 MAUD「每反射一因子」在 BB 几何下的有效语义） |
+| 非目标 v1 | 非 BB 几何（χ 随 2θ 变化）、多极图/多对称轴、完整三维 ODF 网格导出、织构图绘制 |
+
+## 2. 模型（v1：纤维织构 1D 离散 ODF）
+
+MAUD 的三维 ODF（5° 网格 + 三角插值 + Simpson 积分）在 BB 对称几何下，可反射
+的信息只有「晶面与织构轴的夹角 χ」。v1 采用**轴分布函数（fiber ODF）**：
+
+```
+T(χ)  : χ ∈ [0°, 90°]，均匀网格 n_grid = 19 点（5° 步长，端点含）
+F(hkl) = T(χ_hkl)，χ_hkl = hkl 与织构轴 (h0,k0,l0) 的夹角（线性插值）
+I_hkl  ← I_hkl · F(hkl)        （作用于 |F|²·LP·MD 之后的强度链末端）
+```
+
+- 织构轴每相一个 `(h0,k0,l0)`（v1 固定不精修；March–Dollase 的 hkl 语义复用）；
+- 开织构时该相的 March–Dollase 因子**自动停用**（同一自由度不给两套模型抢）；
+- 与 March–Dollase 并存语义：`refine_texture=True` 的相忽略 `po_r`，结果里标注。
+
+## 3. 正则化（不可辨识性护栏——MAUD 翻车教训的防呆）
+
+每反射一因子是**欠定**问题（自由度 ≈ 相内独立 χ 值数 ≪ 反射数时靠结构因子
+约束，反之欠定）。MAUD 用 WIMV 迭代语义（ITZ=20、zigzag、Rp 阈值）实现正则化；
+我们在有界 LM 框架下用**显式光滑罚**，语义更透明：
+
+```
+minimize  Σ w(y−ycalc)² + λ · Σ_k (T[k−1] − 2T[k] + T[k+1])²
+λ 默认 1.0（按残差尺度归一），GUI/CLI 可调
+T 边界 [0.1, 10.0]（与 MAUD「负 ODF 截断」同方向，但用边界而非截断）
+```
+
+- **自由度检查**：相内独立 χ 桶数（5° 分桶去重）< 3 时拒绝开织构（报错，不静默）；
+- T 网格值全部触界时在 `warnings` 提示「织构参数触界，结果可疑」；
+- e.s.d.：触界列按 X/Y 同款规则剔除（NaN），光滑罚计入 Schur 补协方差
+  （λ 作为附加「观测方程」进入雅可比，权重 = λ/残差方差）。
+
+## 4. 落点（叶子级）
+
+| 单元 | 路径 / 签名 | 说明 |
+|---|---|---|
+| 织构参数 | `forward.ProfileParams.texture: dict | None` | `{phase: {"axis": (h0,k0,l0), "grid": [19 floats]}}`，None = 关闭（逐位不变） |
+| 因子施加 | `forward._apply_texture(prof, peaks, prm, struct)` | `compute_peaks` 返回的每反射强度乘 `T(χ_hkl)`；在 `_apply_microabs` 之前 |
+| χ 计算 | `forward.texture_chi(hkl, axis) -> float` | 晶体学夹角（考虑晶胞参数，非正交晶系用度量张量） |
+| 缓存 | `_PEAKS_CACHE` key 追加 `axis`（**不含** grid 值） | 峰位/|F|² 与 T 无关；T 变化只重算乘法，缓存不失效 |
+| LM 槽位 | `RefineConfig.refine_texture: bool`；registry 组 `texture` | 每相 19 维，`sorted(相名)`；bounds (0.1, 10) |
+| 光滑罚 | `nonlinear._build_residual` 残差拼接 | 罚项残差块 `√λ·L·T`（L = 二阶差分矩阵），与谱残差同向量返回 |
+| 配方 | `recipe.config_for`：micro 步不自动开；独立步骤 `texture`（available=False 起步） | 默认关；GUI 齿轮显式开启 |
+| GUI | PhaseEditDialog 新增「织构 (EWIMV)」组：轴 (hkl) + λ + 启用开关 | 与 March–Dollase 组互斥提示 |
+| CLI | `--texture 相名=h0,k0,l0[,λ]` | `--texture-off` 不需要（默认关） |
+| e.s.d. | `esd.estimate_esd` 走 registry 自动覆盖 | 触界列剔除逻辑复用 |
+
+## 5. 验收标准
+
+| # | 验收 | 判据 |
+|---|---|---|
+| A1 | golden 不漂移 | `texture=None` 与 HEAD 逐位一致（全量回归 + golden 锁定） |
+| A2 | 因子正确性 | 合成：给 anatase 人造纤维织构（111 增强 3×），关织构拟合 Rwp 恶化、开织构回收（Rwp 恢复到无织构真值水平 ±0.2 点） |
+| A3 | T 回收 | A2 数据开织构后，111/224 附近 T 值 ≈ 3 / ≈1（±15%），其余 ≈1 |
+| A4 | 正则化有效 | 关 λ（λ=0）时 T 出现触界/振荡，开 λ 默认值收敛光滑；欠定构造（独立 χ 桶 < 3）显式报错 |
+| A5 | March–Dollase 互斥 | 开织构相忽略 po_r，`warnings` 提示 |
+| A6 | e.s.d. | 触界列 NaN、自由列有限、Schur 一致性 < 0.05 |
+
+## 6. 风险与开放问题
+
+1. **A2/A3 的可辨识性依赖结构因子差异**：若相内多反射 χ 相同且 |F|² 相近，
+   T 只能recover加权平均——验收数据需选 χ 分布开的晶系（anatase 四方即可）；
+2. λ 归一化口径（绝对 vs 按点数）实现时定，A4 验收锁定；
+3. 与 Kα2 双线的叠加反射：χ 相同者天然同因子，无需特殊处理；
+4. 性能：每相 +19 维 LM，Jacobian 数值差分代价 ≈ ×(1 + 19/n_params)，
+   两相体系预计 <2×——基准 v50 复测确认。
