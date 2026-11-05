@@ -281,6 +281,15 @@ def test_menus_edit_refine_help(win):
     assert win.btn_run_all.isEnabled()
 
 
+def test_file_menu_has_xinm_import(win):
+    """v1.1.0 联合计划：文件菜单含「导入 XinMatch 物相分析」。"""
+    fm = win._menus["menu.file"]
+    texts = [a.text() for a in fm.actions() if a.text()]
+    assert any("导入 XinMatch" in t for t in texts)
+    # 保存/打开工程的文件对话框默认 .xinr（zip 容器），且兼容 .xrp
+    assert win._menu_actions["menu.import_xinm"] is not None
+
+
 def test_phase_edit_dialog_roundtrip(win):
     """物相编辑对话框：晶胞/择优取向/对称性设置读取与写回。"""
     from xinrefinement.gui.dialogs import PhaseEditDialog

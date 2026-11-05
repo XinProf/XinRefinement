@@ -200,7 +200,29 @@ D:/Project/XinRefinement/
 
 ---
 
-## 6. v2 待办（明确延后，不阻塞 v1）
+## 5b. P5 · 联合计划 v1.1.0（与 XinMatch 3.4.0 互通）
+
+> 计划文档：`docs/JOINT_PLAN_xinm_xinr.md`（单一事实源，XinMatch 侧镜像）。
+> v2 专业项（序贯/联合精修、硬约束、中子等）明确延后至独立 Pro 版本。
+
+| 编号 | 任务 | 状态 |
+|---|---|---|
+| X-2（先行调查） | COD CIF 回取可行性：确认 XinMatch `cif_store.py` 已有完整桥（`96-XXX-XXXX` → COD id → `{d}/{dd}/{dd}/{id:07d}.cif`）；默认根 `PolyXRD\cod\cif` 机器迁移后失效 → 改为 `sync-COD\COD` + 回退探测链 | ✅ |
+| X-1/X-1a/X-1b（XinMatch） | `core/io/xinm.py`：`export_xinm()` zip 容器（manifest v1 + 谱图 CSV `%.10g` + COD CIF 打包）；`build_manifest()`；来源判定 cod / unresolved | ✅ |
+| X-3（XinMatch） | 文件菜单「导出物相分析（.xinm）…」+ `_export_xinm()`（无谱/无相提示、CIF 缺失降级不阻断） | ✅ |
+| X-4（XinMatch） | `tests/io/test_xinm.py`（6 项，含真实档案 anatase 96-900-8220 锚点）；版本 → 3.4.0 | ✅ |
+| R-1 | `core/io/xinm_import.py`：`read_xinm()` / `extract_cifs()` / `XinmPayload`（Qt 零依赖；manifest 校验、版本协商、zip 炸弹防护 512 MB、CSV 解析） | ✅ |
+| R-2 | `gui/project.py` 升级：`.xinr` = zip 容器（format_version=2，内嵌谱图 CSV+CIF+结果）；`.xrp` JSON 永久只读兼容；修复 v1.0.0 丢失 `phase_edits` 的 bug | ✅ |
+| R-3 | `gui/main_window.py`：文件菜单「导入 XinMatch 物相分析…」+ `import_xinm_dialog()`（谱图装载 wavelength 传导、仅参照相提示）；保存对话框按扩展名分流 `.xinr`/`.xrp` | ✅ |
+| R-4 | i18n 三语 `menu.import_xinm` | ✅ |
+| R-5/R-6 | `tests/test_xinm_import.py`（8 项，含跨仓库 round-trip）+ `tests/test_project_zip.py`（5 项，含移走源文件后自包含打开） | ✅ |
+| R-7/R-8 | `api.py` `capabilities()` 增 `xinm_import`；版本 → 1.1.0 | ✅ |
+| S1 端到端验收 | 真实 COD 档案（anatase 7206075 + rutile 9001681）`.xinm` 导出 → 导入 → 精修 **Rwp 3.409617 与黄金值逐位一致**，Wt% 50.03/49.97 | ✅ |
+| 回归 | XinMatch 全量 **1489 项全绿**；XinRefinement 全量 **272 项全绿** | ✅ |
+
+---
+
+## 6. Pro 版待办（原 v2 待办，明确延后并分拆为独立 Pro 产品）
 
 > v1 已在参数模型**预留 histogram 维度**（见 plan §3.3），为「多谱联合精修」铺路。
 

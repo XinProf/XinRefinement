@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -125,6 +126,7 @@ class MainWindow(QMainWindow):
         fm = self._menus["menu.file"]
         for key, slot in (("menu.import_pattern", self.open_pattern),
                           ("menu.import_cif", self.open_cif),
+                          ("menu.import_xinm", self.import_xinm_dialog),
                           ("menu.save_project", self.save_project_dialog),
                           ("menu.open_project", self.open_project_dialog)):
             act = QAction(tr(key), self)
@@ -388,17 +390,80 @@ class MainWindow(QMainWindow):
 
     def save_project_dialog(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, tr("menu.save_project"), "project.xrp",
-            "XinRefinement 工程 (*.xrp);;所有文件 (*)")
+            self, tr("menu.save_project"), "project.xinr",
+            "XinRefinement 工程 (*.xinr *.xrp);;所有文件 (*)")
         if not path:
             return
-        save_project(self.project_state(), path)
-        self.statusBar().showMessage(f"{tr('menu.save_project')}: {path}")
+        # .xinr → 自包含 zip 容器（内嵌谱图+CIF，默认）；.xrp → 旧 JSON 路径引用
+        embed = Path(path).suffix.lower() != ".xrp"
+        try:
+            save_project(self.project_state(), path, embed=embed)
+        except Exception as exc:
+            QMessageBox.warning(self, tr("menu.save_project"), str(exc))
+            return
+        mode = "内嵌数据" if embed else "路径引用"
+        self.statusBar().showMessage(
+            f"{tr('menu.save_project')}: {path}（{mode}）")
+
+    def import_xinm_dialog(self) -> None:
+        """v1.1.0 联合计划 R-3：导入 XinMatch 物相分析（.xinm）。
+
+        装载谱图 + 已选物相 CIF；``structural=false`` 的相列为「仅参照」，
+        不参与精修（PDF2 类条目无原子坐标，见联合计划 §3）。
+        """
+        from xinrefinement.core.io.xinm_import import (
+            XinmImportError,
+            extract_cifs,
+            read_xinm,
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("menu.import_xinm"), "",
+            "XinMatch 物相分析 (*.xinm);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            payload = read_xinm(path)
+        except XinmImportError as exc:
+            QMessageBox.warning(self, tr("menu.import_xinm"), str(exc))
+            return
+        self.new_project()
+
+        # 谱图：payload 数组 → 会话 .xy → 既有装载通道（wavelength 显式传导）
+        session = Path(tempfile.gettempdir()) / "xinrefinement_xinm"
+        session.mkdir(parents=True, exist_ok=True)
+        xy = session / f"{Path(path).stem}_pattern.xy"
+        with xy.open("w", encoding="utf-8", newline="\n") as fh:
+            for x, y in zip(payload.two_theta.tolist(),
+                            payload.intensity.tolist()):
+                fh.write(f"{x:.10g} {y:.10g}\n")
+        if not self._load_pattern_path(
+                xy, wavelength=payload.meta.get("wavelength")):
+            return
+
+        # CIF：仅 structural 相参与精修
+        cif_dir = session / f"{Path(path).stem}_cifs"
+        name_map = extract_cifs(payload, cif_dir)
+        structural = payload.structural_phases
+        self._load_cif_paths([name_map[p.name] for p in structural
+                              if p.name in name_map])
+
+        ref_only = payload.reference_only_phases
+        msg = (f"导入 .xinm：谱图 {payload.two_theta.size} 点 · "
+               f"物相 {len(structural)} 个（含结构 CIF）")
+        if ref_only:
+            msg += " · 仅参照（无 CIF）：" + "、".join(p.name for p in ref_only)
+        self.statusBar().showMessage(msg)
+        if ref_only:
+            QMessageBox.information(
+                self, tr("menu.import_xinm"),
+                "以下相没有结构 CIF，不参与精修（可手动指定 CIF 后加入）：\n"
+                + "\n".join(f"• {p.name}（{p.reason or '无 CIF'}）"
+                            for p in ref_only))
 
     def open_project_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, tr("menu.open_project"), "",
-            "XinRefinement 工程 (*.xrp);;所有文件 (*)")
+            "XinRefinement 工程 (*.xinr *.xrp);;所有文件 (*)")
         if not path:
             return
         try:
@@ -466,13 +531,18 @@ class MainWindow(QMainWindow):
         if path:
             self._load_pattern_path(Path(path))
 
-    def _load_pattern_path(self, path) -> bool:
-        """加载谱图（供文件对话框、测试与未来 XinMatch 对接共用）。"""
+    def _load_pattern_path(self, path, *, wavelength=None) -> bool:
+        """加载谱图（供文件对话框、测试与 XinMatch .xinm 导入共用）。
+
+        *wavelength* 显式传入时（.xinm/.xinr 场景）优先于谱图 meta。
+        """
         try:
             self._pattern = load_pattern(Path(path))
         except Exception as exc:
             QMessageBox.warning(self, "谱图读取失败", str(exc))
             return False
+        if wavelength is not None:
+            self._pattern.meta["wavelength"] = float(wavelength)
         self._pattern_path = str(Path(path).resolve())
         # d 值换算波长：优先谱图 meta，其次默认 Cu Kα1
         self.canvas.set_wavelength(

@@ -142,4 +142,6 @@ def capabilities() -> dict:
         "geometry": "Bragg-Brentano",
         "quant": "Hill-Howard QPA",
         "engines": ["builtin variable-projection LM/scipy-trf"],
+        # v1.1.0 联合计划：可导入 XinMatch 物相分析状态（.xinm）
+        "xinm_import": "1",
     }

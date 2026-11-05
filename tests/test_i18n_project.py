@@ -103,7 +103,7 @@ def test_project_roundtrip(win, qapp, tmp_path):
     win.switch_language("ja")
 
     out = tmp_path / "proj.xrp"
-    save_project(win.project_state(), out)
+    save_project(win.project_state(), out, embed=False)   # 旧 JSON 路径引用
     assert out.exists()
     data = load_project(out)
     assert data["language"] == "ja"
@@ -113,6 +113,18 @@ def test_project_roundtrip(win, qapp, tmp_path):
     assert data["settings"]["bg"]["n_bg"] == 7
     assert data["result"]["rwp"] == pytest.approx(win._result.rwp)
     assert data["navigation"]["step_status"]["xyz"] == "skipped"
+
+    # v1.1.0：自包含 .xinr（zip 容器）同样走完整恢复流程
+    out2 = tmp_path / "proj.xinr"
+    save_project(win.project_state(), out2, embed=True)
+    data2 = load_project(out2)
+    assert data2["embedded"] is True and data2["missing"] == []
+    win.new_project()
+    win.apply_project(data2)
+    qapp.processEvents()
+    assert win._pattern is not None
+    assert len(win._phases) == 2
+    assert win._settings["bg"]["n_bg"] == 7
 
     # 关闭式恢复：清空后应用工程
     win.new_project()
@@ -139,7 +151,7 @@ def test_serialize_uses_relative_paths(win, tmp_path):
     assert Path(raw["pattern"]).is_absolute() == (not same_drive)
     # 无论相对/绝对，load_project 都能还原到原始文件
     out = tmp_path / "p.xrp"
-    save_project(win.project_state(), out)
+    save_project(win.project_state(), out, embed=False)
     assert Path(load_project(out)["pattern"]).resolve() == PATTERN.resolve()
 
 
@@ -153,7 +165,7 @@ def test_load_rejects_bad_format(win, tmp_path):
 def test_load_reports_missing_files(win, tmp_path):
     out = tmp_path / "missing.xrp"
     save_project({"pattern": str(tmp_path / "gone.xy"), "cifs": [],
-                  "settings": {}, "navigation": {}}, out)
+                  "settings": {}, "navigation": {}}, out, embed=False)
     data = load_project(out)
     assert len(data["missing"]) == 1
     assert data["pattern"].endswith("gone.xy")

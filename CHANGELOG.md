@@ -1,5 +1,29 @@
 # 变更记录
 
+## v1.1.0（开发中，联合计划：与 XinMatch 3.4.0 互通）
+
+主题：打通「物相检索（XinMatch）→ 全谱拟合精修（XinRefinement）」家族链路。
+计划与格式契约见 [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md)。
+
+### 新增
+
+- **导入 XinMatch 物相分析（`.xinm`）**：文件菜单新入口；装载谱图 + 已选物相 CIF +
+  wavelength/anode 元数据；`structural=false` 的相（PDF2 类无结构条目）列为「仅参照」
+  并提示手动补 CIF，不参与精修；导入内核 `core/io/xinm_import.py` 不依赖 Qt，
+  GUI/CLI/库 API 共用，含 zip 炸弹防护与版本协商（version > 支持值提示升级）
+- **工程文件升级 `.xinr`（自包含 zip 容器）**：默认内嵌谱图（规范 CSV，`%.10g`，
+  往返相对误差 ≤ 1e-9）+ CIF + 完整精修结果，换机器/移目录后仍可打开精修；
+  扩展名分流——`.xinr` 走容器、`.xrp` 保持 v1.0.0 的 JSON 路径引用（**旧文件永久只读兼容**）；
+  顺带修复 v1.0.0 `.xrp` 丢失 `phase_edits` 的问题
+- **库 API**：`capabilities()` 新增 `xinm_import: "1"` 能力位
+
+### 验证
+
+- 新增 `tests/test_xinm_import.py`（8 项）+ `tests/test_project_zip.py`（5 项），
+  含与 XinMatch 真实导出器的跨仓库 round-trip；S1 端到端：真实 COD 档案 CIF
+  经 `.xinm` 导出 → 导入 → 精修 **Rwp 3.409617 与黄金值逐位一致**
+- 全量测试 259 → **272 项全绿**；i18n 三语补 `menu.import_xinm`
+
 ## v1.0.0（2026-11-05 发布）
 
 **首个正式发布版本。** 通用粉末衍射全谱拟合（Rietveld 结构精修 / Le Bail / 谱图精修）。
