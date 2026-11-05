@@ -268,14 +268,12 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
     if n == 0:
         residual_fn(x0)
         best_x, success = x0, True
-    elif backend == "scipy":
-        from scipy.optimize import least_squares
-        sr = least_squares(residual_fn, x0, bounds=(lo, hi), method="trf",
-                           x_scale="jac", max_nfev=3000)
-        best_x, success = sr.x, bool(sr.success)
     else:
-        lm = lm_minimize(residual_fn, x0, bounds=(lo, hi), max_iter=max_iter)
-        best_x, success = lm.x, lm.success
+        # v1.3 #16：统一走优化器注册表（lm / trf / dogbox，别名 scipy = trf）
+        from xinrefinement.core.refine.optimizers import minimize as _optimize
+        opt = _optimize(residual_fn, x0, (lo, hi), method=backend,
+                        max_iter=max_iter)
+        best_x, success = opt.x, opt.success
 
     scales = tuple(tuple(float(v) for v in best_x[offsets[i]:offsets[i + 1]])
                    for i in range(len(phases)))

@@ -203,6 +203,122 @@ def _resolve_theoretical_sigma(cfg: RefineConfig, phases: list[CifStructure],
     return _replace(cfg, sigma=sig)
 
 
+def _resolve_texture(cfg: RefineConfig, phases: list[CifStructure],
+                     prm: ProfileParams,
+                     warnings: list[str]) -> ProfileParams:
+    """v1.3 任务 #14：织构配置的入口校验与规范化（一次性，不进热路径）。
+
+    - 网格统一规范成 ``TEXTURE_N_GRID`` 点（CLI/GUI 可给任意长度）；
+    - 相内独立 χ 桶数 < 3 → **显式报错**（欠定，不能静默给结果）；
+    - 开织构的相与 March–Dollase 互斥，给出 warning（该相 r 被忽略）；
+    - 未配置织构却开了开关 → 忽略并提示（不静默改变模型）。
+    """
+    from dataclasses import replace as _replace
+
+    from xinrefinement.core.profile.forward import (
+        DEFAULT_TEXTURE_AXIS,
+        normalize_texture_grid,
+        texture_chi_buckets,
+    )
+
+    if not prm.texture:
+        if cfg.refine_texture:
+            warnings.append(
+                "织构精修已开启，但没有相配置织构轴 —— 该参数组不参与")
+        return prm
+    # 注：即使未开精修（cfg.refine_texture=False），配置的 T(χ) 仍作为
+    # **固定因子**施加到前向模型——这里统做规范化与互斥检查。
+    names = {st.name for st in phases}
+    tex: dict[str, dict] = {}
+    for name in sorted(prm.texture):
+        if name not in names:
+            warnings.append(f"织构配置的相「{name}」不在本次精修相列表，已忽略")
+            continue
+        entry = dict(prm.texture[name])
+        axis = entry.get("axis") or DEFAULT_TEXTURE_AXIS
+        entry["axis"] = (int(axis[0]), int(axis[1]), int(axis[2]))
+        entry["grid"] = normalize_texture_grid(entry.get("grid"))
+        tex[name] = entry
+    if not tex:
+        return _replace(prm, texture=None)
+    for st in phases:
+        entry = tex.get(st.name)
+        if entry is None:
+            continue
+        if not cfg.refine_texture:
+            continue
+        n_buckets, _chis = texture_chi_buckets(
+            st, prm, entry["axis"], cfg.tmin, cfg.tmax)
+        if n_buckets < 3:
+            raise ValueError(
+                f"相「{st.name}」开织构欠定：窗口内独立 χ 桶数 {n_buckets} < 3，"
+                "T(χ) 形状不可分辨（请改织构轴或调整精修窗口）")
+        if prm.po_r and st.name in prm.po_r:
+            warnings.append(
+                f"织构：相「{st.name}」已开 EWIMV 离散 ODF，"
+                "March–Dollase r 被忽略（两模型互斥）")
+    if cfg.refine_texture:
+        warnings.append(
+            f"EWIMV 织构：{len(tex)} 相 × {cfg.texture_lambda:g} 光滑罚权重"
+            "（MAUD 离散 ODF 语义，BB 几何退化为每反射 T(χ)）")
+    return _replace(prm, texture=tex)
+
+
+def _resolve_aniso(cfg: RefineConfig, phases: list[CifStructure],
+                   prm: ProfileParams,
+                   warnings: list[str]) -> ProfileParams:
+    """v1.3 任务 #15：Popa LB 各向异性配置的入口校验（一次性）。
+
+    - 系数统一补齐/截断为 6 个（``size`` 与 ``strain`` 各 6）；
+    - 开精修时要求窗口内独立晶向数 ≥ :data:`nl.ANISO_MIN_DIRS`，否则**报错**
+      （12 个系数在方向不足时不可辨识，静默给结果等于给噪声）；
+    - 给出各向异性比作为诊断（Dmax/Dmin、εmax/εmin）。
+    """
+    from dataclasses import replace as _replace
+
+    from xinrefinement.core.profile.forward import aniso_dirs, aniso_ratios
+
+    if not prm.aniso:
+        if cfg.refine_aniso:
+            warnings.append(
+                "各向异性精修已开启，但没有相配置系数 —— 该参数组不参与")
+        return prm
+    names = {st.name for st in phases}
+    out: dict[str, dict] = {}
+    for name in sorted(prm.aniso):
+        if name not in names:
+            warnings.append(f"各向异性配置的相「{name}」不在本次精修相列表，已忽略")
+            continue
+        entry = prm.aniso[name] or {}
+        out[name] = {
+            "size": (list(entry.get("size") or []) + [0.0] * 6)[:6],
+            "strain": (list(entry.get("strain") or []) + [0.0] * 6)[:6],
+        }
+    if not out:
+        return _replace(prm, aniso=None)
+    if cfg.refine_aniso:
+        from xinrefinement.core.refine.nonlinear import ANISO_MIN_DIRS
+        for st in phases:
+            if st.name not in out:
+                continue
+            dirs = aniso_dirs(st, prm, cfg.tmin, cfg.tmax)
+            n_dirs = int(dirs.shape[0])
+            if n_dirs < ANISO_MIN_DIRS:
+                raise ValueError(
+                    f"相「{st.name}」各向异性欠定：窗口内独立晶向 {n_dirs} 个 "
+                    f"< {ANISO_MIN_DIRS}（12 个二次型系数不可辨识，请扩大窗口）")
+            d_ratio, e_ratio = aniso_ratios(out[st.name])
+            mode = getattr(cfg, "aniso_mode", "size")
+            warnings.append(
+                f"Popa LB（mode={mode}）：相「{st.name}」{n_dirs} 个独立晶向，"
+                f"Dmax/Dmin={d_ratio:.2f}，εmax/εmin={e_ratio:.2f}")
+            if mode == "both":
+                warnings.append(
+                    "Popa LB：size 与 strain 同时精修存在互相吸收风险，"
+                    "建议先只放 size（aniso_mode=\"size\"）再视残差决定")
+    return _replace(prm, aniso=out)
+
+
 def solve(inputs: RefineInputs) -> SolveResult:
     """执行一次全谱拟合（Rietveld / Le Bail 在 P2 扩展；M0 为 Rietveld）。
 
@@ -217,7 +333,9 @@ def solve(inputs: RefineInputs) -> SolveResult:
     cfg = _resolve_interp_bg(inputs.config, pat, warnings)
     cfg = _resolve_theoretical_sigma(cfg, inputs.phases, inputs.profile, pat,
                                      warnings)
-    engine = refine(inputs.phases, pat, inputs.profile, cfg)
+    prm = _resolve_texture(cfg, inputs.phases, inputs.profile, warnings)
+    prm = _resolve_aniso(cfg, inputs.phases, prm, warnings)
+    engine = refine(inputs.phases, pat, prm, cfg)
     weights = _phase_weights(inputs.phases, engine.scales, inputs.formulas,
                              warnings)
     return SolveResult(

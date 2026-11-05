@@ -50,7 +50,10 @@ def _add_refine_parser(sub) -> None:
                    help="定权模式（v1.2.0/v1.3）：sqrt=计数统计（默认），"
                         "file=谱图自带 σ，unit=常数权，1/y=σ∝y，"
                         "theoretical=σ 取计算值（MAUD theoreticalWeights，抗弱峰噪声）")
-    r.add_argument("--backend", choices=["lm", "scipy"], default="lm")
+    r.add_argument("--backend", choices=["lm", "trf", "dogbox", "scipy"],
+                   default="lm",
+                   help="优化器（v1.3 插拔）：lm=自研（默认），trf=scipy 鲁棒，"
+                        "dogbox=强边界，scipy=trf 的别名")
     r.add_argument("--max-iter", type=int, default=40)
     r.add_argument("--microabs", action="append", default=[], metavar="相名=μr",
                    help="Brindley 微吸收校正（v1.2.0，可多次）：如 "
@@ -60,6 +63,19 @@ def _add_refine_parser(sub) -> None:
                    help="按相化学成分自动算 μ·r（v1.3，可多次）：如 "
                         "--grain-size Goethite=3.0（球半径 μm）；"
                         "与 --microabs 同名时后者优先")
+    r.add_argument("--texture", action="append", default=[],
+                   metavar="相名=h0,k0,l0",
+                   help="EWIMV 离散 ODF 织构精修（v1.3，可多次）：如 "
+                        "--texture anatase=0,0,1；BB 几何下每反射一个 "
+                        "T(χ) 因子（19 点 0–90° 网格，光滑罚正则化）")
+    r.add_argument("--texture-lambda", type=float, default=1.0,
+                   metavar="λ",
+                   help="织构网格二阶差分光滑罚权重（默认 1.0，0=关闭正则化）")
+    r.add_argument("--aniso", action="append", default=[],
+                   metavar="相名[=size|strain|both]",
+                   help="Popa LB 各向异性尺寸/应变（v1.3，可多次）：如 "
+                        "--aniso anatase=size；默认 mode=size（6 参），"
+                        "both=12 参（可能不可辨识）")
     r.add_argument("--refine-eta", action="store_true")
     r.add_argument("--refine-asym", action="store_true")
     r.add_argument("--refine-bfactor", action="store_true")
@@ -96,6 +112,47 @@ def _parse_microabs(items: list[str]) -> dict[str, float]:
         if not name or not val:
             raise SystemExit(f"--microabs 格式应为 相名=μr，收到: {item!r}")
         out[name] = float(val)
+    return out
+
+
+def _parse_aniso(items: list[str]):
+    """'相名[=mode]' 列表 -> ({相名: 各向同性起点系数}, mode)。"""
+    from xinrefinement.core.profile.forward import aniso_default
+
+    out: dict[str, dict] = {}
+    mode = "size"
+    for item in items:
+        name, _, spec = item.partition("=")
+        name, spec = name.strip(), spec.strip()
+        if not name:
+            raise SystemExit(f"--aniso 格式应为 相名[=size|strain|both]，收到: {item!r}")
+        if spec:
+            if spec not in ("size", "strain", "both"):
+                raise SystemExit(f"--aniso 模式只能是 size / strain / both，收到: {spec!r}")
+            mode = spec
+        out[name] = aniso_default(1.5406)
+    return out, mode
+
+
+def _parse_texture(items: list[str]):
+    """'相名=h0,k0,l0' 列表 -> ({相名: {"axis": hkl, "grid": 全 1}}, 是否启用)。"""
+    from xinrefinement.core.profile.forward import default_texture_grid
+
+    out: dict[str, dict] = {}
+    for item in items:
+        name, _, spec = item.partition("=")
+        name = name.strip()
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+        if not name or len(parts) < 3:
+            raise SystemExit(
+                f"--texture 格式应为 相名=h0,k0,l0，收到: {item!r}")
+        try:
+            axis = tuple(int(round(float(p))) for p in parts[:3])
+        except ValueError:
+            raise SystemExit(f"--texture 指数必须是整数，收到: {item!r}")
+        if axis == (0, 0, 0):
+            raise SystemExit(f"--texture 织构轴不能是 0,0,0，收到: {item!r}")
+        out[name] = {"axis": axis, "grid": default_texture_grid()}
     return out
 
 
@@ -136,12 +193,16 @@ def _build_inputs(args) -> RefineInputs:
         microabs.update(calc_microabs(phases, _parse_grain_size(args.grain_size),
                                       anode=anode or "Cu"))
     microabs.update(_parse_microabs(args.microabs))
+    texture = _parse_texture(args.texture)
+    aniso, aniso_mode = _parse_aniso(args.aniso)
     prm = ProfileParams(
         zero=args.zero,
         wavelength=args.wavelength,
         anode=None if args.anode == "none" else args.anode,
         integrated=not args.peak_height,
         microabs=(microabs or None),
+        texture=(texture or None),
+        aniso=(aniso or None),
     )
     cfg = RefineConfig(
         refine_zero=True,
@@ -152,6 +213,10 @@ def _build_inputs(args) -> RefineInputs:
         refine_po=args.refine_po,
         refine_size=args.refine_size,
         refine_strain=args.refine_strain,
+        refine_texture=bool(texture),
+        texture_lambda=args.texture_lambda,
+        refine_aniso=bool(aniso),
+        aniso_mode=aniso_mode,
         n_bg=args.n_bg,
         bg_mode=args.bg_mode,
         bg_points=_parse_bg_points(args.bg_points),
@@ -208,6 +273,14 @@ def to_report(res: SolveResult, args) -> dict:
             "Y": _round(res.params.Y),
             "wavelength": _round(res.params.wavelength),
             "anode": res.params.anode,
+            "texture": ({name: {"axis": list(entry.get("axis") or []),
+                                "grid": _round_list(entry.get("grid") or [])}
+                        for name, entry in (res.params.texture or {}).items()}
+                        or None),
+            "aniso": ({name: {"size": _round_list(entry.get("size") or []),
+                              "strain": _round_list(entry.get("strain") or [])}
+                       for name, entry in (res.params.aniso or {}).items()}
+                      or None),
         },
         "background": _round_list(res.background),
         "phases": [

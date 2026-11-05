@@ -58,6 +58,41 @@ from xinrefinement.core.refine.solve import RefineInputs, solve
 from xinrefinement.gui.about import AboutDialog
 from xinrefinement.gui.assets import app_icon
 from xinrefinement.gui.canvas import PatternCanvas
+
+
+def _aniso_from_edits(edits: dict, wavelength: float = 1.5406) -> dict:
+    """``phase_edits`` -> ``ProfileParams.aniso``（v1.3 #15）。
+
+    对话框只给模式；系数初值取各向同性（D≈1000 Å / ε≈0），精修从这里起步。
+    """
+    from xinrefinement.core.profile.forward import aniso_default
+
+    out: dict[str, dict] = {}
+    for name, s in (edits or {}).items():
+        cfg = s.get("aniso")
+        if not cfg:
+            continue
+        out[name] = aniso_default(wavelength)
+    return out
+
+
+def _texture_from_edits(edits: dict) -> dict:
+    """``phase_edits`` -> ``ProfileParams.texture``（v1.3 #14）。
+
+    只保留显式勾选织构轴的相；grid 缺省全 1（精修起点即「无织构」）。
+    """
+    from xinrefinement.core.profile.forward import default_texture_grid
+
+    out: dict[str, dict] = {}
+    for name, s in (edits or {}).items():
+        tx = s.get("texture")
+        if not tx:
+            continue
+        out[name] = {
+            "axis": tuple(int(v) for v in tx["axis"]),
+            "grid": list(tx.get("grid") or default_texture_grid()),
+        }
+    return out
 from xinrefinement.gui.dialogs import STEPS, PhaseEditDialog, open_settings
 from xinrefinement.gui.project import load_project, save_project
 from xinrefinement.gui.workers import RefineWorker
@@ -91,6 +126,12 @@ class MainWindow(QMainWindow):
         self._phase_po: dict[str, tuple] = {}
         #: 每相 Brindley 微吸收 {phase_name: μ·r}（v1.2.0）
         self._phase_microabs: dict[str, float] = {}
+        #: v1.3 #14：每相织构配置 {相名: {"axis": (h,k,l), "grid": [...]}}
+        self._phase_texture: dict[str, dict] = {}
+        #: v1.3 #15：每相各向异性系数 {相名: {"size": [...], "strain": [...]}}
+        self._phase_aniso: dict[str, dict] = {}
+        #: v1.3 #15：各向异性精修模式（size/strain/both）
+        self._aniso_mode: str = "size"
         #: 物相编辑对话框的全部设置（晶胞/择优取向/对称性元数据）
         self._phase_edits: dict[str, dict] = {}
         self._menu_actions: dict[str, QAction] = {}
@@ -599,6 +640,11 @@ class MainWindow(QMainWindow):
         self._phase_microabs = {n: s["microabs"]
                                 for n, s in self._phase_edits.items()
                                 if s.get("microabs")}
+        self._phase_texture = _texture_from_edits(self._phase_edits)
+        self._phase_aniso = _aniso_from_edits(self._phase_edits)
+        self._aniso_mode = next(
+            (s["aniso"]["mode"] for s in self._phase_edits.values()
+             if s.get("aniso")), "size")
         if data.get("pattern") and Path(data["pattern"]).exists():
             self._load_pattern_path(Path(data["pattern"]))
         # v1.3：恢复工程保存的背景锚点（画布标记 + manual 模式）
@@ -704,6 +750,9 @@ class MainWindow(QMainWindow):
         self._step_status.clear()
         self._phase_po.clear()
         self._phase_microabs.clear()
+        self._phase_texture.clear()
+        self._phase_aniso.clear()
+        self._aniso_mode = "size"
         self._phase_edits.clear()
         self.phase_list.clear()
         self.canvas.clear()
@@ -818,6 +867,11 @@ class MainWindow(QMainWindow):
         self._phase_microabs = {n: s["microabs"]
                                 for n, s in self._phase_edits.items()
                                 if s.get("microabs")}
+        self._phase_texture = _texture_from_edits(self._phase_edits)
+        self._phase_aniso = _aniso_from_edits(self._phase_edits)
+        self._aniso_mode = next(
+            (s["aniso"]["mode"] for s in self._phase_edits.values()
+             if s.get("aniso")), "size")
         self._refresh_sticks()
         self.statusBar().showMessage(
             "物相参数已更新（晶胞 / 择优取向用于下一次精修与标记条）")
@@ -845,6 +899,12 @@ class MainWindow(QMainWindow):
             bg_points=bg_points,
             # v1.3：定权模式（MAUD getWeight + theoreticalWeights）
             weight_mode=bg.get("weight_mode", "sqrt"),
+            # v1.3 #14：物相编辑里显式勾选织构轴才精修 T(χ)（默认关）
+            refine_texture=bool(self._phase_texture),
+            texture_lambda=float(bg.get("texture_lambda", 1.0)),
+            # v1.3 #15：各向异性（物相编辑里显式勾选才精修；默认只放 size）
+            refine_aniso=bool(self._phase_aniso),
+            aniso_mode=self._aniso_mode,
             tmin=tmin, tmax=tmax, max_iter=40)
         # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
         # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及
@@ -853,7 +913,9 @@ class MainWindow(QMainWindow):
         prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
                             anode="Cu", integrated=True,
                             po_r=self._phase_po or None,
-                            microabs=self._phase_microabs or None)
+                            microabs=self._phase_microabs or None,
+                            texture=self._phase_texture or None,
+                            aniso=self._phase_aniso or None)
         return RefineInputs(pattern=self._pattern, phases=self._phases,
                             profile=prm, config=cfg)
 

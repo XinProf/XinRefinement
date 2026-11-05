@@ -73,7 +73,16 @@ class RefineStep:
                        refine_cell=False,
                        refine_po=(self.key == "micro"),
                        refine_size=(self.key == "micro"),
-                       refine_strain=(self.key == "micro"))
+                       refine_strain=(self.key == "micro"),
+                       # v1.3 #14：织构只在 micro 步精修，且必须由调用方
+                       # 显式配置（cfg.refine_texture）——配方不自动开。
+                       # 其它步仍然**施加** T(χ)（prm.texture 一直在），
+                       # 只是不把这 19 维放进 LM 向量。
+                       refine_texture=(self.key == "micro"
+                                       and cfg.refine_texture),
+                       # v1.3 #15：各向异性同样只在 micro 步精修，且需
+                       # 调用方显式配置（cfg.refine_aniso）。
+                       refine_aniso=(self.key == "micro" and cfg.refine_aniso))
         # v1.3 评审：refine_microabs **不**在此开启。μ·r 与每相 scale 数学
         # 简并（Brindley 因子是每相常数标量，被线性层自由 scale 完全吸收），
         # 单谱精修不可辨识且 LM 会数值漂移到边界；μ·r 应由化学成分计算

@@ -46,13 +46,16 @@ def compute_peaks(struct: CifStructure,
                   two_min: float = DEFAULT_TWO_MIN,
                   two_max: float = DEFAULT_TWO_MAX,
                   po=None, wavelengths=None,
-                  po_detail: bool = False):
+                  po_detail: bool = False, with_dirs: bool = False):
     """返回 (list[(two_theta, |F|²·LP, d)], skipped_elements)；
     ``po_detail=True`` 时返回 ``(peaks, skipped, detail)``。
 
     wavelengths: resolve_wavelengths() 的结果。None -> 单色光。
     po: (h, k, l, r) 择优取向 —— (hkl) 为择优面法向, r 为 March–Dollase 参数。
     完整倒易点枚举 -> 强度求和即自动包含多重性。
+    with_dirs: True 时每峰多带一个元素——该反射的**笛卡尔单位方向**
+        ``(nx, ny, nz)``（倒易矢量方向，即晶面法向），供各向异性尺寸/
+        应变（Popa LB）按晶向取值使用。合并峰取首个 hkl 的方向。
     po_detail: True 时额外返回与 peaks 逐项对齐的贡献明细
         ``detail[i] = [(val_pre_po, cos_alpha), ...]``，其中 val_pre_po 为
         未乘 PO 权重的 |F|²·LP·wgt，cos_alpha 为该 hkl 与择优面法向的夹角
@@ -121,6 +124,7 @@ def compute_peaks(struct: CifStructure,
 
     peaks: dict[int, list] = {}
     detail: dict[int, list] = {}
+    dirs: dict[int, tuple] = {}
     for h in range(-H, H + 1):
         for k in range(-H, H + 1):
             for l in range(-H, H + 1):
@@ -169,6 +173,9 @@ def compute_peaks(struct: CifStructure,
                         peaks[key][0] += val
                     else:
                         peaks[key] = [val, two_theta, 1.0 / g]
+                        if with_dirs:
+                            dirs[key] = (float(rlv[0] / g), float(rlv[1] / g),
+                                         float(rlv[2] / g))
                     if po_detail:
                         detail.setdefault(key, []).append((val0, ca))
 
@@ -180,6 +187,17 @@ def compute_peaks(struct: CifStructure,
                          detail.get(key, []) if po_detail else None))
     combined.sort(key=lambda t: t[0])
     if po_detail:
-        return ([(p, i, d) for p, i, d, _det in combined], skipped,
-                [det for _p, _i, _d, det in combined])
-    return [(p, i, d) for p, i, d, _det in combined], skipped
+        out = []
+        for p, i, d, _det in combined:
+            item = (p, i, d)
+            if with_dirs:
+                item = item + (dirs.get(round(p / TWO_THETA_TOL), (0.0, 0.0, 1.0)),)
+            out.append(item)
+        return out, skipped, [det for _p, _i, _d, det in combined]
+    out = []
+    for p, i, d, _det in combined:
+        item = (p, i, d)
+        if with_dirs:
+            item = item + (dirs.get(round(p / TWO_THETA_TOL), (0.0, 0.0, 1.0)),)
+        out.append(item)
+    return out, skipped

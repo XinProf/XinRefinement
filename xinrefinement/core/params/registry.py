@@ -13,7 +13,8 @@ registry 生成的 pack 顺序/取值/bounds 必须与现有 ``_pack/_unpack/_bo
 顺序（与 ``_pack`` 严格一致，勿调整）
 ------------------------------------
 ``zero → U,V,W → eta → asym → bfactor → 每相 (fa,fc) → 每相 PO r(sorted)
-→ 每相 Brindley mu*r(sorted microabs) → X → Y``
+→ 每相 Brindley mu*r(sorted microabs) → 每相织构 T(χ)(sorted texture,
+TEXTURE_N_GRID 维) → X → Y``
 
 其中 X/Y 在 ``_unpack`` 里是**从向量末端倒读**的，registry 保持同一约定。
 """
@@ -24,8 +25,15 @@ from typing import Callable
 
 import numpy as np
 
-from xinrefinement.core.profile.forward import MIN_W, ProfileParams
-from xinrefinement.core.refine import nonlinear as nl
+from xinrefinement.core.profile.forward import (
+    MIN_W,
+    ProfileParams,
+    normalize_texture_grid,
+)
+
+# 注：``nonlinear`` 在模块级导入会形成 registry ↔ nonlinear 循环（nonlinear
+# 顶层 import 本模块的 ParameterRegistry）。这里改为用到时局部导入，使
+# 「谁先被 import」都不再影响可导入性。
 
 
 @dataclass(frozen=True)
@@ -105,9 +113,61 @@ def _g_ma(name: str):
 
 def _s_ma(name: str):
     def _fn(prm, cell, po, v):
+        from xinrefinement.core.refine import nonlinear as nl
         ma = dict(prm.microabs)
         ma[name] = max(float(v), nl.MICROABS_BOUNDS[0])
         return replace(prm, microabs=ma), cell, po
+    return _fn
+
+
+def _g_tex(name: str, k: int):
+    def _fn(prm, cell, po):
+        grid = normalize_texture_grid(prm.texture[name].get("grid"))
+        return float(grid[k])
+    return _fn
+
+
+def _s_tex(name: str, k: int):
+    def _fn(prm, cell, po, v):
+        from xinrefinement.core.refine import nonlinear as nl
+        tex = {key: dict(val) for key, val in prm.texture.items()}
+        grid = normalize_texture_grid(tex[name].get("grid"))
+        grid[k] = min(max(float(v), nl.TEXTURE_BOUNDS[0]), nl.TEXTURE_BOUNDS[1])
+        tex[name]["grid"] = grid
+        return replace(prm, texture=tex), cell, po
+    return _fn
+
+
+def _aniso_coeff(prm, name: str, kind: str) -> list[float]:
+    c = list((prm.aniso.get(name) or {}).get(kind) or [])
+    return (c + [0.0] * 6)[:6]
+
+
+def _g_aniso(name: str, kind: str, k: int):
+    return lambda prm, cell, po: float(_aniso_coeff(prm, name, kind)[k])
+
+
+def _s_aniso(name: str, kind: str, k: int):
+    def _fn(prm, cell, po, v):
+        from xinrefinement.core.profile.forward import (
+            ANISO_DIAG_IDX,
+            ANISO_SIZE_BOUNDS,
+            ANISO_SIZE_CROSS,
+            ANISO_STRAIN_BOUNDS,
+            ANISO_STRAIN_CROSS,
+        )
+        diag = k in ANISO_DIAG_IDX
+        if kind == "size":
+            b = ANISO_SIZE_BOUNDS if diag else ANISO_SIZE_CROSS
+        else:
+            b = ANISO_STRAIN_BOUNDS if diag else ANISO_STRAIN_CROSS
+        an = {key: dict(val) for key, val in prm.aniso.items()}
+        entry = dict(an.get(name) or {})
+        coeff = _aniso_coeff(prm, name, kind)
+        coeff[k] = min(max(float(v), b[0]), b[1])
+        entry[kind] = coeff
+        an[name] = entry
+        return replace(prm, aniso=an), cell, po
     return _fn
 
 
@@ -116,6 +176,7 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
                                po_names: list[str] | None = None
                                ) -> "ParameterRegistry":
     """按 ``cfg`` 开关构造 registry（顺序与 ``_pack`` 一致）。"""
+    from xinrefinement.core.refine import nonlinear as nl
     slots: list[_Slot] = []
 
     def add(key, owner, group, bounds, getter, setter):
@@ -156,6 +217,24 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
         for name in sorted(prm.microabs):
             add(f"phase[{name}].microabs.mur", "phase", "micro",
                 nl.MICROABS_BOUNDS, _g_ma(name), _s_ma(name))
+    # v1.3 任务 #14：每相 TEXTURE_N_GRID 个织构因子 T(χ)（EWIMV 离散 ODF）
+    if cfg.refine_texture and getattr(prm, "texture", None):
+        for name in sorted(prm.texture):
+            for k in range(nl.TEXTURE_N_GRID):
+                add(f"phase[{name}].texture.T{k}", "phase", "texture",
+                    nl.TEXTURE_BOUNDS, _g_tex(name, k), _s_tex(name, k))
+    # v1.3 任务 #15：每相 12 个 Popa LB 各向异性系数（size 6 + strain 6）
+    if cfg.refine_aniso and getattr(prm, "aniso", None):
+        for name in sorted(prm.aniso):
+            for kind in nl._aniso_kinds(cfg):
+                diag_b, cross_b = (
+                    (nl.ANISO_SIZE_BOUNDS, nl.ANISO_SIZE_CROSS)
+                    if kind == "size"
+                    else (nl.ANISO_STRAIN_BOUNDS, nl.ANISO_STRAIN_CROSS))
+                for k in range(6):
+                    add(f"phase[{name}].aniso.{kind}.{k}", "phase", "micro",
+                        diag_b if k in nl.ANISO_DIAG_IDX else cross_b,
+                        _g_aniso(name, kind, k), _s_aniso(name, kind, k))
     if cfg.refine_strain:
         add("global.micro.X", "global", "micro", nl.STRAIN_BOUNDS,
             _g_prm("X"), _s_prm("X"))

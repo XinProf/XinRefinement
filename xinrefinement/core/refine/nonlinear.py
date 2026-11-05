@@ -38,11 +38,19 @@ from dataclasses import dataclass, field, replace
 from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
 from xinrefinement.core.profile.forward import (
+    ANISO_DIAG_IDX,
+    ANISO_SIZE_BOUNDS,
+    ANISO_SIZE_CROSS,
+    ANISO_STRAIN_BOUNDS,
+    ANISO_STRAIN_CROSS,
     MIN_W,
+    TEXTURE_BOUNDS,
+    TEXTURE_N_GRID,
     ProfileParams,
     compute_phase_profile,
+    normalize_texture_grid,
 )
-from xinrefinement.core.refine.lm import lm_minimize
+from xinrefinement.core.refine.optimizers import minimize as _optimize
 from xinrefinement.core.refine.linear import solve_linear_detail
 from xinrefinement.core.refine.rfactors import RFactors, compute_rfactors
 from xinrefinement.core.params.registry import (
@@ -62,6 +70,16 @@ CELL_BOUNDS = (0.99, 1.01)          # 晶胞 a,c 缩放 ±1%
 PO_BOUNDS = (0.2, 5.0)
 # v1.3: Brindley 微吸收 mu*r 边界（下限避开 0 的奇点，20 对应近全吸收）
 MICROABS_BOUNDS = (0.01, 20.0)
+# v1.3 任务 #14: 织构光滑罚默认权重（边界见 forward.TEXTURE_BOUNDS）
+TEXTURE_LAMBDA = 1.0
+#: v1.3 任务 #15：Popa LB 各向异性 12 参数的边界（size 6 + strain 6）
+ANISO_BOUNDS = (ANISO_SIZE_BOUNDS, ANISO_STRAIN_BOUNDS)
+#: 开各向异性所需的最少独立晶向数（12 参数的可辨识性护栏）
+ANISO_MIN_DIRS = 8
+#: 织构网格末端节点（χ=90°，远离织构轴）锚定到 1.0 的权重。
+#: 物理依据：纤维织构的「远场」回归无织构；数学上它同时消除
+#: 「T 整体乘常数 ↔ 该相 scale 除常数」这条零空间（否则 T 水平不可辨识）。
+TEXTURE_ANCHOR_W = 100.0
 # NCA 修改（T2.1）: TCH 洛伦兹项边界。X = 4ε（度），Y = Kλ/D（度）。
 # Y 上限 0.5° 对应 D ≈ 0.16 nm（纳米晶下限）；X 上限 0.5° 对应 ε ≈ 2.2e-3。
 SIZE_BOUNDS = (0.0, 0.5)     # Y
@@ -96,7 +114,9 @@ class RefineConfig:
     refine_asym: bool = False        # 低角不对称尾
     refine_bfactor: bool = False     # 经验高角衰减 B
     refine_cell: bool = False        # 每相晶胞 a,c 缩放 (T4.7)
-    backend: str = "lm"              # "lm"（自研，默认）| "scipy"（trf，真实数据推荐）
+    #: v1.3 #16：优化器插拔——"lm"（自研，默认）| "trf" | "dogbox" |
+    #: 历史别名 "scipy"（= trf）。见 core.refine.optimizers.OPTIMIZERS。
+    backend: str = "lm"
     progress_cb: object = None       # callable(msg: str, pct: float | None)
     on_iter: object = None           # callable(gen: int, rwp: float)
     # ---- v1.2.0 扩展：定权模式（对照 MAUD DiffrDataFile.getWeight） ----
@@ -121,6 +141,17 @@ class RefineConfig:
     # 而 wt% 静默漂移。μ·r 请用 core.absorption 按化学成分计算或实测输入。
     # 机制保留仅供多谱联合/受约束标度等未来场景实验。
     refine_microabs: bool = False
+    # ---- v1.3 任务 #14: EWIMV 离散 ODF 织构（每相 TEXTURE_N_GRID 维，默认关） ----
+    # 仅精修 prm.texture 中已给出的相；开织构的相忽略 po_r（互斥）。
+    refine_texture: bool = False
+    #: 二阶差分光滑罚权重（欠定护栏）；0 = 关闭正则化（仅供 A4 对照实验）
+    texture_lambda: float = TEXTURE_LAMBDA
+    # ---- v1.3 任务 #15: Popa LB 各向异性尺寸/应变（默认关） ----
+    # 仅精修 prm.aniso 中已给出的相；开该相的标量 X/Y 被每峰方向值取代。
+    refine_aniso: bool = False
+    #: "size"（默认，6 维）| "strain"（6 维）| "both"（12 维，可能不可辨识）。
+    #: size 与 strain 都能改变峰宽的方向依赖，同时自由会被此消彼长地吸收。
+    aniso_mode: str = "size"
     # ---- NCA 修改（T2.1）: TCH 尺寸/应变精修（默认关，保持 vendor 行为） ----
     refine_size: bool = False        # 精修 Y（Kλ/D，尺寸项）
     refine_strain: bool = False      # 精修 X（4ε，应变项）
@@ -183,6 +214,20 @@ def _pack(prm: ProfileParams, cfg: RefineConfig, n_phase: int) -> np.ndarray:
     if cfg.refine_microabs and prm.microabs:
         for name in sorted(prm.microabs):
             x.append(float(prm.microabs[name]))
+    # v1.3 #14: 每相织构网格（sorted(texture)，每相 TEXTURE_N_GRID 维）
+    if cfg.refine_texture and prm.texture:
+        for name in sorted(prm.texture):
+            for v in normalize_texture_grid(prm.texture[name].get("grid")):
+                x.append(float(v))
+    # v1.3 #15: 每相各向异性（sorted(aniso)：size 6 后 strain 6）
+    if cfg.refine_aniso and prm.aniso:
+        kinds = _aniso_kinds(cfg)
+        for name in sorted(prm.aniso):
+            entry = prm.aniso[name]
+            for key in kinds:
+                c = list(entry.get(key) or [])
+                c = (c + [0.0] * 6)[:6]
+                x.extend(float(v) for v in c)
     # NCA 修改（T2.1）: X/Y 追加在最后（PO 之后），_unpack/_bounds 同序
     if cfg.refine_strain:
         x.append(float(getattr(prm, "X", 0.0)))
@@ -240,18 +285,49 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
         microabs = dict(base.microabs)
         for name in sorted(base.microabs):
             microabs[name] = max(float(x[i]), MICROABS_BOUNDS[0]); i += 1
+    # v1.3 #14: 织构网格与 _pack 同序（sorted(texture)），axis 取 base 值
+    texture = base.texture
+    if cfg.refine_texture and base.texture:
+        texture = {}
+        for name in sorted(base.texture):
+            entry = dict(base.texture[name])
+            entry["grid"] = [max(min(float(x[i + k]), TEXTURE_BOUNDS[1]),
+                                 TEXTURE_BOUNDS[0])
+                             for k in range(TEXTURE_N_GRID)]
+            i += TEXTURE_N_GRID
+            texture[name] = entry
+    # v1.3 #15: 各向异性与 _pack 同序（sorted(aniso)：size 6 后 strain 6）
+    aniso = base.aniso
+    if cfg.refine_aniso and base.aniso:
+        aniso = {}
+        def _clamp(v, k, strain):
+            diag = k in ANISO_DIAG_IDX
+            if strain:
+                b = ANISO_STRAIN_BOUNDS if diag else ANISO_STRAIN_CROSS
+            else:
+                b = ANISO_SIZE_BOUNDS if diag else ANISO_SIZE_CROSS
+            return max(min(float(v), b[1]), b[0])
+
+        for name in sorted(base.aniso):
+            entry = dict(base.aniso[name])
+            for key in _aniso_kinds(cfg):
+                entry[key] = [_clamp(x[i + k], k, key == "strain")
+                              for k in range(6)]
+                i += 6
+            aniso[name] = entry
     prm = ProfileParams(zero=zero, U=U, V=V, W=max(W, MIN_W), eta=eta,
                         anode=base.anode, ka_ratio=base.ka_ratio,
                         po_r=po_r, wavelength=base.wavelength,
                         asym=asym, bfactor=bfactor,
                         integrated=base.integrated,
-                        microabs=microabs,
+                        microabs=microabs, texture=texture, aniso=aniso,
                         X=X, Y=Y)   # NCA 修改（T2.1）
     return prm, cell
 
 
 def _bounds(cfg: RefineConfig, n_phase: int,
-            n_po: int = 0, n_ma: int = 0) -> tuple[np.ndarray, np.ndarray]:
+            n_po: int = 0, n_ma: int = 0,
+            n_tex: int = 0, n_aniso: int = 0) -> tuple[np.ndarray, np.ndarray]:
     lo, hi = [], []
     if cfg.refine_zero:
         lo.append(ZERO_BOUNDS[0]); hi.append(ZERO_BOUNDS[1])
@@ -274,12 +350,39 @@ def _bounds(cfg: RefineConfig, n_phase: int,
     # v1.3: 每相一个 Brindley mu*r（顺序与 _pack 一致：sorted(microabs)）
     for _ in range(n_ma):
         lo.append(MICROABS_BOUNDS[0]); hi.append(MICROABS_BOUNDS[1])
+    # v1.3 #14: 每相 TEXTURE_N_GRID 个 T(χ)（顺序与 _pack 一致）
+    for _ in range(n_tex):
+        lo.append(TEXTURE_BOUNDS[0]); hi.append(TEXTURE_BOUNDS[1])
+    # v1.3 #15: 每相各向异性系数（Cholesky 下三角，按 aniso_mode 取 size/strain）
+    n_kind = len(_aniso_kinds(cfg))
+    for _p in range(n_aniso):
+        for kk in range(n_kind):
+            key = _aniso_kinds(cfg)[kk]
+            for k in range(6):
+                diag = k in ANISO_DIAG_IDX
+                if key == "strain":
+                    b = ANISO_STRAIN_BOUNDS if diag else ANISO_STRAIN_CROSS
+                else:
+                    b = ANISO_SIZE_BOUNDS if diag else ANISO_SIZE_CROSS
+                lo.append(b[0]); hi.append(b[1])
     # NCA 修改（T2.1）: X/Y 边界（顺序与 _pack 一致：先 X 后 Y）
     if cfg.refine_strain:
         lo.append(STRAIN_BOUNDS[0]); hi.append(STRAIN_BOUNDS[1])
     if cfg.refine_size:
         lo.append(SIZE_BOUNDS[0]); hi.append(SIZE_BOUNDS[1])
     return np.array(lo), np.array(hi)
+
+
+def _aniso_kinds(cfg: RefineConfig) -> tuple[str, ...]:
+    """该次精修放开的各向异性系数族（顺序即向量顺序）。"""
+    mode = getattr(cfg, "aniso_mode", "size")
+    if mode == "both":
+        return ("size", "strain")
+    if mode == "strain":
+        return ("strain",)
+    if mode != "size":
+        raise ValueError(f"未知 aniso_mode: {mode!r}（可选 size / strain / both）")
+    return ("size",)
 
 
 def _ensure_po_r(phases: list[CifStructure], prm0: ProfileParams,
@@ -443,7 +546,21 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
                 cfg.on_iter(gen[0], rwp)
             except Exception:
                 pass
-        return (yo - ycalc) / sig
+        r = (yo - ycalc) / sig
+        # v1.3 #14：织构 T(χ) 正则化 —— 二阶差分光滑罚（λ=0 关闭）
+        # + 末端节点锚定 1.0（消除「T 乘常数 ↔ scale 除常数」零空间）
+        if cfg.refine_texture and prm.texture:
+            lam = float(getattr(cfg, "texture_lambda", 0.0) or 0.0)
+            pen = []
+            for name in sorted(prm.texture):
+                g = np.asarray(normalize_texture_grid(
+                    prm.texture[name].get("grid")), dtype=np.float64)
+                if lam > 0.0:
+                    pen.append(np.sqrt(lam) * (g[:-2] - 2.0 * g[1:-1] + g[2:]))
+                pen.append(np.array([TEXTURE_ANCHOR_W * (g[-1] - 1.0)]))
+            if pen:
+                r = np.concatenate([r] + pen)
+        return r
 
     return residual_fn, scaled
 
@@ -473,12 +590,10 @@ def _restart_points(prm_try: ProfileParams) -> list[ProfileParams]:
     """
     pts = []
     for u, w in ((0.02, 0.02), (0.05, 0.01), (0.0, 0.02)):
-        pts.append(ProfileParams(zero=prm_try.zero, U=u, V=0.0, W=w,
-                                 eta=prm_try.eta, anode=prm_try.anode,
-                                 ka_ratio=prm_try.ka_ratio, po_r=prm_try.po_r,
-                                 wavelength=prm_try.wavelength,
-                                 asym=prm_try.asym, bfactor=prm_try.bfactor,
-                                 integrated=prm_try.integrated))
+        # 用 replace 保留全部其余字段（X/Y、microabs、texture、aniso、po_r）：
+        # 早先手工重建 ProfileParams 会把这些扩展字段静默清零，重启后
+        # 织构/各向异性/微吸收全部失效（v1.3 实测 registry.pack 直接崩溃）。
+        pts.append(replace(prm_try, U=u, V=0.0, W=w))
     return pts
 
 
@@ -513,35 +628,21 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
 
     if x0.size:
         lo, hi = reg.bounds()
-        use_scipy = False
-        if cfg.backend == "scipy":
+        # v1.3 #16：优化器可插拔（lm 默认 / trf / dogbox，见 optimizers 模块）。
+        # scipy 后端在真实数据（多相关联形状参数）上更稳，能守住内部解不
+        # 落入 U,V→0 角点（v1.0.0 实证，Rwp 11.6→9.5%）。
+        def _progress(n: int) -> None:
+            if cfg.progress_cb is None or n % 40:
+                return
             try:
-                from scipy.optimize import least_squares
-                use_scipy = True
+                cfg.progress_cb(
+                    f"正在 Rietveld 全谱拟合（已评估 {n} 次）…", None)
             except Exception:
-                use_scipy = False
-        if use_scipy:
-            # scipy trf 后端：真实数据（多相关联形状参数）上明显更稳，
-            # 能守住内部解不落入 U,V→0 角点（v1.0.0 实证，Rwp 11.6→9.5%）。
-            nfev = [0]
+                pass
 
-            def counted(xv):
-                nfev[0] += 1
-                if (cfg.progress_cb is not None and nfev[0] % 40 == 0):
-                    try:
-                        cfg.progress_cb(
-                            f"正在 Rietveld 全谱拟合（已评估 {nfev[0]} 次）…", None)
-                    except Exception:
-                        pass
-                return residual_fn(xv)
-
-            sr = least_squares(counted, x0, bounds=(lo, hi), method="trf",
-                               x_scale="jac", max_nfev=3000)
-            best_x, best_cost, success = sr.x, float(sr.cost), bool(sr.success)
-        else:
-            lm = lm_minimize(residual_fn, x0, bounds=(lo, hi),
-                             max_iter=cfg.max_iter)
-            best_x, best_cost, success = lm.x, lm.cost, lm.success
+        opt = _optimize(residual_fn, x0, (lo, hi), method=cfg.backend,
+                        max_iter=cfg.max_iter, on_eval=_progress)
+        best_x, best_cost, success = opt.x, opt.cost, opt.success
         # ---- 多起点重启（仅 refine_uvw）: 角点陷阱检测 ----
         restarted = False
         if cfg.refine_uvw:
@@ -557,8 +658,9 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
                 for cand in _restart_points(prm_try):
                     r2, _sf2 = _build_residual(phases, pat, cand, cfg,
                                                history, gen, reg=reg)
-                    lm2 = lm_minimize(r2, reg.pack(cand, po_r=cand.po_r),
-                                      bounds=(lo, hi), max_iter=cfg.max_iter)
+                    lm2 = _optimize(r2, reg.pack(cand, po_r=cand.po_r),
+                                    (lo, hi), method=cfg.backend,
+                                    max_iter=cfg.max_iter)
                     if lm2.cost < best_cost:
                         best_x, best_cost = lm2.x, lm2.cost
                         success = lm2.success

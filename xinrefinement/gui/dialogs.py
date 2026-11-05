@@ -250,6 +250,10 @@ class PhaseEditDialog(_BaseDialog):
         self._po_r: dict[str, QDoubleSpinBox] = {}
         self._ma_enable: dict[str, QCheckBox] = {}
         self._ma_value: dict[str, QDoubleSpinBox] = {}
+        self._tx_enable: dict[str, QCheckBox] = {}
+        self._tx_hkl: dict[str, list[QSpinBox]] = {}
+        self._an_enable: dict[str, QCheckBox] = {}
+        self._an_mode: dict[str, QComboBox] = {}
         self._sg_edit: dict[str, QLineEdit] = {}
         self._pg_edit: dict[str, QComboBox] = {}
         self._laue_edit: dict[str, QComboBox] = {}
@@ -367,6 +371,67 @@ class PhaseEditDialog(_BaseDialog):
             self._ma_value[st.name] = ma_sb
             pv.addWidget(grp_ma)
 
+            # -- 织构（EWIMV 离散 ODF，v1.3 任务 #14） ------------------- #
+            grp_tx = QGroupBox("织构 (EWIMV 离散 ODF)")
+            tf = QFormLayout(grp_tx)
+            tx_en = QCheckBox("启用（每反射 T(χ)，19 点 0–90° 网格）")
+            saved_tx = saved.get("texture") or {}
+            tx_en.setChecked(bool(saved_tx))
+            tf.addRow(tx_en)
+            tx_row = QHBoxLayout()
+            tx_boxes: list[QSpinBox] = []
+            saved_axis = saved_tx.get("axis") or (0, 0, 1)
+            for k in range(3):
+                sb = QSpinBox()
+                sb.setRange(-12, 12)
+                sb.setValue(int(saved_axis[k]))
+                tx_boxes.append(sb)
+                tx_row.addWidget(sb)
+            tf.addRow("织构轴 (h k l)", tx_row)
+            hint = QLabel("与 March–Dollase 互斥：开织构后该相 r 被忽略")
+            hint.setWordWrap(True)
+            tf.addRow(hint)
+
+            def _tx_toggle(on, en_po=en, r_po=r_sb, hkl_po=hkl_boxes):
+                for sb in tx_boxes:
+                    sb.setEnabled(on)
+                # 互斥：开织构时停用本相 March–Dollase（不给同一自由度两套模型）
+                if on:
+                    en_po.setChecked(False)
+                en_po.setEnabled(not on)
+
+            tx_en.toggled.connect(_tx_toggle)
+            for sb in tx_boxes:
+                sb.setEnabled(tx_en.isChecked())
+            en.setEnabled(not tx_en.isChecked())
+            self._tx_enable[st.name] = tx_en
+            self._tx_hkl[st.name] = tx_boxes
+            pv.addWidget(grp_tx)
+
+            # -- 各向异性尺寸/应变（Popa LB，v1.3 任务 #15） -------------- #
+            grp_an = QGroupBox("各向异性尺寸 / 应变 (Popa LB)")
+            af = QFormLayout(grp_an)
+            an_en = QCheckBox("启用（按晶向取 D 与 ε，替代标量 X/Y）")
+            saved_an = saved.get("aniso") or {}
+            an_en.setChecked(bool(saved_an))
+            af.addRow(an_en)
+            an_mode = QComboBox()
+            an_mode.addItems(("size", "strain", "both"))
+            an_mode.setCurrentText(str(saved_an.get("mode", "size")))
+            an_mode.setToolTip(
+                "size=只精修尺寸（推荐，6 参）\nstrain=只精修应变（6 参）\n"
+                "both=两族同时（12 参，可能互相吸收，谨慎）")
+            af.addRow("精修模式", an_mode)
+            an_hint = QLabel(
+                "各向同性起点 D≈1000 Å；方向依赖由 6 个 Cholesky 系数描述")
+            an_hint.setWordWrap(True)
+            af.addRow(an_hint)
+            an_en.toggled.connect(an_mode.setEnabled)
+            an_mode.setEnabled(an_en.isChecked())
+            self._an_enable[st.name] = an_en
+            self._an_mode[st.name] = an_mode
+            pv.addWidget(grp_an)
+
             # -- 对称性（空间群 / 点群 / 劳厄群） ----------------------- #
             grp_sym = QGroupBox("对称性")
             sf = QFormLayout(grp_sym)
@@ -410,6 +475,13 @@ class PhaseEditDialog(_BaseDialog):
                 "microabs": (float(self._ma_value[st.name].value())
                              if st.name in self._ma_enable
                              and self._ma_enable[st.name].isChecked() else None),
+                "texture": ({"axis": tuple(int(sb.value())
+                                           for sb in self._tx_hkl[st.name])}
+                            if st.name in self._tx_enable
+                            and self._tx_enable[st.name].isChecked() else None),
+                "aniso": ({"mode": self._an_mode[st.name].currentText()}
+                          if st.name in self._an_enable
+                          and self._an_enable[st.name].isChecked() else None),
                 "spacegroup": self._sg_edit[st.name].text().strip(),
                 "point_group": self._pg_edit[st.name].currentText().strip(),
                 "laue_group": self._laue_edit[st.name].currentText().strip(),

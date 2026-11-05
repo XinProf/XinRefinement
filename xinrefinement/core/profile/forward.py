@@ -24,10 +24,30 @@ from xinrefinement.core.profile.shape import (
     resolve_wavelengths,
 )
 from xinrefinement.core.profile.size_strain import split_fwhm  # NCA 修改（T2.1）
-from xinrefinement.core.profile.struct import compute_peaks
+from xinrefinement.core.profile.struct import compute_peaks, reciprocal_basis
 
 # FWHM 下限保护：防止 Caglioti 退化导致除零
 MIN_W = 1e-4
+
+# ---- v1.3 任务 #14：EWIMV 离散 ODF（纤维织构 1D） ----
+#: χ 网格点数（0–90°，5° 步长，端点含）
+TEXTURE_N_GRID = 19
+#: 织构因子边界（与 MAUD「负 ODF 截断」同方向，用边界而非截断）
+TEXTURE_BOUNDS = (0.1, 10.0)
+#: 默认织构轴（(001) 纤维轴，BB 几何最常见）
+DEFAULT_TEXTURE_AXIS = (0, 0, 1)
+
+# ---- v1.3 任务 #15：Popa LB 各向异性尺寸/应变（2 阶截断，Cholesky 参数化） ----
+#: 尺寸项 L 的对角/非对角边界（Å⁻¹）；非对角可负（任意取向椭球）
+ANISO_SIZE_BOUNDS = (1.0e-4, 1.6)
+ANISO_SIZE_CROSS = (-1.6, 1.6)
+#: 应变项 L 的对角/非对角边界（无量纲）
+ANISO_STRAIN_BOUNDS = (1.0e-6, 0.1)
+ANISO_STRAIN_CROSS = (-0.1, 0.1)
+#: L 的参数位次（行优先下三角）：0=l11 1=l21 2=l22 3=l31 4=l32 5=l33
+ANISO_DIAG_IDX = (0, 2, 5)
+_RAD2DEG = 180.0 / math.pi
+SCHERRER_K = 0.9
 
 
 def caglioti_2theta(U: float, V: float, W: float):
@@ -90,6 +110,19 @@ class ProfileParams:
     Y: float = 0.0
     # ---- v1.2.0：Brindley 微吸收（每相 μ·r，None = 全部关闭） ----
     microabs: dict | None = None
+    # ---- v1.3 任务 #14：EWIMV 离散 ODF 织构（每相，None = 关闭） ----
+    #: ``{phase_name: {"axis": (h0, k0, l0), "grid": [T(χ_0) … T(χ_90)]}}``
+    #: v1 仅 Bragg–Brentano 平板对称反射几何：散射矢量恒沿样品法向，织构
+    #: 因子退化为每反射常数 ``T(χ_hkl)``（χ 为该反射法向与织构轴夹角）。
+    #: **开织构的相自动忽略 po_r**（同一自由度不给两套模型抢，结果里告警）。
+    texture: dict | None = None
+    # ---- v1.3 任务 #15：Popa LB 各向异性尺寸/应变（每相，None = 关闭） ----
+    #: ``{phase_name: {"size": [c11,c22,c33,c12,c13,c23],
+    #:               "strain": [同序]}}``
+    #: 2 阶球谐截断：``1/D² = Σ c_ij n_i n_j``、``ε² = Σ c_ij n_i n_j``，
+    #: ``n`` 为该反射的笛卡尔单位法向。各向同性时 c 为对角常数，等价于
+    #: 标量 X/Y。给出 aniso 的相**忽略标量 X/Y**（每峰按方向取值）。
+    aniso: dict | None = None
 
 
 def brindley_factor(mr: float) -> float:
@@ -107,6 +140,175 @@ def brindley_factor(mr: float) -> float:
         # 小 μr：1-e^(-x) 灾难性消元，走 Taylor 展开 1 - x/2 + x²/6
         return 1.0 - mr / 2.0 + mr * mr / 6.0
     return (1.0 - math.exp(-mr)) / mr
+
+
+def default_texture_grid() -> list[float]:
+    """无织构的 T(χ) 初值（全 1.0，19 点）。"""
+    return [1.0] * TEXTURE_N_GRID
+
+
+def normalize_texture_grid(grid=None, n: int = TEXTURE_N_GRID) -> list[float]:
+    """把任意长度的 T(χ) 序列规范成 n 点（缺省全 1.0，线性重采样）。"""
+    g = [float(v) for v in (grid or [])]
+    if not g:
+        return [1.0] * n
+    if len(g) == n:
+        return g
+    src = np.linspace(0.0, 90.0, len(g))
+    dst = np.linspace(0.0, 90.0, n)
+    return [float(v) for v in np.interp(dst, src, np.asarray(g))]
+
+
+def texture_chi(hkl, axis, cell) -> float:
+    """晶面 (hkl) 法向与织构轴 ``axis`` 的夹角（度，0–90）。
+
+    用倒易基矢算夹角（非正交晶系不能直接用 hkl 点积）。``cell`` 为
+    ``(a, b, c, α, β, γ)``。
+    """
+    a, b, c, al, be, ga = cell
+    ast, bst, cst = reciprocal_basis(a, b, c, al, be, ga)
+    v1 = int(hkl[0]) * ast + int(hkl[1]) * bst + int(hkl[2]) * cst
+    v2 = int(axis[0]) * ast + int(axis[1]) * bst + int(axis[2]) * cst
+    n1, n2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+    if n1 <= 0.0 or n2 <= 0.0:
+        return 0.0
+    # 纤维织构只关心「与轴的夹角」，取 |cos| 折到 [0°, 90°]（χ 与 180−χ 等价）
+    cos_a = abs(float(v1 @ v2)) / (n1 * n2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_a))))
+
+
+def texture_factor(chi_deg: np.ndarray, grid) -> np.ndarray:
+    """按 χ（度）在织构网格上线性插值取 T(χ)。"""
+    g = np.asarray(grid, dtype=np.float64)
+    if g.size == 0:
+        return np.ones_like(np.asarray(chi_deg, dtype=np.float64))
+    if g.size == 1:
+        return np.full_like(np.asarray(chi_deg, dtype=np.float64), g[0])
+    chi_grid = np.linspace(0.0, 90.0, g.size)
+    return np.interp(np.asarray(chi_deg, dtype=np.float64), chi_grid, g)
+
+
+def texture_chi_buckets(struct: CifStructure, prm: "ProfileParams", axis,
+                        tmin: float = 5.0,
+                        tmax: float = 90.0) -> tuple[int, np.ndarray]:
+    """相内独立 χ 桶数（5° 分桶去重）与全部 χ 值——织构可辨识性护栏。
+
+    返回 ``(n_buckets, chis)``。``n_buckets < 3`` 时该相开织构属于欠定
+    （不能分辨多于两个自由度的形状），调用方应显式报错而非静默给出结果。
+    """
+    comps = resolve_wavelengths(prm.wavelength, prm.anode, prm.ka_ratio)
+    _peaks, _skipped, detail = compute_peaks(
+        struct, prm.wavelength, tmin, tmax,
+        po=(int(axis[0]), int(axis[1]), int(axis[2]), 1.0),
+        wavelengths=comps, po_detail=True)
+    chis: list[float] = []
+    for contribs in detail:
+        for _v, ca in contribs:
+            chis.append(math.degrees(math.acos(
+                max(-1.0, min(1.0, abs(ca))))))
+    arr = np.array(chis, dtype=np.float64)
+    if arr.size == 0:
+        return 0, arr
+    return int(np.unique(np.floor(arr / 5.0)).size), arr
+
+
+def _apply_texture(peaks, detail, grid):
+    """按 T(χ) 重算各峰积分强度（O(峰数)，精修每次评估可承受）。
+
+    ``detail`` 来自 ``compute_peaks(po_detail=True)``（po 取织构轴、r=1），
+    每项 ``(val_pre, cos_alpha)``。数值与「在 compute_peaks 内逐 hkl 乘
+    T(χ)」等价；T 变化只重算乘法，峰列表缓存不失效。
+    """
+    g = np.asarray(grid, dtype=np.float64)
+    if g.size < 2 or not detail:
+        return peaks
+    out = []
+    for entry, contribs in zip(peaks, detail):
+        if not contribs:
+            continue
+        arr = np.asarray(contribs, dtype=np.float64)
+        chi = np.degrees(np.arccos(np.clip(np.abs(arr[:, 1]), 0.0, 1.0)))
+        i = float(np.sum(arr[:, 0] * texture_factor(chi, g)))
+        if i > 0:
+            out.append((entry[0], i, entry[2]) + tuple(entry[3:]))
+    return out
+
+
+def aniso_xy(entry: dict, n, wavelength: float) -> tuple[float, float]:
+    """Popa LB（2 阶截断）逐反射 (X, Y)——单位与 TCH 标量一致（度）。
+
+    ``1/D² = Σ c_ij n_i n_j`` 给出 ``Y = (180/π)·Kλ/√(1/D²)``；
+    ``ε² = Σ c_ij n_i n_j`` 给出 ``X = (180/π)·4√ε²``。二次型取非负截断。
+    """
+    nx, ny, nz = float(n[0]), float(n[1]), float(n[2])
+
+    def _quad(c) -> float:
+        """|Lᵀ·n|（L = 行优先下三角），即 sqrt(Σ c_ij n_i n_j) 的可导形式。"""
+        c = list(c or ())
+        if len(c) < 6:
+            c = list(c) + [0.0] * (6 - len(c))
+        v1 = c[0] * nx
+        v2 = c[1] * nx + c[2] * ny
+        v3 = c[3] * nx + c[4] * ny + c[5] * nz
+        return math.sqrt(v1 * v1 + v2 * v2 + v3 * v3)
+
+    inv_d = _quad(entry.get("size"))
+    eps = _quad(entry.get("strain"))
+    y_deg = _RAD2DEG * SCHERRER_K * wavelength * inv_d
+    x_deg = _RAD2DEG * 4.0 * eps
+    return x_deg, y_deg
+
+
+def aniso_default(wavelength: float, x_deg: float = 0.0,
+                  y_deg: float = 0.0) -> dict:
+    """由标量 (X, Y) 构造各向同性起点（对角二次型，交叉项 0）。"""
+    inv_d = (y_deg / (_RAD2DEG * SCHERRER_K * wavelength)) if y_deg > 0 else 1.0e-3
+    eps = (math.pi / 180.0) * x_deg / 4.0 if x_deg > 0 else 1.0e-6
+    # 各向同性 -> L = diag(inv_d, inv_d, inv_d)
+    return {"size": [inv_d, 0.0, inv_d, 0.0, 0.0, inv_d],
+            "strain": [eps, 0.0, eps, 0.0, 0.0, eps]}
+
+
+def aniso_ratios(entry: dict) -> tuple[float, float]:
+    """各向异性比 (Dmax/Dmin, εmax/εmin)——诊断/告警（各向同性时均为 1）。
+
+    L 的奇异值即「最大/最小 1/D（或 ε）」：比 = σmax/σmin。
+    """
+    def _ratio(c):
+        c = list(c or ())
+        if len(c) < 6:
+            c = list(c) + [0.0] * (6 - len(c))
+        mat = np.array([[c[0], 0.0, 0.0],
+                        [c[1], c[2], 0.0],
+                        [c[3], c[4], c[5]]], dtype=np.float64)
+        sv = np.linalg.svd(mat, compute_uv=False)
+        lo, hi = float(sv[-1]), float(sv[0])
+        if hi <= 1e-12:
+            return 1.0
+        if lo <= 1e-12:
+            return math.inf
+        return hi / lo
+    return _ratio(entry.get("size")), _ratio(entry.get("strain"))
+
+
+def aniso_dirs(struct: CifStructure, prm: "ProfileParams",
+               tmin: float = 5.0, tmax: float = 90.0,
+               tol: float = 0.05) -> np.ndarray:
+    """窗口内各反射的**独立**晶向数（0.05 精度去重）——各向异性可辨识性护栏。
+
+    12 个二次型系数至少需要 8 个不同方向才能被约束；方向重复时（如只用
+    低角几条 00l 反射）结果不可辨识，调用方应显式报错。
+    """
+    comps = resolve_wavelengths(prm.wavelength, prm.anode, prm.ka_ratio)
+    peaks, _skipped = compute_peaks(struct, prm.wavelength, tmin, tmax,
+                                    wavelengths=comps, with_dirs=True)
+    dirs = []
+    for peak in peaks:
+        if len(peak) < 4:
+            continue
+        n = np.round(np.asarray(peak[3], dtype=np.float64) / tol).astype(np.int64)
+        dirs.append(tuple(int(v) for v in n))
+    return np.unique(np.array(dirs, dtype=np.int64), axis=0) if dirs else np.zeros((0, 3))
 
 
 def _window_slice(grid: np.ndarray, pos: float, half: float) -> tuple[int, int]:
@@ -135,27 +337,37 @@ def _phase_peaks(struct: CifStructure, prm: ProfileParams,
     po = None
     if prm.po_r:
         po = prm.po_r.get(struct.name)
-    po_hkl = (int(po[0]), int(po[1]), int(po[2])) if po is not None else None
+    # v1.3 #14：织构相以织构轴充当明细路径的参考矢量（T(χ) 前向施加），
+    # 且**忽略** po_r（两套模型抢同一自由度，见 ProfileParams.texture）。
+    tex = prm.texture.get(struct.name) if prm.texture else None
+    if tex is not None:
+        axis = tex["axis"]
+        po_hkl = (int(axis[0]), int(axis[1]), int(axis[2]))
+        po = (po_hkl[0], po_hkl[1], po_hkl[2], 1.0)
+    else:
+        po_hkl = (int(po[0]), int(po[1]), int(po[2])) if po is not None else None
     # NCA 修改（T3.1）：键中含结构变体盐值。占位/z_O 精修每次评估都会新建
     # CifStructure（同 name/cell/原子数），CPython 的地址复用可能让新旧结构
     # 撞出相同 id() -> 陈旧峰强。变体盐值保证占位变体永不互撞。
+    aniso = prm.aniso.get(struct.name) if prm.aniso else None
     key = (id(struct), struct.name, struct.cell, len(struct.atoms),
            getattr(struct, "_variant", 0),
            prm.anode, prm.ka_ratio, prm.wavelength, float(tmin), float(tmax),
-           po_hkl)
+           po_hkl, aniso is not None)
     hit = _PEAKS_CACHE.get(key)
     if hit is None:
         comps = resolve_wavelengths(prm.wavelength, prm.anode, prm.ka_ratio)
         if po is None:
             peaks, skipped = compute_peaks(struct, prm.wavelength, tmin, tmax,
-                                           po=None, wavelengths=comps)
+                                           po=None, wavelengths=comps,
+                                           with_dirs=aniso is not None)
             hit = (peaks, None, skipped)
         else:
             # r 固定取 1.0：峰位/权重在明细路径外与实际 r 解耦
             peaks, skipped, detail = compute_peaks(
                 struct, prm.wavelength, tmin, tmax,
                 po=(po[0], po[1], po[2], 1.0), wavelengths=comps,
-                po_detail=True)
+                po_detail=True, with_dirs=aniso is not None)
             hit = (peaks, detail, skipped)
         if len(_PEAKS_CACHE) >= _PEAKS_CACHE_MAX:
             _PEAKS_CACHE.clear()
@@ -183,23 +395,32 @@ def _apply_po_r(peaks, detail, r: float):
     if r == 1.0 or not detail:
         return peaks
     out = []
-    for (pos, _val, d), contribs in zip(peaks, detail):
+    for entry, contribs in zip(peaks, detail):
         i = 0.0
         for v, ca in contribs:
             i += v * march_dollase_weight(ca, r)
         if i > 0:
-            out.append((pos, i, d))
+            # 透传第 4 元素（各向异性用的晶向），保持下游解包一致
+            out.append((entry[0], i, entry[2]) + tuple(entry[3:]))
     return out
 
 
 def _peaks_with_po(prm: ProfileParams, struct: CifStructure,
                    tmin: float, tmax: float):
-    """取该相峰列表并按 prm.po_r 中的 r 施加择优取向权重。"""
+    """取该相峰列表并按 prm.po_r / prm.texture 施加权重（织构优先）。
+
+    开织构的相按 ``T(χ_hkl)`` 加权并**忽略**该相 March–Dollase r；
+    否则按 r 施加择优取向（v1.4.0 语义不变）。
+    """
     peaks, detail, _skipped = _phase_peaks(struct, prm, tmin, tmax)
-    if detail is not None:
-        r = _po_r_of(prm, struct)
-        if r is not None and r != 1.0:
-            peaks = _apply_po_r(peaks, detail, r)
+    if detail is None:
+        return peaks
+    tex = prm.texture.get(struct.name) if prm.texture else None
+    if tex is not None:
+        return _apply_texture(peaks, detail, tex.get("grid"))
+    r = _po_r_of(prm, struct)
+    if r is not None and r != 1.0:
+        peaks = _apply_po_r(peaks, detail, r)
     return peaks
 
 
@@ -250,23 +471,39 @@ def compute_phase_profile_naive(struct: CifStructure, grid: np.ndarray,
                                 tmin: float = 5.0, tmax: float = 90.0) -> np.ndarray:
     """全网格参考实现（慢，供 T4.8 一致性测试对照）。"""
     peaks = _peaks_with_po(prm, struct, tmin, tmax)
-    fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
     prof = np.zeros_like(grid, dtype=np.float64)
+    _accumulate_peaks(prof, grid, peaks, prm, struct)
+    return _apply_microabs(prof, prm, struct)
+
+
+def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
+                      prm: ProfileParams, struct: CifStructure) -> None:
+    """把峰列表累加进 prof（窗口化）；支持 TCH 标量与 Popa LB 各向异性。
+
+    ``prm.aniso`` 含该相时按每峰晶向取 (X, Y)（**忽略**标量 X/Y）；
+    (X, Y) 均为 0 时退回 Caglioti + prm.eta，与未开各向异性的行为一致。
+    """
+    fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
     tch_on = (prm.X != 0.0) or (prm.Y != 0.0)   # NCA 修改（T2.1）
-    for pos, height, d in peaks:
+    aniso = prm.aniso.get(struct.name) if prm.aniso else None
+    for peak in peaks:
+        pos, height, d = peak[0], peak[1], peak[2]
         if height <= 0:
             continue
-        if tch_on:
+        x_deg, y_deg = prm.X, prm.Y
+        if aniso is not None:
+            n = peak[3] if len(peak) > 3 else (0.0, 0.0, 1.0)
+            x_deg, y_deg = aniso_xy(aniso, n, prm.wavelength)
+        if x_deg != 0.0 or y_deg != 0.0:
             # NCA 修改（T2.1）: TCH 逐峰 FWHM 与 η（prm.eta 被忽略）
             fwhm, eta, _fl = split_fwhm(pos, prm.U, prm.V, max(prm.W, MIN_W),
-                                        prm.X, prm.Y)
+                                        x_deg, y_deg)
             fwhm = max(fwhm, MIN_W)
         else:
             fwhm = max(fwhm_func(pos), MIN_W)
             eta = prm.eta
         _add_peak_windowed(prof, grid, pos + prm.zero, height, fwhm, eta,
                            prm.asym, prm.bfactor, d, prm.integrated)
-    return _apply_microabs(prof, prm, struct)
 
 
 def compute_phase_profile(struct: CifStructure, grid: np.ndarray,
@@ -282,22 +519,8 @@ def compute_phase_profile(struct: CifStructure, grid: np.ndarray,
     """
     grid = np.asarray(grid, dtype=np.float64)
     peaks = _peaks_with_po(prm, struct, tmin, tmax)
-    fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
     prof = np.zeros_like(grid, dtype=np.float64)
-    tch_on = (prm.X != 0.0) or (prm.Y != 0.0)   # NCA 修改（T2.1）
-    for pos, height, d in peaks:
-        if height <= 0:
-            continue
-        if tch_on:
-            # NCA 修改（T2.1）: TCH 逐峰 FWHM 与 η（prm.eta 被忽略）
-            fwhm, eta, _fl = split_fwhm(pos, prm.U, prm.V, max(prm.W, MIN_W),
-                                        prm.X, prm.Y)
-            fwhm = max(fwhm, MIN_W)
-        else:
-            fwhm = max(fwhm_func(pos), MIN_W)
-            eta = prm.eta
-        _add_peak_windowed(prof, grid, pos + prm.zero, height, fwhm, eta,
-                           prm.asym, prm.bfactor, d, prm.integrated)
+    _accumulate_peaks(prof, grid, peaks, prm, struct)
     return _apply_microabs(prof, prm, struct)
 
 
