@@ -15,6 +15,21 @@ v1 当前 core 能力（P0/M0 + P1.2）：零点 / 背景 / 标度 / 峰形 /
 晶胞（P1.2）/ 择优取向。原子坐标（P1.3）、温度因子 B 与占位（P1.4）
 尚未落地，配方里保留步骤但标记 ``available=False``，连跑时自动跳过并
 记入 warning —— 不做假执行。
+
+cell 步的特殊地位（v1.2 修正）
+------------------------------
+``RefineConfig.refine_cell`` 只放开每相 (fa, fc) 两个缩放，覆盖不了三斜/
+单斜/正交；真正的全晶胞精修是独立引擎
+:func:`xinrefinement.core.refine.cell.refine_cell_full`（按晶系放自由分量）。
+因此 cell 步**不走** ``config_for`` 的开关翻译，而是由
+:meth:`RecipeRunner._run_cell` 编排「solve → 精修晶胞 → 再 solve」，
+并把新晶胞回写进后续步骤共用的相列表。
+
+历史缺陷（v1.1.0 及以前）：``config_for`` 从不设 ``refine_cell=True``，
+注释里提到的 ``run_cell_step`` 在整个仓库不存在 ——
+cell 步 status 显示 ``done`` 但 Rwp 前后**逐位相同**，等于假装执行。
+实样对拍中样品 1 的配方末值因此停在 33.74%（同配置修复后 25.92%，
+其中 cell 步本身贡献 36.29% → 26.57%）。
 """
 from __future__ import annotations
 
@@ -23,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
 from xinrefinement.core.profile.forward import ProfileParams
+from xinrefinement.core.refine.cell import refine_cell_full, structure_with_cell
 from xinrefinement.core.refine.nonlinear import RefineConfig
 from xinrefinement.core.refine.solve import RefineInputs, SolveResult, solve
 
@@ -42,7 +58,11 @@ class RefineStep:
 
         当前用一个统一 ``solve`` 入口，按步骤只放开对应组（v1 的
         ``RefineConfig`` 只区分 zero/uvw/eta/asym/bfactor/po/size/strain）。
-        P1.2 全晶胞由 :func:`run_cell_step` 单独编排。
+
+        ``cell`` 步**刻意**保持 ``refine_cell=False``：这一步由
+        :meth:`RecipeRunner._run_cell` 调独立的全晶胞引擎
+        （``refine_cell_full``）编排，若这里再打开 ``refine_cell`` 会让
+        ``solve`` 顺带做一遍 (fa, fc) 缩放，两套机制抢同一组自由度。
         """
         return replace(cfg,
                        refine_zero=(self.key in ("zero", "bg", "scale")),
@@ -50,6 +70,7 @@ class RefineStep:
                        refine_eta=(self.key == "profile"),
                        refine_asym=(self.key == "profile"),
                        refine_bfactor=False,
+                       refine_cell=False,
                        refine_po=(self.key == "micro"),
                        refine_size=(self.key == "micro"),
                        refine_strain=(self.key == "micro"))
@@ -121,10 +142,30 @@ class RecipeRunner:
                  rwp_tol: float = 1e-3) -> None:
         self.state = RecipeState(steps=steps)
         self.rwp_tol = rwp_tol
+        #: 当前相列表。cell 步精修后会把新晶胞回写到这里，后续步骤
+        #: （profile/micro）必须看到改过的晶胞，否则整条链又退化成
+        #: 「晶胞精修对最终结果无贡献」。
+        self._phases: list[CifStructure] | None = None
 
     @property
     def records(self) -> list[StepRecord]:
         return self.state.records
+
+    @property
+    def phases(self) -> list[CifStructure] | None:
+        """当前相列表（含 cell 步精修后的晶胞）；连跑结束后供 GUI 回写。"""
+        return self._phases
+
+    def reset(self) -> None:
+        """清空运行状态与相列表（同一 runner 复用于下一次精修时调用）。"""
+        self.state = RecipeState(steps=self.state.steps)
+        self._phases = None
+
+    def _phases_for(self, inputs: RefineInputs) -> list[CifStructure]:
+        """首次调用时把输入的相列表接管进来（之后 cell 步会改写它）。"""
+        if self._phases is None:
+            self._phases = list(inputs.phases)
+        return self._phases
 
     def run_step(self, step: RefineStep, inputs: RefineInputs,
                  prev: SolveResult | None = None) -> tuple[SolveResult | None,
@@ -138,8 +179,12 @@ class RecipeRunner:
             self.state.records.append(rec)
             return prev, rec
 
+        phases = self._phases_for(inputs)
         cfg = step.config_for(inputs.config)
-        inp = replace(inputs, config=cfg,
+        if step.key == "cell" and phases:
+            return self._run_cell(step, inputs, prev, phases, cfg)
+
+        inp = replace(inputs, config=cfg, phases=phases,
                       profile=(prev.params if prev is not None
                                else inputs.profile))
         try:
@@ -158,6 +203,70 @@ class RecipeRunner:
         self.state.records.append(rec)
         return res, rec
 
+    def _run_cell(self, step: RefineStep, inputs: RefineInputs,
+                  prev: SolveResult | None, phases: list[CifStructure],
+                  cfg: RefineConfig) -> tuple[SolveResult | None, StepRecord]:
+        """晶胞步：真精修晶胞（``refine_cell_full``，按晶系放自由分量）。
+
+        顺序 —— 先按当前峰形解一次拿基准，再精修全晶胞，最后**用新晶胞
+        重解一次**：
+
+        1. ``solve`` 只为把 scale/背景/峰形对齐到当前晶胞（峰形参数此刻
+           是上一批步骤的成果，晶胞引擎会把它当固定值）；
+        2. ``refine_cell_full`` 只优化晶胞自由度，Rwp 口径与 ``solve``
+           不同（它固定峰形、少一堆非线性参数），**不能**直接当作本步的
+           ``rwp_after`` —— 那是「这一步没改峰形所以看起来变好」的假象；
+        3. 回写新晶胞后再 ``solve`` 一次，记录的是「当前参数集合下、晶胞
+           已更新」的真实 Rwp。后续步骤也从这个结果继续。
+        """
+        prm0 = prev.params if prev is not None else inputs.profile
+        base = solve(RefineInputs(inputs.pattern, list(phases), prm0, cfg))
+        try:
+            # 用 base.pattern（已按 [tmin, tmax] 裁过）而不是 inputs.pattern：
+            # 晶胞引擎内部不做裁剪，传入未裁谱会让窗口外零计算谱污染残差。
+            cr = refine_cell_full(list(phases), base.pattern, base.params,
+                                  cfg, backend=cfg.backend)
+        except Exception as exc:
+            rec = StepRecord(step.key, step.title, "failed",
+                             None if prev is None else prev.rwp, base.rwp,
+                             f"晶胞精修失败：{exc}")
+            self.state.records.append(rec)
+            return base, rec
+
+        new_phases = [structure_with_cell(st, cell)
+                      for st, cell in zip(phases, cr.cells)]
+        res = solve(RefineInputs(inputs.pattern, new_phases, base.params, cfg))
+        self._phases = new_phases
+
+        before = None if prev is None else prev.rwp
+        self.state.push_snapshot(res.params)
+        rec = StepRecord(step.key, step.title, "done", before, res.rwp,
+                         self._describe_cell_change(phases, new_phases, cfg),
+                         snapshot=self.state.snapshots[-1])
+        self.state.records.append(rec)
+        return res, rec
+
+    @staticmethod
+    def _describe_cell_change(old: list[CifStructure],
+                              new: list[CifStructure],
+                              cfg: RefineConfig) -> str:
+        """给结果区一句可读的晶胞变化摘要（最多列 3 个相）。"""
+        from xinrefinement.core.refine.cell import crystal_system_of, free_axes
+
+        parts: list[str] = []
+        for a, b in zip(old, new):
+            try:
+                ndof = len(free_axes(crystal_system_of(b)))
+            except Exception:
+                ndof = 0
+            dev = max((abs(y - x) / abs(x) * 100.0
+                       for x, y in zip(a.cell, b.cell) if abs(x) > 1e-9),
+                      default=0.0)
+            parts.append(f"{b.name} Δ{dev:.3f}% / {ndof} 参")
+        if len(parts) > 3:
+            parts = parts[:3] + [f"另 {len(new) - 3} 相"]
+        return f"{len(new)} 相晶胞已精修（" + "，".join(parts) + "）"
+
     def run_all(self, inputs: RefineInputs,
                 steps: tuple[RefineStep, ...] | None = None,
                 cancel_cb=None) -> tuple[SolveResult | None, list[StepRecord]]:
@@ -165,6 +274,7 @@ class RecipeRunner:
         todo = steps if steps is not None else self.state.steps
         result: SolveResult | None = None
         self.state.current = 0
+        self._phases = list(inputs.phases)
         for i, step in enumerate(todo):
             if cancel_cb is not None and cancel_cb():
                 break

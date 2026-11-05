@@ -103,3 +103,50 @@ def test_state_default_is_independent():
     a, b = RecipeState(), RecipeState()
     a.records.append(object())
     assert b.records == []
+
+
+def test_cell_step_really_refines_cell():
+    """cell 步必须**真的**改晶胞，且精修结果要留给后续步骤。
+
+    历史缺陷（v1.1.0 及以前）：``config_for`` 从不设 ``refine_cell``，
+    注释里引用的 ``run_cell_step`` 根本不存在 —— 这一步 status=done，
+    但 Rwp 前后逐位相同（实样实测 35.4108% → 35.4108%），属于假装执行。
+    本测试锁两件事：① 晶胞数值变了；② 新晶胞进了后续步骤共用的相列表。
+    """
+    inp = _inputs()
+    runner = RecipeRunner()
+    by_key = {s.key: s for s in DEFAULT_STEPS}
+    res = None
+    for key in ("zero", "bg", "scale"):
+        res, _ = runner.run_step(by_key[key], inp, res)
+
+    before = [tuple(round(v, 9) for v in s.cell) for s in runner.phases]
+    res, rec = runner.run_step(by_key["cell"], inp, res)
+
+    assert rec.status == "done"
+    after = [tuple(round(v, 9) for v in s.cell) for s in runner.phases]
+    assert after != before, "cell 步没有改动晶胞 —— 又退回假执行了"
+    # 后续步骤（profile/micro）拿到的相列表必须是精修后的
+    assert [tuple(s.cell) for s in runner.phases] == [
+        tuple(s.cell) for s in runner._phases_for(inp)]
+    # 记录里要能看出改了哪个相（结果区可读性）
+    assert "晶胞已精修" in rec.message
+
+    res2, _ = runner.run_step(by_key["profile"], inp, res)
+    assert res2.rwp <= res.rwp + 1e-9
+
+
+def test_cell_step_keeps_phase_metadata():
+    """晶胞回写不能丢元数据 —— 丢了 QPA 会静默退化成 weight_pct=None。"""
+    inp = _inputs()
+    runner = RecipeRunner()
+    by_key = {s.key: s for s in DEFAULT_STEPS}
+    res = None
+    for key in ("zero", "bg", "scale", "cell"):
+        res, _ = runner.run_step(by_key[key], inp, res)
+    for st in runner.phases:
+        assert st.formula, f"{st.name} 丢失化学式"
+        assert getattr(st, "z_declared", None), f"{st.name} 丢失 Z"
+    assert any(p.weight_pct is not None for p in res.phases), \
+        "走完晶胞精修后 QPA 整表变 None（元数据在回写时丢了）"
+

@@ -63,6 +63,11 @@ class ProfileParams:
     integrated: True = 峰高按积分强度归一化（h/(FWHM·(1.06447+0.50633η))），
              这是 Rietveld 标量 S 的标准口径（Hill–Howard 定量依赖它）；
              v0.1.0 旧口径（峰高直乘）仅用于对照，False 时不归一化。
+    microabs: 每相 Brindley 微吸收校正 {phase_name: μ·r}（v1.2.0，默认 None=关）。
+             因子 (1−e^(−μr))/(μr) 乘到该相计算强度上（MAUD
+             MicroAbsorptionBrindley 同式；μr→0 极限为 1，即无校正）。
+             μ·r = 线吸收系数 × 平均晶粒半径；高吸收相（Fe 相/萤石等）给大值。
+             v1.2.0 只施加不精修——μ·r 由调用方按物理估计给出。
     """
 
     zero: float = 0.0
@@ -83,6 +88,25 @@ class ProfileParams:
     # X/Y 非零时 η 由 TCH 公式按 (ΓG, ΓL) 逐峰给出，prm.eta 被忽略。
     X: float = 0.0
     Y: float = 0.0
+    # ---- v1.2.0：Brindley 微吸收（每相 μ·r，None = 全部关闭） ----
+    microabs: dict | None = None
+
+
+def brindley_factor(mr: float) -> float:
+    """Brindley 微吸收因子 ``(1 − e^(−μr)) / (μr)``（μr→0 极限 = 1）。
+
+    ``mr`` = 线吸收系数 μ (μm⁻¹) × 平均晶粒半径 r (μm)。参照
+    MAUD ``MicroAbsorptionBrindley``（Rietquan 2.3 同式）：
+    高 μ 相的观测强度被压低，校正把该相计算强度乘以 <1 的因子，
+    精修后其标度因子（→ wt%）相应抬回。
+    """
+    mr = float(mr)
+    if not math.isfinite(mr) or mr <= 0.0:
+        return 1.0
+    if mr < 1e-4:
+        # 小 μr：1-e^(-x) 灾难性消元，走 Taylor 展开 1 - x/2 + x²/6
+        return 1.0 - mr / 2.0 + mr * mr / 6.0
+    return (1.0 - math.exp(-mr)) / mr
 
 
 def _window_slice(grid: np.ndarray, pos: float, half: float) -> tuple[int, int]:
@@ -242,7 +266,7 @@ def compute_phase_profile_naive(struct: CifStructure, grid: np.ndarray,
             eta = prm.eta
         _add_peak_windowed(prof, grid, pos + prm.zero, height, fwhm, eta,
                            prm.asym, prm.bfactor, d, prm.integrated)
-    return prof
+    return _apply_microabs(prof, prm, struct)
 
 
 def compute_phase_profile(struct: CifStructure, grid: np.ndarray,
@@ -274,7 +298,25 @@ def compute_phase_profile(struct: CifStructure, grid: np.ndarray,
             eta = prm.eta
         _add_peak_windowed(prof, grid, pos + prm.zero, height, fwhm, eta,
                            prm.asym, prm.bfactor, d, prm.integrated)
-    return prof
+    return _apply_microabs(prof, prm, struct)
+
+
+def _apply_microabs(prof: np.ndarray, prm: ProfileParams,
+                    struct: CifStructure) -> np.ndarray:
+    """按相施加 Brindley 微吸收因子（v1.2.0）。
+
+    ``microabs`` 缺相 / 值 ≤0 / 非有限一律视为不校正（因子 1），
+    保证旧调用方与 golden **逐位不变**。
+    """
+    if not prm.microabs:
+        return prof
+    mr = prm.microabs.get(struct.name)
+    if not mr:
+        return prof
+    f = brindley_factor(mr)
+    if f == 1.0:
+        return prof
+    return prof * f
 
 
 def strongest_peak_position(struct: CifStructure, prm: ProfileParams,

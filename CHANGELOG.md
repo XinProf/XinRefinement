@@ -1,5 +1,83 @@
 # 变更记录
 
+## v1.2.0（未发布）
+
+主题：实样对拍（7 个 MAUD 手工精修样品，见
+[`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md)）
+暴露的 P0 缺陷修复 + 出厂默认升级 + MAUD 源码复核借鉴前三项
+（[`docs/MAUD源码复核-v1.md`](docs/MAUD源码复核-v1.md)）。
+
+### 修复
+
+- **配方「晶胞参数」步骤假执行**（`core/refine/recipe.py`）：`config_for`
+  从不设置 `refine_cell`，注释引用的 `run_cell_step` 全仓库不存在，
+  该步 status=done 但 Rwp 前后逐位相同。现由 `RecipeRunner._run_cell`
+  编排「solve → `refine_cell_full`（按晶系放自由分量）→ 用新晶胞再 solve」，
+  新晶胞回写后续步骤共用的相列表。实样 1：该步 36.29% → 26.57%，
+  配方末值 33.74% → 25.92%
+- **GUI 单次精修用峰高旧口径**（`gui/main_window.py`）：`integrated=False`
+  → `True`（Rietveld 标度 S 标准口径，CLI 本就是 True）。实样 1 同配置
+  差 3.65 个百分点
+- **晶胞回写丢元数据**（`core/refine/cell.py`）：新增 `structure_with_cell`
+  公共入口，`apply_cell_scales` 与配方回写共用；漏搬 `formula/z_declared`
+  会让晶胞精修后 QPA 静默变 None
+- **CLI 失败分支崩溃**（`cli/refine.py`）：`rec.note` → `rec.message`
+  （`StepRecord` 无 note 字段，仅真失败时触发 AttributeError）
+
+### 新增
+
+- **定权模式 `weight_mode`**（借鉴 MAUD `getWeight`，P0 对拍§4.3 关联）：
+  `sqrt`（默认，计数统计，与 v1.1.x 逐位一致）/ `file`（谱图自带
+  σ，即 `_pd_meas_intensity_sigma`）/ `unit` / `1/y`；残差与 Rwp 同口径；
+  `esd.py` 同步走该口径；CLI `--weight-mode`
+- **Brindley 微吸收校正（按相）**（借鉴 MAUD `MicroAbsorptionBrindley`）：
+  `ProfileParams.microabs = {相名: μ·r}`，因子 `(1−e^(−μr))/(μr)` 乘到该相
+  计算强度（小 μr 走 Taylor 展开避免消元）；默认关闭逐位不变；
+  GUI 物相参数编辑对话框新增「微吸收校正」组；CLI `--microabs 相名=μr`；
+  v1.2.0 只施加不精修
+- **插值背景 `bg_mode="interp"`**（借鉴 MAUD `backgroundSubtraction`
+  默认 10 次迭代语义）：`interp_background_nodes` 自动提取锚点
+  （2σ 贴背景带 + 段内中位数，合成谱回收 p50 误差 <1 counts），
+  一次性提取后走 P2.2 固定背景分支；CLI `--bg-mode interp`
+- **手动背景点真正接线**（P2.2 断线修复）：GUI 背景弹窗的 manual 模式
+  此前被降级成 cheb、`bg_points` 从未进引擎；现经 `RefineConfig.bg_points`
+  贯通 solve/`refine_cell_full`/配方全路径，结果区背景曲线正确重建
+- **`adaptive_n_bg(tmin, tmax)`**：tent/interp 节点数自适应 ≈1 节点/6°
+
+### 变更（默认值）
+
+- **GUI 出厂背景默认 `tent` + 自适应节点数**（原 cheb + 固定 3 项）：
+  实样对拍 §11.2 实测 7 样均值 23.06% → 18.84%（tent14）；
+  用户在齿轮弹窗显式设置的值优先
+
+### 实测效果（7 个实样，出厂「一键连跑」口径）
+
+| 配置 | 7 样平均 Rwp |
+|---|---|
+| v1.1.1 出厂（cheb3 + 峰高口径 + cell 假执行） | 26.00% |
+| v1.2.0 出厂（tent14 + integrated=True + cell 真执行） | 18.84% |
+| v1.2.0 出厂 + interp14（借鉴 1a，两层可加） | 19.01% |
+| MAUD 手工参考 | 11.23% |
+
+> interp（固定插值层 + 自由 Chebyshev 层）与自由 tent 基本打平（差 0.17 点，
+> 逐样互有胜负）：说明本实现已复现 MAUD 背景框架的等效能力；
+> 首版「仅固定曲线、无可叠加多项式层」实测明显劣化（样品 2: 19.49% vs 7.76%），
+> 两层结构是必要条件。
+
+### 验证
+
+- 新增 `tests/test_weight_mode.py`（5 项）、`tests/test_microabs.py`（4 项）、
+  `tests/test_bg_interp.py`（5 项）；`test_recipe.py`/`test_gui_smoke.py`
+  P0 回归锁 3 项；全量 `pytest` → **303 项收集，299 通过 / 4 skip / 0 失败**
+  （v1.1.0 基线 286 项收集，无回归）
+- 借鉴清单后续项（EWIMV ODF / Popa LB / 多优化器 / theoreticalWeights /
+  画布点选背景 / μ·r 精修）已登记任务清单，排 v1.3+
+
+### 文档
+
+- `docs/MAUD源码复核-v1.md`：上游源码（v3.09）逐模块复核，
+  6 项可借鉴能力与 4 项不建议照搬项
+
 ## v1.1.0（2026-11-05 发布）
 
 主题：打通「物相检索（XinMatch）→ 全谱拟合精修（XinRefinement）」家族链路。

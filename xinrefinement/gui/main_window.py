@@ -51,7 +51,7 @@ from xinrefinement.core.patterns import load_pattern
 from xinrefinement.core.profile.cif import parse_cif
 from xinrefinement.core.profile.forward import ProfileParams
 from xinrefinement.core.profile.struct import compute_peaks
-from xinrefinement.core.refine.linear import background_basis
+from xinrefinement.core.refine.linear import adaptive_n_bg, background_basis
 from xinrefinement.core.refine.nonlinear import RefineConfig
 from xinrefinement.core.refine.recipe import DEFAULT_STEPS
 from xinrefinement.core.refine.solve import RefineInputs, solve
@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
         self._step_status: dict[str, str] = {}
         #: 每相 March–Dollase 择优取向 {phase_name: (h,k,l,r)}
         self._phase_po: dict[str, tuple] = {}
+        #: 每相 Brindley 微吸收 {phase_name: μ·r}（v1.2.0）
+        self._phase_microabs: dict[str, float] = {}
         #: 物相编辑对话框的全部设置（晶胞/择优取向/对称性元数据）
         self._phase_edits: dict[str, dict] = {}
         self._menu_actions: dict[str, QAction] = {}
@@ -571,6 +573,9 @@ class MainWindow(QMainWindow):
         self._phase_edits = dict(data.get("phase_edits", {}))
         self._phase_po = {n: s["po"] for n, s in self._phase_edits.items()
                           if s.get("po")}
+        self._phase_microabs = {n: s["microabs"]
+                                for n, s in self._phase_edits.items()
+                                if s.get("microabs")}
         if data.get("pattern") and Path(data["pattern"]).exists():
             self._load_pattern_path(Path(data["pattern"]))
         cifs = [c for c in data.get("cifs", []) if c and Path(c).exists()]
@@ -671,6 +676,7 @@ class MainWindow(QMainWindow):
         self._settings.clear()
         self._step_status.clear()
         self._phase_po.clear()
+        self._phase_microabs.clear()
         self._phase_edits.clear()
         self.phase_list.clear()
         self.canvas.clear()
@@ -781,6 +787,9 @@ class MainWindow(QMainWindow):
             self._phase_edits[name] = s
         self._phase_po = {n: s["po"] for n, s in self._phase_edits.items()
                           if s.get("po")}
+        self._phase_microabs = {n: s["microabs"]
+                                for n, s in self._phase_edits.items()
+                                if s.get("microabs")}
         self._refresh_sticks()
         self.statusBar().showMessage(
             "物相参数已更新（晶胞 / 择优取向用于下一次精修与标记条）")
@@ -796,13 +805,25 @@ class MainWindow(QMainWindow):
                                     "请先导入谱图和至少一个 CIF")
             return None
         bg = self._settings.get("bg", {})
+        # v1.2.0 P1（实样对拍 §11.2 实测 −4 点均值）：真实数据出厂默认
+        # tent，节点数随精修窗口自适应 ≈1 节点/6°；齿轮弹窗显式设置优先。
+        tmin, tmax = 5.0, 90.0
+        bg_points = tuple((float(x), float(v))
+                          for x, v in (bg.get("bg_points") or ()))
         cfg = RefineConfig(
-            refine_zero=True, refine_uvw=True, n_bg=int(bg.get("n_bg", 3)),
-            bg_mode=bg.get("bg_mode", "cheb"),
-            tmin=5.0, tmax=90.0, max_iter=40)
+            refine_zero=True, refine_uvw=True,
+            n_bg=int(bg.get("n_bg", adaptive_n_bg(tmin, tmax))),
+            bg_mode=bg.get("bg_mode", "tent"),
+            bg_points=bg_points,
+            tmin=tmin, tmax=tmax, max_iter=40)
+        # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
+        # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及
+        # 以前这里给 False（v0.1.0 旧口径，仅供对照），实样对拍实测同配置
+        # 差 3.65 个百分点（样品 1：37.39% → 33.74%）。
         prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
-                            anode="Cu", integrated=False,
-                            po_r=self._phase_po or None)
+                            anode="Cu", integrated=True,
+                            po_r=self._phase_po or None,
+                            microabs=self._phase_microabs or None)
         return RefineInputs(pattern=self._pattern, phases=self._phases,
                             profile=prm, config=cfg)
 
@@ -888,9 +909,30 @@ class MainWindow(QMainWindow):
     def _background_curve(self, res):
         """背景系数 -> 背景曲线（失败时返回 None）。"""
         try:
+            cfg = res.config
+            if cfg.bg_mode == "manual":
+                # 固定曲线（bg=[1.0] 占位）：由锚点重建
+                pts = list(cfg.bg_points) or None
+                if not pts:
+                    return None
+                return (background_basis(res.pattern.two_theta, 1, "manual",
+                                         points=pts)
+                        @ np.ones(1, dtype=float))
+            if cfg.bg_mode == "interp":
+                # v1.2.0 两层可加：固定插值曲线 + 其上 Chebyshev（bg 系数）
+                pts = list(cfg.bg_points) or None
+                if not pts:
+                    return None
+                fixed = (background_basis(res.pattern.two_theta, 1, "manual",
+                                          points=pts)
+                         @ np.ones(1, dtype=float))
+                cheb = (background_basis(res.pattern.two_theta,
+                                         len(res.background), "cheb")
+                        @ np.asarray(res.background, dtype=float))
+                return fixed + cheb
             return (background_basis(res.pattern.two_theta,
                                      len(res.background),
-                                     res.config.bg_mode)
+                                     cfg.bg_mode)
                     @ np.asarray(res.background, dtype=float))
         except Exception:
             return None

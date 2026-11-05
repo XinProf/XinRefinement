@@ -143,6 +143,28 @@ def _expand_scales(system: str, values) -> dict[str, float]:
     }
 
 
+#: 重建 ``CifStructure`` 时必须原样搬运的元数据。
+#: 漏搬任意一项都会造成**静默**退化而非报错：``formula``/``z_declared``
+#: 缺了 QPA 直接返回 ``weight_pct=None``；``spacegroup``/``sg_number`` 缺了
+#: ``crystal_system_of`` 退化成按晶胞度量猜、位点精修拿不到对称约束。
+_CELL_META = ("n_asym", "n_sym_ops", "spacegroup", "sg_number",
+              "formula", "z_declared")
+
+
+def structure_with_cell(struct: CifStructure, cell) -> CifStructure:
+    """把新晶胞套到结构上（原子分数坐标不变），并搬走全部元数据。
+
+    ``refine_cell_full`` 只回传 6 个晶胞参数（``CellRefineResult.cells``），
+    调用方必须用它重建结构。配方 cell 步、CLI、GUI 回写都走这里，
+    保证「精修过晶胞」与「没精修过」的结构在 QPA/对称处理上等价。
+    """
+    out = CifStructure(struct.name,
+                       tuple(float(x) for x in cell), struct.atoms)
+    for attr in _CELL_META:
+        setattr(out, attr, getattr(struct, attr, None))
+    return out
+
+
 def apply_cell_scales(struct: CifStructure, system: str,
                       values) -> CifStructure:
     """按晶系约束把缩放因子施加到晶胞，返回新 ``CifStructure``。
@@ -156,7 +178,7 @@ def apply_cell_scales(struct: CifStructure, system: str,
     a, b, c, al, be, ga = struct.cell
     new_cell = (a * s["a"], b * s["b"], c * s["c"],
                 al * s["alpha"], be * s["beta"], ga * s["gamma"])
-    return CifStructure(struct.name, new_cell, struct.atoms)
+    return structure_with_cell(struct, new_cell)
 
 
 @dataclass(frozen=True)
@@ -184,24 +206,36 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
 
     参数向量 = 各相自由晶胞缩放因子顺序拼接，边界 ±1%。
     """
-    from xinrefinement.core.refine.nonlinear import RefineConfig
+    from xinrefinement.core.refine.nonlinear import RefineConfig, effective_sigma
 
     if isinstance(cfg, RefineConfig):
         tmin, tmax = cfg.tmin, cfg.tmax
         n_bg, bg_mode = cfg.n_bg, cfg.bg_mode
-        sigma, max_iter = cfg.sigma, cfg.max_iter
+        max_iter = cfg.max_iter
+        sig = effective_sigma(cfg, pat)
     else:
         tmin, tmax = getattr(cfg, "tmin", 5.0), getattr(cfg, "tmax", 90.0)
         n_bg, bg_mode = getattr(cfg, "n_bg", 3), getattr(cfg, "bg_mode", "cheb")
-        sigma, max_iter = getattr(cfg, "sigma", None), getattr(cfg, "max_iter", 40)
+        max_iter = getattr(cfg, "max_iter", 40)
+        sigma = getattr(cfg, "sigma", None)
+        sig = (np.sqrt(np.maximum(pat.intensity, 1.0)) if sigma is None
+               else np.asarray(sigma, dtype=np.float64))
 
     systems = tuple(crystal_system_of(s) for s in phases)
+
+    # v1.2.0：interp 与 solve() 同口径 —— 提取一次固定锚点（两层可加语义
+    # 由 solve_linear_detail 的 interp 分支实现：固定层 + Chebyshev）
+    bg_points = list(getattr(cfg, "bg_points", ()) or ())
+    if bg_mode == "interp" and not bg_points:
+        from xinrefinement.core.refine.linear import interp_background_nodes
+        bg_points = interp_background_nodes(
+            pat.two_theta, pat.intensity, n_bg,
+            getattr(cfg, "bg_interp_iters", 10))
+
     dims = tuple(len(free_axes(s)) for s in systems)
     offsets = np.cumsum((0,) + dims).tolist()
 
     tt, yo = pat.two_theta, pat.intensity
-    sig = (np.sqrt(np.maximum(yo, 1.0)) if sigma is None
-           else np.asarray(sigma, dtype=np.float64))
     history: list[float] = []
     cache: dict[tuple, CifStructure] = {}
 
@@ -218,9 +252,11 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
                    for i in range(len(phases))]
         rows = [compute_phase_profile(s, tt, prm0, tmin, tmax) for s in structs]
         basis = np.vstack(rows) if rows else np.zeros((0, tt.size))
-        _c, ycalc, _d = solve_linear_detail(basis, tt, yo, sig, n_bg, bg_mode)
-        rwp = compute_rfactors(
-            yo, ycalc, n_params=x.size + basis.shape[0] + n_bg).rwp
+        bg_pts = bg_points
+        _c, ycalc, _d = solve_linear_detail(basis, tt, yo, sig, n_bg, bg_mode,
+                                            bg_points=bg_pts or None)
+        rwp = compute_rfactors(yo, ycalc, n_params=x.size + basis.shape[0] + n_bg,
+                               sigma=sig).rwp
         history.append(rwp)
         return (yo - ycalc) / sig
 

@@ -208,16 +208,17 @@ def symops_from_spg(number: int | None = None, hm: str | None = None,
     )
 
 
-def expand_unit_cell(atoms, ops: SymOps | list, tol: float = 1e-4):
+def expand_unit_cell(atoms, ops: SymOps | list, tol: float | None = None):
     """把不对称单位原子展开成全晶胞原子。
 
     ``ops`` 可为 :class:`SymOps` 或家族 symop 格式列表；内部统一转成
     家族格式后复用 :func:`xinrefinement.core.profile.cif.expand_symmetry`，
     保证与 P0 已验证的展开逻辑（含去重口径）完全一致。
     """
-    from xinrefinement.core.profile.cif import expand_symmetry
+    from xinrefinement.core.profile.cif import SYM_DEDUP_TOL, expand_symmetry
     fam = ops.to_family_symops() if isinstance(ops, SymOps) else ops
-    return expand_symmetry(atoms, fam, tol=tol)
+    return expand_symmetry(atoms, fam,
+                           tol=SYM_DEDUP_TOL if tol is None else tol)
 
 
 def _periodic_delta(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -227,8 +228,16 @@ def _periodic_delta(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def site_symmetry_rotations(ops: SymOps, xyz,
-                            tol: float = 1e-4) -> list[np.ndarray]:
-    """返回把 ``xyz`` 映回自身（模 1）的对称操作旋转矩阵（位点稳定子）。"""
+                            tol: float | None = None) -> list[np.ndarray]:
+    """返回把 ``xyz`` 映回自身（模 1）的对称操作旋转矩阵（位点稳定子）。
+
+    ``tol`` 缺省取 :data:`xinrefinement.core.profile.cif.SYM_DEDUP_TOL`：
+    位点稳定子判定与对称展开去重必须同口径，否则会出现「展开出 6 个 Si、
+    稳定子却按 3 个算」的不一致。
+    """
+    from xinrefinement.core.profile.cif import SYM_DEDUP_TOL
+    if tol is None:
+        tol = SYM_DEDUP_TOL
     p = np.asarray(xyz, dtype=np.float64)
     out: list[np.ndarray] = []
     for r, t in zip(ops.rotations, ops.translations):
@@ -238,7 +247,7 @@ def site_symmetry_rotations(ops: SymOps, xyz,
     return out
 
 
-def free_coordinate_dims(ops: SymOps, xyz, tol: float = 1e-4) -> int:
+def free_coordinate_dims(ops: SymOps, xyz, tol: float | None = None) -> int:
     """Wyckoff 位点的**自由坐标维度**（P1.3 原子坐标精修的前置）。
 
     位点稳定子要求 ``(R - I)·δ = 0``；把所有稳定子旋转矩阵堆成 M，
@@ -257,7 +266,7 @@ def free_coordinate_dims(ops: SymOps, xyz, tol: float = 1e-4) -> int:
 
 
 def free_coordinate_basis(ops: SymOps, xyz,
-                          tol: float = 1e-4) -> np.ndarray:
+                          tol: float | None = None) -> np.ndarray:
     """返回自由坐标方向的正交基，shape ``(3, n_free)``；列即允许的位移方向。
 
     P1.3 对每个特殊位只对自由分量建变量，联动分量用这些基向量表达。

@@ -67,9 +67,11 @@ class BackgroundDialog(_BaseDialog):
         form = QFormLayout()
         self.mode = QComboBox()
         self.mode.addItems(["cheb（Chebyshev 多项式）", "tent（分片线性帽）",
+                            "interp（自动提取·固定曲线）",
                             "manual（手动插值点）"])
-        self.mode.setCurrentIndex({"cheb": 0, "tent": 1, "manual": 2}.get(
-            cur.get("bg_mode", "cheb"), 0))
+        self.mode.setCurrentIndex({"cheb": 0, "tent": 1, "interp": 2,
+                                   "manual": 3}.get(cur.get("bg_mode", "cheb"),
+                                                    0))
         self.n_terms = QSpinBox()
         self.n_terms.setRange(1, 30)
         self.n_terms.setValue(int(cur.get("n_bg", 3)))
@@ -92,7 +94,7 @@ class BackgroundDialog(_BaseDialog):
         self._add_buttons()
 
     def settings(self) -> dict:
-        mode = ("cheb", "tent", "manual")[self.mode.currentIndex()]
+        mode = ("cheb", "tent", "interp", "manual")[self.mode.currentIndex()]
         pts = []
         for r in range(self.table.rowCount()):
             a, b = self.table.item(r, 0), self.table.item(r, 1)
@@ -101,7 +103,9 @@ class BackgroundDialog(_BaseDialog):
                     pts.append((float(a.text()), float(b.text())))
                 except ValueError:
                     pass
-        return {"bg_mode": "cheb" if mode == "manual" else mode,
+        # v1.2.0：manual 不再降级为 cheb —— bg_points 已接进引擎
+        # （solve_linear_detail 固定背景分支）；interp 由 solve() 自动提取。
+        return {"bg_mode": mode,
                 "n_bg": int(self.n_terms.value()),
                 "bg_points": pts, "manual_points": mode == "manual"}
 
@@ -227,6 +231,8 @@ class PhaseEditDialog(_BaseDialog):
         self._po_enable: dict[str, QCheckBox] = {}
         self._po_hkl: dict[str, list[QSpinBox]] = {}
         self._po_r: dict[str, QDoubleSpinBox] = {}
+        self._ma_enable: dict[str, QCheckBox] = {}
+        self._ma_value: dict[str, QDoubleSpinBox] = {}
         self._sg_edit: dict[str, QLineEdit] = {}
         self._pg_edit: dict[str, QComboBox] = {}
         self._laue_edit: dict[str, QComboBox] = {}
@@ -292,6 +298,25 @@ class PhaseEditDialog(_BaseDialog):
             self._po_r[st.name] = r_sb
             pv.addWidget(grp_po)
 
+            # -- 微吸收（Brindley，v1.2.0） ------------------------------ #
+            grp_ma = QGroupBox("微吸收校正 (Brindley)")
+            mf = QFormLayout(grp_ma)
+            ma_en = QCheckBox("启用（高吸收相：Fe 相 / 萤石等）")
+            saved_ma = saved.get("microabs")
+            ma_en.setChecked(saved_ma is not None and saved_ma > 0)
+            mf.addRow(ma_en)
+            ma_sb = QDoubleSpinBox()
+            ma_sb.setRange(0.01, 20.0)
+            ma_sb.setDecimals(3)
+            ma_sb.setSingleStep(0.1)
+            ma_sb.setValue(float(saved_ma) if saved_ma else 1.0)
+            mf.addRow("μ·r（吸收系数×晶粒半径）", ma_sb)
+            ma_en.toggled.connect(ma_sb.setEnabled)
+            ma_sb.setEnabled(ma_en.isChecked())
+            self._ma_enable[st.name] = ma_en
+            self._ma_value[st.name] = ma_sb
+            pv.addWidget(grp_ma)
+
             # -- 对称性（空间群 / 点群 / 劳厄群） ----------------------- #
             grp_sym = QGroupBox("对称性")
             sf = QFormLayout(grp_sym)
@@ -332,6 +357,9 @@ class PhaseEditDialog(_BaseDialog):
             out[st.name] = {
                 "cell": cell,
                 "po": po,
+                "microabs": (float(self._ma_value[st.name].value())
+                             if st.name in self._ma_enable
+                             and self._ma_enable[st.name].isChecked() else None),
                 "spacegroup": self._sg_edit[st.name].text().strip(),
                 "point_group": self._pg_edit[st.name].currentText().strip(),
                 "laue_group": self._laue_edit[st.name].currentText().strip(),

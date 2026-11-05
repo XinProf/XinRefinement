@@ -149,6 +149,26 @@ def _phase_infos(phases: list[CifStructure], engine: EngineResult,
     return tuple(infos)
 
 
+def _resolve_interp_bg(cfg: RefineConfig, pat: Pattern,
+                       warnings: list[str]) -> RefineConfig:
+    """v1.2.0：``bg_mode="interp"`` 一次性提取锚点写回 ``bg_points``。
+
+    提取是 O(N·iters) 的逐点统计，**绝不能**进残差热路径 —— 在这里做一次。
+    bg_mode 保持 "interp"：MAUD 两层可加语义（固定插值曲线 + 其上自由
+    Chebyshev）由 ``solve_linear_detail`` 的 interp 分支实现。
+    """
+    if cfg.bg_mode != "interp" or cfg.bg_points:
+        return cfg
+    from xinrefinement.core.refine.linear import interp_background_nodes
+    pts = interp_background_nodes(pat.two_theta, pat.intensity,
+                                  cfg.n_bg, cfg.bg_interp_iters)
+    warnings.append(
+        f"插值背景已自动提取 {len(pts)} 个锚点（迭代 {cfg.bg_interp_iters} 次，"
+        "MAUD backgroundSubtraction 语义），固定层 + Chebyshev 两层可加")
+    from dataclasses import replace as _replace
+    return _replace(cfg, bg_points=tuple(pts))
+
+
 def solve(inputs: RefineInputs) -> SolveResult:
     """执行一次全谱拟合（Rietveld / Le Bail 在 P2 扩展；M0 为 Rietveld）。
 
@@ -160,7 +180,8 @@ def solve(inputs: RefineInputs) -> SolveResult:
     warnings: list[str] = []
     pat = _clip_to_window(inputs.pattern, inputs.config.tmin, inputs.config.tmax,
                           warnings)
-    engine = refine(inputs.phases, pat, inputs.profile, inputs.config)
+    cfg = _resolve_interp_bg(inputs.config, pat, warnings)
+    engine = refine(inputs.phases, pat, inputs.profile, cfg)
     weights = _phase_weights(inputs.phases, engine.scales, inputs.formulas,
                              warnings)
     return SolveResult(
@@ -177,7 +198,7 @@ def solve(inputs: RefineInputs) -> SolveResult:
         ycalc=np.asarray(engine.ycalc, dtype=np.float64),
         phases=_phase_infos(inputs.phases, engine, weights),
         history=tuple(float(v) for v in engine.history),
-        config=inputs.config,
+        config=cfg,
         pattern=pat,
         engine=engine,
         warnings=tuple(warnings),

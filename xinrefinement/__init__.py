@@ -4,4 +4,4 @@
 方案见 docs/PROJECT_PLAN.md，任务手册见 docs/TASKS.md。
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

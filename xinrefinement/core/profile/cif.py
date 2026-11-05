@@ -259,8 +259,24 @@ def parse_symop(expr: str) -> list[tuple[float, float, float, float]]:
     return out
 
 
-def expand_symmetry(atoms, symops, tol: float = 1e-4):
-    """atoms: [(elem,x,y,z,occ,B)] -> 按对称操作展开并去重的结果。"""
+#: 对称展开去重容差（分数坐标）。**不要改回 1e-4**。
+#:
+#: 实测依据（2026-11-05，实样 ShiJiKong1–7）：CIF 里的特殊位置普遍被四舍五入
+#: 到 3 位小数，如石英 P3121 的 Si(0.530, 0, 0.333) 真值为 z=1/3。3₁ 螺旋
+#: 轴生成的等价点落在 0.333 / 0.33367 / 0.99967 三处，与 0.33333… 相差
+#: 3.3e-4 —— 用 1e-4 去重会**全部留下**，Si 由 3 个变 6 个（散射能力翻倍），
+#: 石英相对强度与 QPA 全错，且 QPA 因 Z 反算不一致而整体跳过。
+#: 3 位小数的四舍五入误差上限 ≈ 5e-4，取 2e-3 留 4 倍余量；a≈5 Å 时
+#: 2e-3 仅 0.01 Å，远小于任何真实原子间距（最短化学键 ≈ 1 Å），
+#: 不会把真正不同的位点误并。
+SYM_DEDUP_TOL = 2e-3
+
+
+def expand_symmetry(atoms, symops, tol: float = SYM_DEDUP_TOL):
+    """atoms: [(elem,x,y,z,occ,B)] -> 按对称操作展开并去重的结果。
+
+    ``tol`` 见 :data:`SYM_DEDUP_TOL`（分数坐标，默认 2e-3）。
+    """
     if not symops or not atoms:
         return list(atoms)
     out = []

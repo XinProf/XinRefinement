@@ -90,13 +90,24 @@ class RefineConfig:
     tmin: float = 5.0
     tmax: float = 90.0
     # ---- v1.0.0 扩展（默认关闭，保持 v0.1.0 行为） ----
-    bg_mode: str = "cheb"            # "cheb" | "tent"
+    bg_mode: str = "cheb"            # "cheb" | "tent" | "interp"（v1.2.0）
     refine_asym: bool = False        # 低角不对称尾
     refine_bfactor: bool = False     # 经验高角衰减 B
     refine_cell: bool = False        # 每相晶胞 a,c 缩放 (T4.7)
     backend: str = "lm"              # "lm"（自研，默认）| "scipy"（trf，真实数据推荐）
     progress_cb: object = None       # callable(msg: str, pct: float | None)
     on_iter: object = None           # callable(gen: int, rwp: float)
+    # ---- v1.2.0 扩展：定权模式（对照 MAUD DiffrDataFile.getWeight） ----
+    #: "sqrt"（默认，1/σ∝1/√y 计数统计，与 v1.1.x 逐位一致）| "file"
+    #: （谱图 meta["sigma"]，缺则回退 sqrt）| "unit"（常数权）| "1/y"
+    weight_mode: str = "sqrt"
+    # ---- v1.2.0 扩展：手动/插值背景（固定曲线，MAUD 两层可加语义） ----
+    #: bg_mode="manual" 时的锚点序列 ((2θ, I), ...)，P2.2 起由
+    #: solve_linear_detail 作为固定背景从 y_obs 扣除（此前 GUI 收集了
+    #: 却从未接进引擎）；"interp" 模式由 solve() 自动提取后归一化为 manual
+    bg_points: tuple = ()
+    #: "interp" 提取迭代次数（MAUD 默认 10）
+    bg_interp_iters: int = 10
     # ---- v1.4.0 扩展 ----
     refine_po: bool = False          # March–Dollase 择优取向 r 精修（默认关）
     # ---- NCA 修改（T2.1）: TCH 尺寸/应变精修（默认关，保持 vendor 行为） ----
@@ -323,6 +334,39 @@ def _unpack_reg(reg: ParameterRegistry, x: np.ndarray, base: ProfileParams):
     return prm, cell
 
 
+def effective_sigma(cfg: RefineConfig, pat: Pattern) -> np.ndarray:
+    """统一取 σ 入口（v1.2.0，对照 MAUD ``DiffrDataFile.getWeight`` 的 4 模式）。
+
+    - ``cfg.sigma`` 显式给出时**总是**优先（老调用方/测试契约不变）；
+    - ``weight_mode="sqrt"``：1/σ ∝ 1/√y（计数统计），与 v1.1.x 逐位一致；
+    - ``"file"``：谱图 ``meta["sigma"]``（``_pd_meas_intensity_sigma``），
+      缺失/形状不符/非正时**回退** sqrt 并不报错（宽松加载）；
+    - ``"unit"``：常数权（σ=1），等价 MAUD case 3；
+    - ``"1/y"``：σ=y（夹到 ≥1），等价 MAUD case 2。
+
+    注意：Rwp 的权重与残差权重共用本函数（口径一致，否则 Rwp 失去可比性）。
+    """
+    if cfg.sigma is not None:
+        return cfg.sigma
+    yo = pat.intensity
+    mode = cfg.weight_mode
+    if mode == "sqrt":
+        return np.sqrt(np.maximum(yo, 1.0))
+    if mode == "unit":
+        return np.ones_like(yo)
+    if mode == "1/y":
+        return np.maximum(yo, 1.0)
+    if mode == "file":
+        sig = pat.meta.get("sigma")
+        if sig is not None:
+            sig = np.asarray(sig, dtype=np.float64)
+            if sig.shape == yo.shape and bool(np.all(sig > 0)):
+                return sig
+        return np.sqrt(np.maximum(yo, 1.0))
+    raise ValueError(
+        f"未知 weight_mode: {mode!r}（可选 sqrt / file / unit / 1/y）")
+
+
 def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParams,
                     cfg: RefineConfig, history: list[float], gen: list[int],
                     reg: ParameterRegistry | None = None):
@@ -333,9 +377,7 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
     旧调用方/测试，不影响数值）。
     """
     tt, yo = pat.two_theta, pat.intensity
-    sig = cfg.sigma
-    if sig is None:
-        sig = np.sqrt(np.maximum(yo, 1.0))
+    sig = effective_sigma(cfg, pat)
     if reg is None:
         reg = _registry_for(cfg, base, len(phases))
     cell_cache: dict[tuple, CifStructure] = {}
@@ -356,7 +398,8 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
                 for si, (fa, fc) in enumerate(cell)]
         basis = np.vstack(rows) if rows else np.zeros((0, tt.size))
         _coeffs, ycalc, _dropped = solve_linear_detail(
-            basis, tt, yo, sig, cfg.n_bg, cfg.bg_mode)
+            basis, tt, yo, sig, cfg.n_bg, cfg.bg_mode,
+            bg_points=list(cfg.bg_points) or None)
         # history 记录每次评估的 Rwp（GSAS-II 口径，背景计入）
         rwp = compute_rfactors(
             yo, ycalc, n_params=x.size + basis.shape[0] + cfg.n_bg).rwp
@@ -379,11 +422,12 @@ def _rwp_at(phases: list[CifStructure], pat: Pattern, prm: ProfileParams,
     注意：重启选点评估不缩放晶胞（cell=1.0），只比较峰形参数的优劣。
     """
     tt, yo = pat.two_theta, pat.intensity
-    sig = cfg.sigma if cfg.sigma is not None else np.sqrt(np.maximum(yo, 1.0))
+    sig = effective_sigma(cfg, pat)
     rows = [compute_phase_profile(s, tt, prm, cfg.tmin, cfg.tmax)
             for s in phases]
     _coeffs, ycalc, _dropped = solve_linear_detail(
-        np.vstack(rows), tt, yo, sig, cfg.n_bg, cfg.bg_mode)
+        np.vstack(rows), tt, yo, sig, cfg.n_bg, cfg.bg_mode,
+        bg_points=list(cfg.bg_points) or None)
     return compute_rfactors(yo, ycalc, n_params=cfg.n_bg).rwp
 
 
@@ -514,13 +558,14 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
                 cfg.tmin, cfg.tmax)
             for si, (fa, fc) in enumerate(cell_scales)]
     basis = np.vstack(rows)
+    sig_final = effective_sigma(cfg, pat)
     coeffs, ycalc, dropped = solve_linear_detail(
         basis, pat.two_theta, pat.intensity,
-        cfg.sigma if cfg.sigma is not None else np.sqrt(
-            np.maximum(pat.intensity, 1.0)), cfg.n_bg, cfg.bg_mode)
+        sig_final, cfg.n_bg, cfg.bg_mode,
+        bg_points=list(cfg.bg_points) or None)
     n_p = best_x.size + basis.shape[0] + cfg.n_bg
     rf = compute_rfactors(pat.intensity, ycalc, n_params=n_p,
-                          sigma=cfg.sigma, include_bg=True)
+                          sigma=sig_final, include_bg=True)
     return RefineResult(params=prm, scales=coeffs[:basis.shape[0]].copy(),
                         bg=coeffs[basis.shape[0]:].copy(), ycalc=ycalc,
                         rf=rf, success=success, history=history,

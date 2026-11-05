@@ -38,9 +38,21 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--wavelength", type=float, default=DEFAULT_WAVELENGTH)
     r.add_argument("--zero", type=float, default=0.0, help="零点初值（度）")
     r.add_argument("--n-bg", type=int, default=3, help="背景项数/节点数")
-    r.add_argument("--bg-mode", choices=["cheb", "tent"], default="cheb")
+    r.add_argument("--bg-mode", choices=["cheb", "tent", "interp", "manual"],
+                   default="cheb",
+                   help="interp=v1.2.0 自动提取固定插值背景（MAUD 语义，"
+                        "默认 10 次迭代）；manual 需配 --bg-points")
+    r.add_argument("--bg-points", default="", metavar="2θ:强度,...",
+                   help="manual 背景锚点，如 --bg-points 15:320,60:180")
+    r.add_argument("--weight-mode", choices=["sqrt", "file", "unit", "1/y"],
+                   default="sqrt",
+                   help="定权模式（v1.2.0）：sqrt=计数统计（默认），"
+                        "file=谱图自带 σ，unit=常数权，1/y=σ∝y")
     r.add_argument("--backend", choices=["lm", "scipy"], default="lm")
     r.add_argument("--max-iter", type=int, default=40)
+    r.add_argument("--microabs", action="append", default=[], metavar="相名=μr",
+                   help="Brindley 微吸收校正（v1.2.0，可多次）：如 "
+                        "--microabs Goethite=1.5；μ·r=吸收系数×晶粒半径")
     r.add_argument("--refine-eta", action="store_true")
     r.add_argument("--refine-asym", action="store_true")
     r.add_argument("--refine-bfactor", action="store_true")
@@ -68,6 +80,29 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _parse_microabs(items: list[str]) -> dict[str, float]:
+    """'相名=μr' 列表 -> {相名: μ·r}（坏项直接报错，不静默丢弃）。"""
+    out: dict[str, float] = {}
+    for item in items:
+        name, _, val = item.partition("=")
+        name, val = name.strip(), val.strip()
+        if not name or not val:
+            raise SystemExit(f"--microabs 格式应为 相名=μr，收到: {item!r}")
+        out[name] = float(val)
+    return out
+
+
+def _parse_bg_points(spec: str) -> tuple:
+    """'15:320,60:180' -> ((15.0, 320.0), (60.0, 180.0))。"""
+    pts = []
+    for item in filter(None, spec.split(",")):
+        x, _, y = item.partition(":")
+        pts.append((float(x), float(y)))
+    if len(pts) == 1:
+        raise SystemExit("--bg-points 至少需要 2 个点")
+    return tuple(pts)
+
+
 def _build_inputs(args) -> RefineInputs:
     pat = load_pattern(args.pattern)
     phases = [parse_cif(p) for p in args.cif]
@@ -76,6 +111,7 @@ def _build_inputs(args) -> RefineInputs:
         wavelength=args.wavelength,
         anode=None if args.anode == "none" else args.anode,
         integrated=not args.peak_height,
+        microabs=(_parse_microabs(args.microabs) or None),
     )
     cfg = RefineConfig(
         refine_zero=True,
@@ -88,6 +124,8 @@ def _build_inputs(args) -> RefineInputs:
         refine_strain=args.refine_strain,
         n_bg=args.n_bg,
         bg_mode=args.bg_mode,
+        bg_points=_parse_bg_points(args.bg_points),
+        weight_mode=args.weight_mode,
         max_iter=args.max_iter,
         backend=args.backend,
         tmin=args.tmin,
@@ -234,7 +272,9 @@ def _run(args) -> int:
             recipe_rows.append((rec.key, rec.status, rec.rwp_before,
                                 rec.rwp_after))
             if rec.status == "failed" or res is None:
-                print(f"步骤 {rec.key} 失败：{rec.note}", file=sys.stderr)
+                # StepRecord 的字段是 message（不是 note）：此前这里写 rec.note，
+                # 只在**真的失败**时才触发 AttributeError，正常路径永远走不到。
+                print(f"步骤 {rec.key} 失败：{rec.message}", file=sys.stderr)
                 return 1
         res = res  # noqa: PLW0127 — 最后一步的结果
     else:

@@ -155,6 +155,19 @@ def test_recipe_all_runs_in_background(win, qapp):
     assert not win.btn_cancel.isEnabled()
 
 
+def test_inputs_use_rietveld_intensity_convention(win):
+    """出厂配置必须用 ``integrated=True``（Rietveld 标度 S 的标准口径）。
+
+    v1.1.0 及以前 GUI 给 ``False``（v0.1.0 峰高旧口径）：峰高口径下峰宽随
+    2θ 变化会直接扭曲相对强度，实样对拍实测同配置差 3.65 个百分点。
+    """
+    win._load_pattern_path(PATTERN)
+    win._load_cif_paths([CIF_A])
+    inp = win._make_inputs()
+    assert inp is not None
+    assert inp.profile.integrated is True
+
+
 def test_single_step_via_recipe(win, qapp):
     """导航单步按钮：只执行该步（后台线程），不跑全部。"""
     win._load_pattern_path(PATTERN)

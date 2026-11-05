@@ -95,8 +95,9 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
     pat = res.pattern
     prm_base = res.params
     tt, yo = pat.two_theta, pat.intensity
-    sig = (np.sqrt(np.maximum(yo, 1.0)) if cfg.sigma is None
-           else np.asarray(cfg.sigma, dtype=np.float64))
+    # v1.2.0：与主引擎同口径（weight_mode），否则 e.s.d. 与 Rwp 权重不一致
+    from xinrefinement.core.refine.nonlinear import effective_sigma
+    sig = effective_sigma(cfg, pat)
     n_phase = len(phases)
     n_bg = len(res.background)
     cell = [tuple(c) for c in (res.engine.cell_scales
