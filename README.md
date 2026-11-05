@@ -1,16 +1,27 @@
 # XinRefinement
 
+<p align="center">
+  <img src="assets/icons/logo_512.png" width="180" alt="XinRefinement logo">
+</p>
+
 **通用粉末衍射全谱拟合（Rietveld 结构精修 / Le Bail / 谱图精修）桌面软件。**
+
+简体中文 · [English](README-en.md)
 
 Qt6 图形界面 + 命令行 + Python 库 API 三入口，覆盖「导入谱图 + 物相 CIF → 全谱拟合 → 定量与不确定度 → 报告」的完整工作流。
 与家族项目 XinMatch 分工：XinMatch 做峰形处理与物相分析，XinRefinement 只做全谱拟合（结构精修、谱图精修、定量）。
 
-当前版本：**v1.1.0（开发中）** · 最新发布：v1.0.0（2026-11-05）
+当前版本：**v1.1.0**（2026-11-05 发布）· 上一版：v1.0.0
 v1.1.0 主题：与 XinMatch 3.4.0 互通（`.xinm` 导入 / `.xinr` 自包含工程）。
 
 ---
 
 ## 功能
+
+### 家族互通（v1.1.0 新增）
+- **导入 XinMatch 物相分析（`.xinm`）**：`文件 → 导入 XinMatch 物相分析…` 一次装载谱图（含 wavelength，d 轴立即可用）+ 物相 CIF + 元数据，直接进入配方精修；无结构相（PDF2 类）列为「仅参照」并给出手动补 CIF 的提示
+- **工程文件 `.xinr`（自包含 zip 容器）**：内嵌谱图 CSV（`%.10g`，往返零误差）+ CIF + 完整精修结果（`result/refine.json`），换机器/移目录后仍可打开并复现上次结果；旧 `.xrp` 永久只读兼容
+- **库 API**：`capabilities()` 提供 `xinm_import` 能力位，外部程序可先探测再决定是否暴露导入入口
 
 ### 精修引擎
 - **参数模型**：声明式参数注册表（`ParameterRegistry`），全晶胞按晶系约束（立方 1 → 三斜 6）；与旧 `_pack/_unpack` 路径双轨兼容且逐位一致
@@ -27,7 +38,7 @@ v1.1.0 主题：与 XinMatch 3.4.0 互通（`.xinm` 导入 / `.xinr` 自包含�
 - **轴切换**：横轴 2θ ↔ d 值（Bragg 换算、自动反向），纵轴 counts ↔ log ↔ √；左键点轴循环、右键选单
 - **物相参数编辑**：晶胞 a/b/c/α/β/γ、March–Dollase 择优取向、空间群/点群/劳厄群
 - 结果区三页：摘要（R 因子/含量/DW/e.s.d.）、收敛曲线、相关性矩阵
-- 三语界面（简体中文 / English / 日本語，切换无需重启）、工程文件 `.xrp`
+- 三语界面（简体中文 / English / 日本語，切换无需重启）、工程文件 `.xinr`（自包含）/ `.xrp`（路径引用，兼容旧版）
 - 报告导出：HTML + PNG + JSON 精修日志
 
 ### 命令行与库 API
@@ -48,10 +59,10 @@ XinRefinementCLI refine <谱图> <物相.cif...> [-o out.json]
 
 ## 安装
 
-发布件见 [GitHub Releases](https://github.com/PolyXRD/XinRefinement/releases)（当前 `v1.0.0`）。
+发布件见 [GitHub Releases](https://github.com/PolyXRD/XinRefinement/releases)（当前 `v1.1.0`）。
 
 ### 正式版（推荐）
-1. 下载 `XinRefinement-1.0.0-setup.exe`，双击安装（可选简体中文 / English / 日本語）；
+1. 下载 `XinRefinement-1.1.0-setup.exe`（67.6 MB，SHA-256 `046179e6…a44926`），双击安装（可选简体中文 / English / 日本語）；
 2. 首次启动会提示「本软件未注册，版权所有，禁止用于商业用途」——
    按「确定」继续试用，或按「输入注册码」粘贴注册码完成注册；
 3. 安装后开始菜单含 **XinRefinement**（GUI）与 **XinRefinementCLI**（命令行）两项。
@@ -60,7 +71,8 @@ XinRefinementCLI refine <谱图> <物相.cif...> [-o out.json]
 申请与技术支持：**sshztx@outlook.com**
 
 ### 内部评估版
-解压 `XinRefinement-internal-1.0.0-portable.zip` 即用，无需安装、无需注册（内部测试与评估专用，不对外分发）。
+从源码构建（见下）可得 `XinRefinement-internal-1.1.0-portable.zip`，解压即用，无需安装、无需注册
+（内部测试与评估专用，**不随 Release 分发**）。
 
 ---
 
@@ -71,9 +83,11 @@ XinRefinementCLI refine <谱图> <物相.cif...> [-o out.json]
 XinRefinement.exe
 ```
 1. **导入谱图**（`.xy/.txt/.dat/.csv/.xye`）+ **导入 CIF**（可多选）；
+   若已在 XinMatch 完成物相分析，直接 `文件 → 导入 XinMatch 物相分析…` 选 `.xinm`，谱图与 CIF 一并就位；
 2. 谱图区下方出现每相标记条，可勾选物相开关即时预览；
 3. 右侧导航逐项点 ▶ 精修，或「一键连跑」按标准配方一次跑完 8 步；
-4. 结果区查看 Rwp / 含量 / e.s.d.，工具栏「报告导出」输出 HTML+PNG+JSON。
+4. 结果区查看 Rwp / 含量 / e.s.d.，工具栏「报告导出」输出 HTML+PNG+JSON；
+5. `文件 → 保存工程…` 存为 `.xinr`（内嵌谱图/CIF/结果，可换机器继续）。
 
 ### 命令行
 ```bash
@@ -106,9 +120,9 @@ python tools/build_binaries.py --variant internal # 只构建内部评估版
 
 | 路径 | 说明 |
 |---|---|
-| `dist/XinRefinement-1.0.0/` | onedir，GUI + CLI 双 exe 共享依赖 |
-| `dist/installer/XinRefinement-1.0.0-setup.exe` | 正式版安装包（Inno Setup，zh/en/ja） |
-| `dist/XinRefinement-internal-1.0.0/` + `…-portable.zip` | 内部评估版目录与便携包 |
+| `dist/XinRefinement-1.1.0/` | onedir，GUI + CLI 双 exe 共享依赖 |
+| `dist/installer/XinRefinement-1.1.0-setup.exe` | 正式版安装包（Inno Setup，zh/en/ja）——Release 只发这一个 |
+| `dist/XinRefinement-internal-1.1.0/` + `…-portable.zip` | 内部评估版目录与便携包（不对外发布） |
 
 依赖：Inno Setup 6（仅安装包需要）。打包脚本会做变体标记回读校验，避免内部版退化成强制注册版。
 构建已固定 `SOURCE_DATE_EPOCH`（= git HEAD 提交时间）与 `PYTHONHASHSEED=0`，
@@ -120,7 +134,8 @@ python tools/build_binaries.py --variant internal # 只构建内部评估版
 
 | 类别 | 结果 |
 |---|---|
-| 单元/集成测试 | **259 项全绿**（引擎、GUI 离屏冒烟、CLI、i18n、注册与变体） |
+| 单元/集成测试 | **286 项全绿**（引擎、GUI 离屏冒烟、CLI、i18n、注册与变体、`.xinm`/`.xinr` 互通） |
+| 家族链路 S1–S4 | 真实 COD 档案（7206075 + 9001681）`.xinm` → 导入 → 精修 **Rwp 3.409617019598457**（与 P0 黄金值逐位一致），Wt 50.03/49.97；删源后 `.xinr` 复现（rel 1e-9） |
 | 合成基准 `bench_b`（家族 golden） | 8/8 PASS，Rwp 3.41–4.04%，移植前后逐位一致 |
 | 全基准 `bench_full`（5 晶系 × 1–3 相） | 18/18 PASS |
 | 真实锚点 | NCM811 实样收敛（Rwp 11.25%） |
@@ -135,6 +150,7 @@ python tools/build_binaries.py --variant internal # 只构建内部评估版
 ```
 xinrefinement/
   core/            # 引擎（不依赖 GUI）
+    io/            # .xinm 导入（XinMatch 物相分析状态）
     profile/       # CIF 解析、峰形、结构因子
     refine/        # 求解器、参数注册表、配方、e.s.d.、Le Bail、诊断
     report.py      # HTML/PNG/JSON 报告
@@ -159,10 +175,13 @@ tests/             # pytest（含离屏 GUI 冒烟）
 | 文档 | 内容 |
 |---|---|
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更记录 |
+| [`docs/RELEASE_NOTES_v1.1.0.md`](docs/RELEASE_NOTES_v1.1.0.md) | v1.1.0 发布说明（互通能力与验收数据） |
+| [`docs/RELEASE_1.0.0.md`](docs/RELEASE_1.0.0.md) | v1.0.0 发布验收清单（六轮稳健性） |
+| [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md) | 与 XinMatch 的 `.xinm`/`.xinr` 格式契约（单一事实源） |
 | [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) | 技术方案与架构决策 |
-| [`docs/TASKS.md`](docs/TASKS.md) | 任务手册（P1–P4 交付记录） |
+| [`docs/TASKS.md`](docs/TASKS.md) | 任务手册（P1–P5 交付记录） |
 | [`docs/CROSS_VALIDATION.md`](docs/CROSS_VALIDATION.md) | 与 GSAS-II 的结构量交叉验证 |
-| [`docs/RELEASE_1.0.0.md`](docs/RELEASE_1.0.0.md) | 发布验收清单（六轮稳健性） |
+| [`README-en.md`](README-en.md) | English README |
 
 ---
 

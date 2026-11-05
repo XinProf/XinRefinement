@@ -1,9 +1,12 @@
 # 变更记录
 
-## v1.1.0（开发中，联合计划：与 XinMatch 3.4.0 互通）
+## v1.1.0（2026-11-05 发布）
 
 主题：打通「物相检索（XinMatch）→ 全谱拟合精修（XinRefinement）」家族链路。
-计划与格式契约见 [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md)。
+计划与格式契约见 [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md)，
+发布说明见 [`docs/RELEASE_NOTES_v1.1.0.md`](docs/RELEASE_NOTES_v1.1.0.md)，
+安装包见 [Release v1.1.0](https://github.com/PolyXRD/XinRefinement/releases/tag/v1.1.0)。
+配套版本：**XinMatch 3.4.0**。精修引擎、参数模型、CLI 参数与注册机制均未改动。
 
 ### 新增
 
