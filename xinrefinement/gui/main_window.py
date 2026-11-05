@@ -191,6 +191,27 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(slot)
             tb.addWidget(btn)
             self._toolbar_buttons[key] = btn
+        # v1.3：点选背景（checkable）——画布主轴内左键加/删锚点、右键清空
+        pick_btn = QPushButton(tr("toolbar.bg_pick"))
+        pick_btn.setCheckable(True)
+        pick_btn.setToolTip(tr("bg.pick_hint"))
+        pick_btn.toggled.connect(self._toggle_bg_pick_mode)
+        tb.addWidget(pick_btn)
+        self._toolbar_buttons["toolbar.bg_pick"] = pick_btn
+
+    def _toggle_bg_pick_mode(self, on: bool) -> None:
+        """开关画布背景点选模式。"""
+        self.canvas.set_pick_mode(bool(on))
+        if on:
+            self.statusBar().showMessage(tr("bg.pick_hint"))
+
+    def _on_bg_picks_changed(self, picks: list) -> None:
+        """画布锚点变化 → 写入 bg 设置并自动切 manual 模式（下次精修生效）。"""
+        bg = self._settings.setdefault("bg", {})
+        bg["bg_points"] = [(float(a), float(b)) for a, b in picks]
+        if picks and bg.get("bg_mode") != "manual":
+            bg["bg_mode"] = "manual"
+        self.statusBar().showMessage(tr("bg.pick_status").format(n=len(picks)))
 
     def _build_body(self) -> None:
         split = QSplitter(Qt.Horizontal, self)
@@ -225,6 +246,8 @@ class MainWindow(QMainWindow):
         colorize_nav_toolbar(self._nav_toolbar)   # 品牌彩色图标
         self.canvas.nav_toolbar = self._nav_toolbar  # 平移/缩放时让出轴点击
         self.canvas.axisHint.connect(self.statusBar().showMessage)
+        # v1.3：画布背景锚点 → 设置回写（manual 模式，下次精修生效）
+        self.canvas.bgPointsChanged.connect(self._on_bg_picks_changed)
         cv.addWidget(self._nav_toolbar)
         split.addWidget(center)
 
@@ -578,6 +601,10 @@ class MainWindow(QMainWindow):
                                 if s.get("microabs")}
         if data.get("pattern") and Path(data["pattern"]).exists():
             self._load_pattern_path(Path(data["pattern"]))
+        # v1.3：恢复工程保存的背景锚点（画布标记 + manual 模式）
+        bg_saved = self._settings.get("bg", {}) or {}
+        if bg_saved.get("bg_points"):
+            self.canvas.set_bg_picks(bg_saved["bg_points"])
         cifs = [c for c in data.get("cifs", []) if c and Path(c).exists()]
         if cifs:
             self._load_cif_paths([Path(c) for c in cifs])
@@ -773,7 +800,8 @@ class MainWindow(QMainWindow):
         if not self._phases:
             QMessageBox.information(self, "物相参数编辑", "请先导入 CIF 物相")
             return
-        dlg = PhaseEditDialog(self._phases, self._phase_edits, self)
+        dlg = PhaseEditDialog(self._phases, self._phase_edits, self,
+                              anode="Cu")   # 与 _make_inputs 的硬编码一致
         if dlg.exec() != QDialog.Accepted:
             return
         got = dlg.settings()
@@ -815,6 +843,8 @@ class MainWindow(QMainWindow):
             n_bg=int(bg.get("n_bg", adaptive_n_bg(tmin, tmax))),
             bg_mode=bg.get("bg_mode", "tent"),
             bg_points=bg_points,
+            # v1.3：定权模式（MAUD getWeight + theoreticalWeights）
+            weight_mode=bg.get("weight_mode", "sqrt"),
             tmin=tmin, tmax=tmax, max_iter=40)
         # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
         # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及

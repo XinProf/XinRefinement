@@ -60,6 +60,8 @@ BFACTOR_BOUNDS = (0.0, 6.0)
 CELL_BOUNDS = (0.99, 1.01)          # 晶胞 a,c 缩放 ±1%
 # v1.4.0: March–Dollase 择优取向参数 r 边界（r=1 为无择优）
 PO_BOUNDS = (0.2, 5.0)
+# v1.3: Brindley 微吸收 mu*r 边界（下限避开 0 的奇点，20 对应近全吸收）
+MICROABS_BOUNDS = (0.01, 20.0)
 # NCA 修改（T2.1）: TCH 洛伦兹项边界。X = 4ε（度），Y = Kλ/D（度）。
 # Y 上限 0.5° 对应 D ≈ 0.16 nm（纳米晶下限）；X 上限 0.5° 对应 ε ≈ 2.2e-3。
 SIZE_BOUNDS = (0.0, 0.5)     # Y
@@ -100,6 +102,8 @@ class RefineConfig:
     # ---- v1.2.0 扩展：定权模式（对照 MAUD DiffrDataFile.getWeight） ----
     #: "sqrt"（默认，1/σ∝1/√y 计数统计，与 v1.1.x 逐位一致）| "file"
     #: （谱图 meta["sigma"]，缺则回退 sqrt）| "unit"（常数权）| "1/y"
+    #: | "theoretical"（v1.3：σ=√max(ycalc,1)，MAUD theoreticalWeights，
+    #:   抗弱峰噪声漂移；solve() 入口解析为固定 σ 数组）
     weight_mode: str = "sqrt"
     # ---- v1.2.0 扩展：手动/插值背景（固定曲线，MAUD 两层可加语义） ----
     #: bg_mode="manual" 时的锚点序列 ((2θ, I), ...)，P2.2 起由
@@ -110,6 +114,13 @@ class RefineConfig:
     bg_interp_iters: int = 10
     # ---- v1.4.0 扩展 ----
     refine_po: bool = False          # March–Dollase 择优取向 r 精修（默认关）
+    # ---- v1.3 评审降级（实验用，勿在生产路径开启）：每相 Brindley mu*r
+    # 精修。已证伪：Brindley 因子是每相常数标量，与线性层每相自由 scale
+    # **完全简并**（乘积 S_p·f(μr_p) 才可辨识），单谱精修数学上不可辨识，
+    # 实测 LM 在零梯度平面漂移到上界（真值 2.0 → 撞界 20.0），且 Rwp 不变
+    # 而 wt% 静默漂移。μ·r 请用 core.absorption 按化学成分计算或实测输入。
+    # 机制保留仅供多谱联合/受约束标度等未来场景实验。
+    refine_microabs: bool = False
     # ---- NCA 修改（T2.1）: TCH 尺寸/应变精修（默认关，保持 vendor 行为） ----
     refine_size: bool = False        # 精修 Y（Kλ/D，尺寸项）
     refine_strain: bool = False      # 精修 X（4ε，应变项）
@@ -168,6 +179,10 @@ def _pack(prm: ProfileParams, cfg: RefineConfig, n_phase: int) -> np.ndarray:
     if cfg.refine_po and prm.po_r:
         for name in sorted(prm.po_r):
             x.append(float(prm.po_r[name][3]))
+    # v1.3: 每相 Brindley mu*r（顺序与 _unpack/_bounds 一致：sorted(microabs)）
+    if cfg.refine_microabs and prm.microabs:
+        for name in sorted(prm.microabs):
+            x.append(float(prm.microabs[name]))
     # NCA 修改（T2.1）: X/Y 追加在最后（PO 之后），_unpack/_bounds 同序
     if cfg.refine_strain:
         x.append(float(getattr(prm, "X", 0.0)))
@@ -219,17 +234,24 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
         for name in sorted(base.po_r):
             entry = base.po_r[name]
             po_r[name] = (entry[0], entry[1], entry[2], float(x[i])); i += 1
+    # v1.3: mu*r 与 _pack 同序（sorted(microabs)）；X/Y 末端倒读不受影响
+    microabs = base.microabs
+    if cfg.refine_microabs and base.microabs:
+        microabs = dict(base.microabs)
+        for name in sorted(base.microabs):
+            microabs[name] = max(float(x[i]), MICROABS_BOUNDS[0]); i += 1
     prm = ProfileParams(zero=zero, U=U, V=V, W=max(W, MIN_W), eta=eta,
                         anode=base.anode, ka_ratio=base.ka_ratio,
                         po_r=po_r, wavelength=base.wavelength,
                         asym=asym, bfactor=bfactor,
                         integrated=base.integrated,
+                        microabs=microabs,
                         X=X, Y=Y)   # NCA 修改（T2.1）
     return prm, cell
 
 
 def _bounds(cfg: RefineConfig, n_phase: int,
-            n_po: int = 0) -> tuple[np.ndarray, np.ndarray]:
+            n_po: int = 0, n_ma: int = 0) -> tuple[np.ndarray, np.ndarray]:
     lo, hi = [], []
     if cfg.refine_zero:
         lo.append(ZERO_BOUNDS[0]); hi.append(ZERO_BOUNDS[1])
@@ -249,6 +271,9 @@ def _bounds(cfg: RefineConfig, n_phase: int,
     # v1.4.0: 每相一个 March–Dollase r（顺序与 _pack 一致：sorted(po_r)）
     for _ in range(n_po):
         lo.append(PO_BOUNDS[0]); hi.append(PO_BOUNDS[1])
+    # v1.3: 每相一个 Brindley mu*r（顺序与 _pack 一致：sorted(microabs)）
+    for _ in range(n_ma):
+        lo.append(MICROABS_BOUNDS[0]); hi.append(MICROABS_BOUNDS[1])
     # NCA 修改（T2.1）: X/Y 边界（顺序与 _pack 一致：先 X 后 Y）
     if cfg.refine_strain:
         lo.append(STRAIN_BOUNDS[0]); hi.append(STRAIN_BOUNDS[1])
@@ -320,7 +345,8 @@ def _registry_for(cfg: RefineConfig, prm: ProfileParams,
                   n_phase: int) -> ParameterRegistry:
     """由 cfg + 当前参数构造声明式注册表（P1.0c 生产路径唯一入口）。
 
-    PO 槽位名取 ``sorted(prm.po_r)``，与旧 ``_pack`` 的顺序一致；
+    PO 槽位名取 ``sorted(prm.po_r)``、microabs 槽位名取 ``sorted(prm.microabs)``，
+    与旧 ``_pack`` 的顺序一致；
     ``build_registry_from_config`` 只依赖开关与槽位名，不依赖参数数值，
     故可在残差闭包外**构造一次**复用（热路径不重复建注册表）。
     """
@@ -334,7 +360,8 @@ def _unpack_reg(reg: ParameterRegistry, x: np.ndarray, base: ProfileParams):
     return prm, cell
 
 
-def effective_sigma(cfg: RefineConfig, pat: Pattern) -> np.ndarray:
+def effective_sigma(cfg: RefineConfig, pat: Pattern,
+                    ycalc: np.ndarray | None = None) -> np.ndarray:
     """统一取 σ 入口（v1.2.0，对照 MAUD ``DiffrDataFile.getWeight`` 的 4 模式）。
 
     - ``cfg.sigma`` 显式给出时**总是**优先（老调用方/测试契约不变）；
@@ -342,7 +369,10 @@ def effective_sigma(cfg: RefineConfig, pat: Pattern) -> np.ndarray:
     - ``"file"``：谱图 ``meta["sigma"]``（``_pd_meas_intensity_sigma``），
       缺失/形状不符/非正时**回退** sqrt 并不报错（宽松加载）；
     - ``"unit"``：常数权（σ=1），等价 MAUD case 3；
-    - ``"1/y"``：σ=y（夹到 ≥1），等价 MAUD case 2。
+    - ``"1/y"``：σ=y（夹到 ≥1），等价 MAUD case 2；
+    - ``"theoretical"``（v1.3）：σ=√max(ycalc,1)，MAUD theoreticalWeights，
+      用**计算值**代替观测值定权（抗弱峰噪声漂移）。``ycalc`` 省略时用
+      观测值引导（引导语义，solve() 入口会先解析成固定 σ 数组再进引擎）。
 
     注意：Rwp 的权重与残差权重共用本函数（口径一致，否则 Rwp 失去可比性）。
     """
@@ -356,6 +386,9 @@ def effective_sigma(cfg: RefineConfig, pat: Pattern) -> np.ndarray:
         return np.ones_like(yo)
     if mode == "1/y":
         return np.maximum(yo, 1.0)
+    if mode == "theoretical":
+        ref = yo if ycalc is None else ycalc
+        return np.sqrt(np.maximum(np.asarray(ref, dtype=np.float64), 1.0))
     if mode == "file":
         sig = pat.meta.get("sigma")
         if sig is not None:
@@ -364,7 +397,7 @@ def effective_sigma(cfg: RefineConfig, pat: Pattern) -> np.ndarray:
                 return sig
         return np.sqrt(np.maximum(yo, 1.0))
     raise ValueError(
-        f"未知 weight_mode: {mode!r}（可选 sqrt / file / unit / 1/y）")
+        f"未知 weight_mode: {mode!r}（可选 sqrt / file / unit / 1/y / theoretical）")
 
 
 def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParams,

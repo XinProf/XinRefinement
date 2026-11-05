@@ -74,6 +74,10 @@ class RefineStep:
                        refine_po=(self.key == "micro"),
                        refine_size=(self.key == "micro"),
                        refine_strain=(self.key == "micro"))
+        # v1.3 评审：refine_microabs **不**在此开启。μ·r 与每相 scale 数学
+        # 简并（Brindley 因子是每相常数标量，被线性层自由 scale 完全吸收），
+        # 单谱精修不可辨识且 LM 会数值漂移到边界；μ·r 应由化学成分计算
+        # （core.absorption / GUI「自动计算」）或用户实测给出。
 
 
 #: 标准配方（与 GSAS-II / FullProf 推荐精修顺序一致，对照草图自上而下）

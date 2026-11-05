@@ -169,6 +169,40 @@ def _resolve_interp_bg(cfg: RefineConfig, pat: Pattern,
     return _replace(cfg, bg_points=tuple(pts))
 
 
+def _resolve_theoretical_sigma(cfg: RefineConfig, phases: list[CifStructure],
+                               prm: ProfileParams, pat: Pattern,
+                               warnings: list[str]) -> RefineConfig:
+    """v1.3：``weight_mode="theoretical"`` 一次性解析为固定 σ 数组。
+
+    MAUD theoreticalWeights：σ=√max(ycalc,1)，用**计算值**代替观测值定权
+    （抗弱峰噪声漂移）。σ 依赖 ycalc、ycalc 依赖精修结果 —— 鸡生蛋，故在
+    引擎入口**引导一次**：用初始参数 + 观测值引导权（√max(y_o,1)）解一遍
+    线性层得 ycalc₀，再取 σ=√max(ycalc₀,1) 写入 ``cfg.sigma``。此后引擎/
+    e.s.d./Rwp 全部走既有 ``cfg.sigma`` 路径，口径自动一致。静态 σ（不在
+    迭代中滚动更新）保证残差函数确定性，有限差分 Jacobian 不受权重抖动污染。
+    """
+    if cfg.weight_mode != "theoretical" or cfg.sigma is not None:
+        return cfg
+    from xinrefinement.core.refine.linear import background_basis, \
+        solve_linear_detail
+    from xinrefinement.core.refine.nonlinear import effective_sigma, \
+        _scaled, compute_phase_profile
+
+    tt, yo = pat.two_theta, pat.intensity
+    sig0 = effective_sigma(cfg, pat)          # 引导权（ycalc 省略 → √max(y_o,1)）
+    rows = [compute_phase_profile(_scaled(st, 1.0, 1.0), tt, prm,
+                                  cfg.tmin, cfg.tmax) for st in phases]
+    _c, ycalc0, _d = solve_linear_detail(
+        np.vstack(rows), tt, yo, sig0, cfg.n_bg, cfg.bg_mode,
+        bg_points=list(cfg.bg_points) or None)
+    sig = np.sqrt(np.maximum(ycalc0, 1.0))
+    warnings.append(
+        "theoreticalWeights：σ=√max(ycalc₀,1) 已由初始参数引导解析"
+        "（MAUD theoreticalWeights 语义，静态 σ）")
+    from dataclasses import replace as _replace
+    return _replace(cfg, sigma=sig)
+
+
 def solve(inputs: RefineInputs) -> SolveResult:
     """执行一次全谱拟合（Rietveld / Le Bail 在 P2 扩展；M0 为 Rietveld）。
 
@@ -181,6 +215,8 @@ def solve(inputs: RefineInputs) -> SolveResult:
     pat = _clip_to_window(inputs.pattern, inputs.config.tmin, inputs.config.tmax,
                           warnings)
     cfg = _resolve_interp_bg(inputs.config, pat, warnings)
+    cfg = _resolve_theoretical_sigma(cfg, inputs.phases, inputs.profile, pat,
+                                     warnings)
     engine = refine(inputs.phases, pat, inputs.profile, cfg)
     weights = _phase_weights(inputs.phases, engine.scales, inputs.formulas,
                              warnings)

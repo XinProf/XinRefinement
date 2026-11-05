@@ -98,3 +98,42 @@ def test_unknown_mode_raises():
     with pytest.raises(ValueError, match="weight_mode"):
         effective_sigma(RefineConfig(weight_mode="bogus"),
                         load_pattern(VIRTUAL_B / "v50_wide.xy"))
+
+
+# ---- v1.3：theoreticalWeights（σ 取计算值） ----------------------------
+
+def test_effective_sigma_theoretical():
+    """theoretical：σ=√max(ycalc,1)；省略 ycalc 时用观测值引导。"""
+    pat = load_pattern(VIRTUAL_B / "v50_wide.xy")
+    cfg = RefineConfig(weight_mode="theoretical")
+    yc = np.full(pat.intensity.size, 400.0)
+    got = effective_sigma(cfg, pat, ycalc=yc)
+    assert np.allclose(got, 20.0)
+    # 引导语义：无 ycalc → √max(y_o,1)
+    got0 = effective_sigma(cfg, pat)
+    assert np.allclose(got0, np.sqrt(np.maximum(pat.intensity, 1.0)))
+
+
+def test_theoretical_resolve_writes_sigma():
+    """solve() 入口把 theoretical 解析成固定 cfg.sigma（引导一次）。"""
+    res = solve(_inputs("theoretical"))
+    assert res.config.sigma is not None
+    assert res.config.weight_mode == "theoretical"
+    assert np.all(res.config.sigma >= 1.0)
+    assert any("theoreticalWeights" in w for w in res.warnings)
+
+
+def test_theoretical_solve_runs_and_differs():
+    """theoretical 端到端可跑；定权改变参数轨迹（Rwp 与 sqrt 模式不同）。"""
+    r_th = solve(_inputs("theoretical"))
+    r_sq = solve(_inputs("sqrt"))
+    assert r_th.success and np.isfinite(r_th.rwp) and r_th.rwp < 50.0
+    assert r_th.rwp != pytest.approx(r_sq.rwp, rel=1e-9)
+
+
+def test_theoretical_explicit_sigma_wins():
+    """显式 sigma 仍最高优先（解析跳过，契约不破坏）。"""
+    pat = load_pattern(VIRTUAL_B / "v50_wide.xy")
+    custom = np.full_like(pat.intensity, 5.0)
+    cfg = RefineConfig(weight_mode="theoretical", sigma=custom)
+    assert np.all(effective_sigma(cfg, pat) == 5.0)

@@ -44,15 +44,22 @@ def _add_refine_parser(sub) -> None:
                         "默认 10 次迭代）；manual 需配 --bg-points")
     r.add_argument("--bg-points", default="", metavar="2θ:强度,...",
                    help="manual 背景锚点，如 --bg-points 15:320,60:180")
-    r.add_argument("--weight-mode", choices=["sqrt", "file", "unit", "1/y"],
+    r.add_argument("--weight-mode",
+                   choices=["sqrt", "file", "unit", "1/y", "theoretical"],
                    default="sqrt",
-                   help="定权模式（v1.2.0）：sqrt=计数统计（默认），"
-                        "file=谱图自带 σ，unit=常数权，1/y=σ∝y")
+                   help="定权模式（v1.2.0/v1.3）：sqrt=计数统计（默认），"
+                        "file=谱图自带 σ，unit=常数权，1/y=σ∝y，"
+                        "theoretical=σ 取计算值（MAUD theoreticalWeights，抗弱峰噪声）")
     r.add_argument("--backend", choices=["lm", "scipy"], default="lm")
     r.add_argument("--max-iter", type=int, default=40)
     r.add_argument("--microabs", action="append", default=[], metavar="相名=μr",
                    help="Brindley 微吸收校正（v1.2.0，可多次）：如 "
                         "--microabs Goethite=1.5；μ·r=吸收系数×晶粒半径")
+    r.add_argument("--grain-size", action="append", default=[],
+                   metavar="相名=r_μm",
+                   help="按相化学成分自动算 μ·r（v1.3，可多次）：如 "
+                        "--grain-size Goethite=3.0（球半径 μm）；"
+                        "与 --microabs 同名时后者优先")
     r.add_argument("--refine-eta", action="store_true")
     r.add_argument("--refine-asym", action="store_true")
     r.add_argument("--refine-bfactor", action="store_true")
@@ -92,6 +99,21 @@ def _parse_microabs(items: list[str]) -> dict[str, float]:
     return out
 
 
+def _parse_grain_size(items: list[str]) -> dict[str, float]:
+    """'相名=r_μm' 列表 -> {相名: r(μm)}（坏项直接报错）。"""
+    out: dict[str, float] = {}
+    for item in items:
+        name, _, val = item.partition("=")
+        name, val = name.strip(), val.strip()
+        if not name or not val:
+            raise SystemExit(f"--grain-size 格式应为 相名=r_μm，收到: {item!r}")
+        v = float(val)
+        if v <= 0:
+            raise SystemExit(f"--grain-size 晶粒半径必须为正: {item!r}")
+        out[name] = v
+    return out
+
+
 def _parse_bg_points(spec: str) -> tuple:
     """'15:320,60:180' -> ((15.0, 320.0), (60.0, 180.0))。"""
     pts = []
@@ -106,12 +128,20 @@ def _parse_bg_points(spec: str) -> tuple:
 def _build_inputs(args) -> RefineInputs:
     pat = load_pattern(args.pattern)
     phases = [parse_cif(p) for p in args.cif]
+    # v1.3: μ·r 来源优先级 —— 手工 --microabs 覆盖按成分自动计算的 --grain-size
+    microabs: dict[str, float] = {}
+    if args.grain_size:
+        from xinrefinement.core.absorption import calc_microabs
+        anode = None if args.anode == "none" else args.anode
+        microabs.update(calc_microabs(phases, _parse_grain_size(args.grain_size),
+                                      anode=anode or "Cu"))
+    microabs.update(_parse_microabs(args.microabs))
     prm = ProfileParams(
         zero=args.zero,
         wavelength=args.wavelength,
         anode=None if args.anode == "none" else args.anode,
         integrated=not args.peak_height,
-        microabs=(_parse_microabs(args.microabs) or None),
+        microabs=(microabs or None),
     )
     cfg = RefineConfig(
         refine_zero=True,

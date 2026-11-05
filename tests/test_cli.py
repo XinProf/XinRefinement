@@ -43,3 +43,24 @@ def test_cli_refine_txt_bare_args(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "Rwp" in text
     assert "物相" in text
+
+
+def test_cli_grain_size_auto_mur(tmp_path):
+    """v1.3：--grain-size 按成分自动算 μ·r 进引擎。
+
+    简并不变量：Brindley 因子被每相 scale 完全吸收 → Rwp **逐位不变**；
+    校正作用于 QPA —— 高 μ 相 wt% 被抬升（微吸收压低表观含量的纠正方向）。
+    """
+    out = tmp_path / "auto.json"
+    argv = _common(tmp_path, "auto.json") + ["--grain-size", "anatase=5.0"]
+    assert main(argv) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    out0 = tmp_path / "base.json"
+    assert main(_common(tmp_path, "base.json")) == 0
+    base = json.loads(out0.read_text(encoding="utf-8"))
+    # Rwp 简并不变（与 core 引擎同口径的数学事实）
+    assert data["r_factors"]["rwp"] == base["r_factors"]["rwp"]
+    # wt% 被校正（锐钛矿 μ·r≈0.24，wt% 抬升）
+    wa = next(p for p in data["phases"] if p["name"] == "anatase")
+    wb = next(p for p in base["phases"] if p["name"] == "anatase")
+    assert wa["weight_pct"] > wb["weight_pct"]

@@ -51,6 +51,18 @@ Y_MODES = ("linear", "log", "sqrt")
 #: 默认波长（Cu Kα1，Å）——谱图 meta 带 wavelength 时会被覆盖
 DEFAULT_WAVELENGTH = 1.5406
 
+#: 背景点选：判定「同一锚点」的 2θ 容差（°）——再次点击移除
+_BG_PICK_TOL = 0.15
+#: 背景锚点标记颜色（绿色，与谱线区分）
+_BG_PICK_COLOR = "#2e7d32"
+
+
+def d_to_two_theta(d, wavelength: float = DEFAULT_WAVELENGTH):
+    """d(Å) → 2θ(°)：Bragg 定律逆变换（d 模式下点选取回 2θ）。"""
+    d = np.asarray(d, dtype=float)
+    s = np.clip(wavelength / (2.0 * d), -1.0, 1.0)
+    return np.degrees(2.0 * np.arcsin(s))
+
 
 def two_theta_to_d(two_theta, wavelength: float = DEFAULT_WAVELENGTH):
     """2θ(°) → d(Å)：Bragg 定律 d = λ / (2 sinθ)。"""
@@ -141,6 +153,8 @@ class PatternCanvas(FigureCanvasQTAgg):
 
     #: 悬停轴区时的提示文案（主窗口接到状态栏；离开轴区发空串）
     axisHint = Signal(str)
+    #: v1.3：背景锚点列表变化 ``[(2θ, 强度), ...]``（主窗口写入 settings）
+    bgPointsChanged = Signal(list)
 
     def __init__(self, parent=None) -> None:
         # GridSpec 双轴与 tight_layout 不兼容（会产生 UserWarning）；
@@ -164,6 +178,9 @@ class PatternCanvas(FigureCanvasQTAgg):
         #: 由主窗口注入，用于判断平移/缩放模式（此时点击轴不切换）
         self.nav_toolbar = None
         self._hover_axis: str | None = None
+        #: v1.3：背景点选模式与锚点（2θ 坐标存储，d 模式下自动换算）
+        self.pick_mode: bool = False
+        self.bg_picks: list[tuple[float, float]] = []
         self._show_empty()
         self.mpl_connect("button_press_event", self._on_button_press)
         self.mpl_connect("motion_notify_event", self._on_motion)
@@ -197,7 +214,64 @@ class PatternCanvas(FigureCanvasQTAgg):
         self._two_theta = self._yobs = self._ycalc = self._background = None
         self._phase_sticks = []
         self._visible = set()
+        self.bg_picks = []
         self._show_empty()
+
+    # -- 背景点选（v1.3，MAUD 手工背景点语义） -------------------------- #
+    def set_pick_mode(self, on: bool) -> None:
+        """开关点选模式：主轴内左键添加/移除背景锚点，右键清空全部。"""
+        self.pick_mode = bool(on)
+        if self._yobs is not None:
+            self._redraw()
+
+    def set_bg_picks(self, picks) -> None:
+        """恢复既有锚点（工程加载 / 设置回读）。"""
+        self.bg_picks = [(float(a), float(b)) for a, b in (picks or [])]
+        if self._yobs is not None:
+            self._redraw()
+
+    def _event_two_theta(self, event) -> float | None:
+        """点击事件 → 2θ（d 模式下逆变换）。"""
+        xd = getattr(event, "xdata", None)
+        if xd is None:
+            return None
+        if self.x_mode == "d":
+            xd = float(d_to_two_theta(xd, self.wavelength))
+        return float(xd)
+
+    def toggle_bg_pick(self, two_theta: float) -> str:
+        """在 2θ 处添加或移除背景锚点（强度取实测谱插值）；返回动作。
+
+        纯逻辑方法，供点击处理器与离屏测试共用。
+        """
+        if self._yobs is None or self._two_theta is None:
+            return "none"
+        tt = float(two_theta)
+        lo, hi = float(self._two_theta[0]), float(self._two_theta[-1])
+        if not (lo <= tt <= hi):
+            return "none"
+        near = [i for i, (x, _y) in enumerate(self.bg_picks)
+                if abs(x - tt) <= _BG_PICK_TOL]
+        if near:
+            del self.bg_picks[near[0]]
+            action = "removed"
+        else:
+            y = float(np.interp(tt, self._two_theta, self._yobs))
+            self.bg_picks.append((tt, y))
+            self.bg_picks.sort(key=lambda p: p[0])
+            action = "added"
+        self._redraw()
+        self.bgPointsChanged.emit(list(self.bg_picks))
+        return action
+
+    def clear_bg_picks(self) -> None:
+        """清空全部锚点（点选模式下右键 / 主窗口调用）。"""
+        if not self.bg_picks:
+            return
+        self.bg_picks = []
+        if self._yobs is not None:
+            self._redraw()
+        self.bgPointsChanged.emit([])
 
     # -- 轴模式（2θ/d、counts/log/√） ---------------------------------- #
     def set_wavelength(self, wavelength: float | None) -> None:
@@ -316,6 +390,16 @@ class PatternCanvas(FigureCanvasQTAgg):
         """左键循环切换该轴模式；右键弹出可选切换菜单。"""
         if self._yobs is None or self._in_pan_or_zoom():
             return
+        # v1.3：点选模式优先 —— 主轴内左键加/删锚点、右键清空
+        if self.pick_mode and event.inaxes is self.ax_main:
+            if event.button == 1:
+                tt = self._event_two_theta(event)
+                if tt is not None:
+                    self.toggle_bg_pick(tt)
+                return
+            if event.button == 3:
+                self.clear_bg_picks()
+                return
         axis = self._hit_axis(event)
         if axis is None:
             return
@@ -331,6 +415,11 @@ class PatternCanvas(FigureCanvasQTAgg):
     def _on_motion(self, event) -> None:
         """悬停到轴区时发状态栏提示并换手型光标（提示可点）。"""
         if self._yobs is None:
+            return
+        # v1.3：点选模式下主轴内用十字光标提示
+        if self.pick_mode and getattr(event, "inaxes", None) is self.ax_main:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.axisHint.emit(tr("bg.pick_hint"))
             return
         axis = self._hit_axis(event)
         if axis == self._hover_axis:
@@ -458,6 +547,13 @@ class PatternCanvas(FigureCanvasQTAgg):
             for sp in ("top", "right", "left"):
                 self.ax_diff.spines[sp].set_visible(False)
         self._apply_axis_modes(x)
+        # v1.3：背景锚点标记（绿色倒三角；存储于 2θ 坐标，d 模式换算横轴）
+        if self.bg_picks:
+            px = [self._x_values(np.array([p[0]]))[0] for p in self.bg_picks]
+            py = [p[1] for p in self.bg_picks]
+            self.ax_main.plot(px, py, linestyle="none", marker="v",
+                              color=_BG_PICK_COLOR, markersize=6.5,
+                              zorder=6, label=tr("canvas.bg_picks"))
         self.draw_idle()
 
     def _sticks_in_units(self, sticks):

@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -77,6 +79,18 @@ class BackgroundDialog(_BaseDialog):
         self.n_terms.setValue(int(cur.get("n_bg", 3)))
         form.addRow("背景函数", self.mode)
         form.addRow("阶数 / 节点数", self.n_terms)
+        # v1.3：定权模式（MAUD getWeight + theoreticalWeights）
+        self.weight = QComboBox()
+        self.weight.addItems(["sqrt（计数统计·默认）", "file（谱图自带 σ）",
+                              "unit（常数权）", "1/y（σ∝y）",
+                              "theoretical（σ 取计算值·抗弱峰噪声）"])
+        self.weight.setCurrentIndex(
+            {"sqrt": 0, "file": 1, "unit": 2, "1/y": 3,
+             "theoretical": 4}.get(cur.get("weight_mode", "sqrt"), 0))
+        self.weight.setToolTip(
+            "theoreticalWeights：用计算强度代替观测强度定权，"
+            "弱峰/低信噪比数据更稳健")
+        form.addRow("定权模式", self.weight)
         self._root.addLayout(form)
 
         grp = QGroupBox("手动插值点（仅 manual 模式生效）")
@@ -107,7 +121,9 @@ class BackgroundDialog(_BaseDialog):
         # （solve_linear_detail 固定背景分支）；interp 由 solve() 自动提取。
         return {"bg_mode": mode,
                 "n_bg": int(self.n_terms.value()),
-                "bg_points": pts, "manual_points": mode == "manual"}
+                "bg_points": pts, "manual_points": mode == "manual",
+                "weight_mode": ("sqrt", "file", "unit", "1/y",
+                                "theoretical")[self.weight.currentIndex()]}
 
 
 class CellDialog(_BaseDialog):
@@ -204,11 +220,12 @@ class PhaseEditDialog(_BaseDialog):
                    "-3", "-3m", "6/m", "6/mmm", "m-3", "m-3m")
 
     def __init__(self, phase_structs: list, current: dict | None = None,
-                 parent=None) -> None:
+                 parent=None, anode: str = "Cu") -> None:
         """``phase_structs``: CifStructure 列表；``current``: 既往设置。"""
         super().__init__("物相参数编辑", parent)
         cur = current or {}
         self._structs = list(phase_structs)
+        self._anode = (anode or "Cu").strip() or "Cu"
         self.setMinimumWidth(430)
 
         if not self._structs:
@@ -313,6 +330,39 @@ class PhaseEditDialog(_BaseDialog):
             mf.addRow("μ·r（吸收系数×晶粒半径）", ma_sb)
             ma_en.toggled.connect(ma_sb.setEnabled)
             ma_sb.setEnabled(ma_en.isChecked())
+            # v1.3: μ·r 自动计算（CIF 化学成分 + 晶粒尺寸，core.absorption）。
+            # μ·r 不可精修（与每相 scale 简并），正确来源就是按成分计算。
+            grain_sb = QDoubleSpinBox()
+            grain_sb.setRange(0.01, 500.0)
+            grain_sb.setDecimals(2)
+            grain_sb.setSingleStep(0.5)
+            grain_sb.setValue(5.0)
+            grain_sb.setToolTip(
+                "平均晶粒半径 r（球半径，μm）；μ 按该相化学成分与理论密度自动计算")
+            ma_auto = QPushButton("按成分计算 μ·r")
+
+            def _auto_calc(name=st.name, sb=ma_sb, gsb=grain_sb,
+                           struct=st, box=ma_en):
+                try:
+                    from xinrefinement.core.absorption import calc_mu_r
+                    r = calc_mu_r(struct, gsb.value(), anode=self._anode)
+                except Exception as exc:
+                    QMessageBox.warning(self, "μ·r 计算失败", str(exc))
+                    return
+                box.setChecked(True)
+                sb.setValue(min(max(r["mur"], 0.01), 20.0))
+                sb.setEnabled(True)
+                QMessageBox.information(
+                    self, f"μ·r 已计算（{name}）",
+                    f"阳极: {r['anode']} Kα1\n"
+                    f"μ/ρ = {r['mu_rho']:.2f} cm²/g\n"
+                    f"ρ   = {r['density']:.3f} g/cm³\n"
+                    f"μ   = {r['mu_cm']:.1f} cm⁻¹\n"
+                    f"μ·r = {r['mur']:.3f}  (r = {gsb.value():.2f} μm)")
+
+            ma_auto.clicked.connect(_auto_calc)
+            mf.addRow("晶粒半径 r (μm)", grain_sb)
+            mf.addRow(ma_auto)
             self._ma_enable[st.name] = ma_en
             self._ma_value[st.name] = ma_sb
             pv.addWidget(grp_ma)

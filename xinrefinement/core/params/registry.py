@@ -12,7 +12,8 @@ registry 生成的 pack 顺序/取值/bounds 必须与现有 ``_pack/_unpack/_bo
 
 顺序（与 ``_pack`` 严格一致，勿调整）
 ------------------------------------
-``zero → U,V,W → eta → asym → bfactor → 每相 (fa,fc) → 每相 PO r(sorted) → X → Y``
+``zero → U,V,W → eta → asym → bfactor → 每相 (fa,fc) → 每相 PO r(sorted)
+→ 每相 Brindley mu*r(sorted microabs) → X → Y``
 
 其中 X/Y 在 ``_unpack`` 里是**从向量末端倒读**的，registry 保持同一约定。
 """
@@ -98,6 +99,18 @@ def _s_po(name: str):
     return _fn
 
 
+def _g_ma(name: str):
+    return lambda prm, cell, po: float(prm.microabs[name])
+
+
+def _s_ma(name: str):
+    def _fn(prm, cell, po, v):
+        ma = dict(prm.microabs)
+        ma[name] = max(float(v), nl.MICROABS_BOUNDS[0])
+        return replace(prm, microabs=ma), cell, po
+    return _fn
+
+
 def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
                                n_phase: int = 1,
                                po_names: list[str] | None = None
@@ -136,6 +149,13 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
         for name in sorted(po_names):
             add(f"phase[{name}].po.r", "phase", "po", nl.PO_BOUNDS,
                 _g_po(name), _s_po(name))
+    # v1.3 评审降级：mu*r 精修槽位仅在 cfg.refine_microabs=True（专家实验
+    # 开关，生产路径不设）时出现——μ·r 与每相 scale 数学简并、单谱不可
+    # 辨识，正常 μ·r 由 core.absorption 按化学成分计算后作为固定输入。
+    if cfg.refine_microabs and getattr(prm, "microabs", None):
+        for name in sorted(prm.microabs):
+            add(f"phase[{name}].microabs.mur", "phase", "micro",
+                nl.MICROABS_BOUNDS, _g_ma(name), _s_ma(name))
     if cfg.refine_strain:
         add("global.micro.X", "global", "micro", nl.STRAIN_BOUNDS,
             _g_prm("X"), _s_prm("X"))

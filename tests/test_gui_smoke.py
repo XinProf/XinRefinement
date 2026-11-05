@@ -463,13 +463,18 @@ def test_axis_click_hit_zones(win, qapp):
 
 
 def test_toolbar_buttons_have_colored_icons(win):
-    """工具栏五个功能按钮都有彩色图标（快捷方式入口）。"""
+    """工具栏功能按钮都有彩色图标（快捷方式入口；点选背景为 checkable
+    文字按钮，v1.3 新增，不要求图标）。"""
     from xinrefinement.gui.button_icons import toolbar_icon
 
     expected = {"toolbar.new", "toolbar.import_pattern",
-                "toolbar.import_cif", "toolbar.refine", "toolbar.report"}
+                "toolbar.import_cif", "toolbar.refine", "toolbar.report",
+                "toolbar.bg_pick"}
     assert set(win._toolbar_buttons) == expected
+    icon_keys = expected - {"toolbar.bg_pick"}   # 点选背景为文字按钮（无图标）
     for key, btn in win._toolbar_buttons.items():
+        if key not in icon_keys:
+            continue
         pm = btn.icon().pixmap(32, 32)
         assert not pm.isNull(), key
         assert pm.width() == 32, key

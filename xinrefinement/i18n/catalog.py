@@ -32,6 +32,7 @@ _ZH = {
     "toolbar.new": "新建", "toolbar.import_pattern": "导入谱图",
     "toolbar.import_cif": "导入CIF", "toolbar.refine": "▶精修",
     "toolbar.report": "报告导出",
+    "toolbar.bg_pick": "点选背景",
     "panel.phases": "物相列表", "panel.param_tree": "精修参数树",
     "panel.nav": "导航式精修", "panel.results": "精修结果",
     "panel.run_all": "▶ 一键连跑（标准配方）", "panel.cancel": "■ 停止",
@@ -61,6 +62,9 @@ _ZH = {
     "axis.y_sqrt": "方根 √",
     "axis.hint_x": "横轴：左键循环切换 2θ ↔ d，右键选择单位",
     "axis.hint_y": "纵轴：左键循环切换 counts → log → √，右键选择标度",
+    "canvas.bg_picks": "背景锚点",
+    "bg.pick_hint": "点选模式：左键在谱图上添加/移除背景锚点，右键清空",
+    "bg.pick_status": "背景锚点 {n} 个（manual 模式，下次精修生效）",
     "msg.ready": "就绪：导入谱图与 CIF 后执行精修",
 }
 
@@ -84,6 +88,7 @@ _EN = {
     "toolbar.new": "New", "toolbar.import_pattern": "Import pattern",
     "toolbar.import_cif": "Import CIF", "toolbar.refine": "▶ Refine",
     "toolbar.report": "Export report",
+    "toolbar.bg_pick": "Pick background",
     "panel.phases": "Phases", "panel.param_tree": "Parameter tree",
     "panel.nav": "Guided refinement", "panel.results": "Results",
     "panel.run_all": "▶ Run all (recipe)", "panel.cancel": "■ Stop",
@@ -115,6 +120,9 @@ _EN = {
     "axis.y_sqrt": "Square root (√)",
     "axis.hint_x": "X axis: click to cycle 2θ <-> d, right-click to choose",
     "axis.hint_y": "Y axis: click to cycle counts -> log -> sqrt, right-click to choose",
+    "canvas.bg_picks": "Background picks",
+    "bg.pick_hint": "Pick mode: left-click to add/remove a background anchor, right-click to clear",
+    "bg.pick_status": "{n} background anchor(s) (manual mode, applied on next refinement)",
     "msg.ready": "Ready: import a pattern and CIF, then refine",
 }
 
@@ -139,6 +147,7 @@ _JA = {
     "toolbar.new": "新規", "toolbar.import_pattern": "パターン読込",
     "toolbar.import_cif": "CIF 読込", "toolbar.refine": "▶ 精密化",
     "toolbar.report": "レポート出力",
+    "toolbar.bg_pick": "背景点選択",
     "panel.phases": "相リスト", "panel.param_tree": "パラメータツリー",
     "panel.nav": "ナビゲーション精密化", "panel.results": "精密化結果",
     "panel.run_all": "▶ 一括実行（レシピ）", "panel.cancel": "■ 停止",
@@ -169,6 +178,9 @@ _JA = {
     "axis.y_sqrt": "平方根 √",
     "axis.hint_x": "横軸：クリックで 2θ ↔ d を切替、右クリックで選択",
     "axis.hint_y": "縦軸：クリックで counts → log → √ を切替、右クリックで選択",
+    "canvas.bg_picks": "背景アンカー",
+    "bg.pick_hint": "選択モード：左クリックで背景アンカー追加/削除、右クリックで全消去",
+    "bg.pick_status": "背景アンカー {n} 個（manual モード、次回の精密化で適用）",
     "msg.ready": "準備完了：パターンと CIF を読込んでください",
 }
 
