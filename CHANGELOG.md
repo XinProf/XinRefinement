@@ -136,6 +136,19 @@
 - 可复现脚本 `tools/bench_v14.py`、`tools/eval_cristobalite.py`
   （基准数据落临时目录，不入 Git）
 
+### 构建修复：安装包必定构建失败（版本号漂移）
+
+- 现象：`tools/build_binaries.py build-installer` 打完 PyInstaller 后报
+  「安装包未生成」。`packaging/inno/xinrefinement.iss` 里 `AppVersion` 还停在
+  `1.1.0`，ISCC 据此把产物命名成 `...-1.1.0-setup.exe`，而脚本按
+  `__version__`（`1.4.0`）去找文件 —— 必然落空，前面十几分钟的打包白跑。
+- 修法：iss 只保留一处 `#ifndef AppVersion` 默认值（与 `__version__` 同步），
+  其余位置全部 `{#AppVersion}`；`build_installer()` 用
+  `ISCC /DAppVersion=<ver> /DDistDir=<dir>` 注入，版本号只有一个真相源。
+- 加闸：`tests/test_version_consistency.py`（3 项）—— iss 默认值必须等于
+  `__version__`、文件里除 `#define` 外不得出现字面版本号、构建脚本必须传
+  `/DAppVersion=`。
+
 ## v1.3.0（已推送）
 
 主题：MAUD 源码复核借鉴清单**全部落地**（μ·r 计算器、theoreticalWeights、

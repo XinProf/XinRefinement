@@ -167,7 +167,15 @@ def build_installer(variant: str) -> Path:
     iscc = next((p for p in ISCC_CANDIDATES if p.exists()), None)
     if iscc is None:
         raise SystemExit("未找到 Inno Setup 的 ISCC.exe（请安装 Inno Setup 6）")
-    _run([str(iscc), "/Qp", f"/DDistDir={dist_dir(variant)}", str(ISS)])
+    # 版本号与源目录都用 /D 传：iss 里只保留一份「没带参数时」的兜底默认值。
+    # 曾经 iss 写死 1.1.0 而 __version__ 已是 1.4.0 —— ISCC 把产物命名成
+    # 1.1.0，下面按 __version__ 找文件必然落空，报「安装包未生成」。
+    _run([
+        str(iscc), "/Qp",
+        f"/DAppVersion={_version()}",
+        f"/DDistDir={dist_dir(variant)}",
+        str(ISS),
+    ])
     out = INSTALLER / f"XinRefinement-{_version()}-setup.exe"
     if not out.exists():
         raise SystemExit("安装包未生成")

@@ -1,16 +1,24 @@
-; XinRefinement v1.1.0 · Inno Setup 6 安装脚本
+; XinRefinement · Inno Setup 6 安装脚本
 ; 语言：简体中文（默认）/ English / 日本語
 ; 构建：tools/build_binaries.py（先 PyInstaller，再 ISCC 本脚本）
-; 产物：dist/installer/XinRefinement-1.1.0-setup.exe
+; 产物：dist/installer/XinRefinement-<version>-setup.exe
+;
+; 版本号只有一个真相源：xinrefinement.__version__。这里的 AppVersion 是
+; **默认值**，构建脚本用 `ISCC /DAppVersion=<ver> /DDistDir=<dir>` 覆盖；
+; tests/test_version_consistency.py 校验这个默认值与 __version__ 一致。
+; （历史缺陷：1.4 系列某次发版时这里还停在旧号，构建脚本按 __version__ 找产物，
+;  于是「安装包未生成」——见 docs 里的发布说明。）
 
 #define AppName "XinRefinement"
-#define AppVersion "1.1.0"
+#ifndef AppVersion
+#define AppVersion "1.4.0"
+#endif
 #define AppPublisher "PolyXRD"
 #define AppExe "XinRefinement.exe"
 #define AppCli "XinRefinementCLI.exe"
 ; 产物目录（构建脚本用 ISCC /DDistDir=... 覆盖；默认按版本约定）
 #ifndef DistDir
-  #define DistDir "..\..\dist\XinRefinement-1.1.0"
+#define DistDir "..\..\dist\XinRefinement-" + AppVersion
 #endif
 
 [Setup]
