@@ -13,8 +13,14 @@ Three entry points — Qt6 GUI, command line, and a Python library API — cover
 Division of labour within the family: XinMatch handles peak processing and phase identification,
 XinRefinement only performs whole-pattern fitting (structural refinement, profile refinement, quantification).
 
-Current version: **v1.1.0** (released 2026-11-05) · Previous: v1.0.0
+Current version: **v1.4.0** (in development, not released) · Previous: v1.3.0
 v1.1.0 theme: interoperability with XinMatch 3.4.0 (`.xinm` import / self-contained `.xinr` projects).
+
+> Note: the feature descriptions below still reflect the v1.1.0 baseline.
+> For v1.2.0–v1.4.0 changes (background/weight modes, Brindley micro-absorption,
+> EWIMV texture, Popa LB anisotropy, optimizer backends, PO auto-probing,
+> per-phase ΔB_iso and atomic-coordinate recipe steps) see
+> [`CHANGELOG.md`](CHANGELOG.md) (Chinese).
 
 ---
 

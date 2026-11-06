@@ -1,6 +1,142 @@
 # 变更记录
 
-## v1.3.0（开发中）
+## v1.4.0（开发中）
+
+主题：**对拍收尾——把 v1.3 已落地但没进生产配方的能力接上实样验证**。
+七样同口径复测（[`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md)
+§11.5）确认 v1.3 引擎零回归，再按「建模补全 → 全量复测」补齐三项配方能力，
+并对方石英无序模型给出数据驱动的处置结论。
+
+### 设计口径（先说清楚，避免误用）
+
+- **CLI / 库 API 全部新能力默认关闭**（`po_probe` / `refine_biso` /
+  `refine_xyz` 都是 `False`），保证 golden 与既有调用逐位零回归；
+  **GUI 只把 `po_probe` 出厂默认开**，依据是 7 样对拍里三个差距样分别
+  −4.82 / −12.60 / −4.45 pt。`refine_biso` / `refine_xyz` GUI 仍默认关，
+  由 micro 齿轮显式勾选——这两项在实样上收益不稳定，不做静默启用
+- **配方步骤「可用」≠「默认执行」**：`xyz` / `B` 两步的
+  `available` 从 `False` 改为 `True`，但未显式开启时 `run_step` 仍记
+  `skipped`，不做假执行
+
+### 新增：micro 步择优取向自动试探（任务 #19）
+
+- 根因：实样对拍里样品 3 的 CaF₂(111) 择优取向一项值 −12.06 pt，
+  但引擎只有在 `prm.po_r` 里**预先填好** (h,k,l) 才会精修 `r`，
+  出厂配方没有这些信息，micro 步等于空转
+- `RecipeRunner._run_micro`：逐相 × 低指数候选轴
+  `DEFAULT_PO_AXES = ((001),(100),(110),(111),(101))` 短精修 `r`
+  （每候选只放 1 个非线性自由度），按 Rwp 增益 ≥ `po_probe_min_gain`
+  （默认 0.3 pt）挑选、最多纳入 `po_probe_max_phases`（默认 2）个相，
+  再把 `r=1` 写回 `po_r` 交给正式 micro 步连同 X/Y 精修
+- **互斥护栏**：用户已配 `po_r`、开了 EWIMV 织构、或落在
+  `DEFAULT_PO_HKL` 内置惯习面表里的相一律不试探。实测若让试探覆盖
+  内置惯习面，会把更准的默认轴换成噪声轴（合成对照 5.4235 → 5.4265）
+- 细节留痕 `runner.po_probe_report` 并写入 `StepRecord.message`；
+  `po_probe=False` 时 `run_step` 完全不走该分支
+- **窗口策略**：micro 齿轮新增 `tmin/tmax`，
+  `_make_inputs` 按窗口自适应背景节点数；实测 5–120° 相对 5–90° 在
+  样品 1/3/7 分别再降 0.834 / 0.812 / 0.940 pt
+- CLI：`--po-probe` / `--po-probe-min-gain` / `--po-probe-max-phases` /
+  `--po-probe-max-iter`
+
+### 新增：每相 ΔB_iso（任务 #18）
+
+- COD 导出 CIF 的 `B_iso` 恒为 0，实测样品 1 在 40–120° 的计算强度
+  系统性偏高（§4.6）。`ProfileParams.b_iso = {相名: ΔB}` 与全局
+  `bfactor` 共用 `exp(−B/(2d²))` 形式，逐相叠加，只压高角、不改峰位
+- 落点：`forward._accumulate_peaks` / `nonlinear._pack/_unpack/_bounds`
+  与 `ParameterRegistry` 的 `phase[…].B_iso` 槽（逐位对拍通过）/
+  `solve._resolve_biso`（缺相补 0、`tmax<60°` 与全局 `bfactor` 同开时告警）/
+  配方 `B` 步 / CLI `--refine-biso` / GUI micro 齿轮
+- 上界 6 Å²；合成数据注入 ΔB=1.5 可回收到 ±10%
+- **撞界护栏**（来自实样基准）：7 样里 4 样把某些相顶到 6 Å²，且撞界相
+  与 PO/织构收益相高度重合（如样品 3/7 的 CaF₂）——说明 B 在吸收
+  **择优取向 / 织构 / 标度的模型误差**，不是物理温度因子。`solve()` 在
+  任一相撞界时追加「建议先确认 PO 与织构再启用 B 步」告警；B 步因此
+  保持 opt-in，不设出厂默认
+
+### 新增：原子坐标 xyz 步接入配方（任务 #17）
+
+- `CifStructure.source_path`：`parse_cif` 写入 CIF 路径；xyz 步必须
+  **重读未展开的不对称单位 + symop**（`parse_cif` 已展开等价位置，
+  无法反推 Wyckoff 位）。`parse_cif_string` / 手工结构为 `None`，自动跳过
+- `cell.structure_with_cell` 的元数据白名单补 `source_path`，
+  保证 cell 步精修晶胞后 xyz 步仍找得到 CIF
+- `site.refine_sites` 增 `fixed_structures`（不参与结构精修的相作为常量基
+  进入变量投影，避免强度被算到被精修相的标度上）与 `bg_points` 透传
+  （手动/插值背景的固定层必须一致，否则坐标被背景差吸收）
+- `RecipeRunner._run_xyz`：用 cell 步精修后的晶胞覆盖 `SiteModel.cell`；
+  自由坐标系数 > `xyz_max_params`（默认 40）直接判 `failed`；
+  精修后重新 `solve` 比较 Rwp，**没有改善就整体回退**原结构；
+  诊断写入 `runner.xyz_report`
+- **元数据继承**：站点引擎由不对称单位重建结构时只回填
+  `formula/spacegroup`，配方层逐项继承
+  `z_declared / n_asym / n_sym_ops / source_path`，否则 QPA 静默退化、
+  下一轮 xyz 步找不到 CIF
+- **性能护栏 `XYZ_SITE_MAX_ITER=12`**：站点 LM 用数值雅可比，每次迭代
+  需 O(n_free) 次「多相全谱 + 线性层」评估；实样 5 相体系沿用配方
+  `max_iter=40` 会跑十几分钟仍不收敛。xyz 步单独封顶 12 次
+  （坐标精修一般 8–12 次即到平台），主 `solve` 的迭代预算不变
+- **实样复测（3 个差距样）**：样品 1 接受 14 个自由系数，
+  Rwp 23.880 → **21.628%（−2.251 pt）**、最大位移 0.0266，与 §4.6
+  点名的方解石 O 坐标缺口吻合；样品 3 只有 −0.118 pt（其缺口是
+  CaF₂(111) 织构，不是坐标）；样品 7 有 48 个自由系数，触发
+  `xyz_max_params=40` 判 failed 并整体回退，Rwp/QPA 逐位不变
+- CLI `--refine-xyz` / `--xyz-max-params`；GUI micro 齿轮开关
+
+### 修复
+
+- `core/absorption.py`：样品 5 的 gehlenite CIF 化学式与占位不一致，
+  `infer_z` 抛错导致 μ·r 不可算。新增 `_density_from_cell_mass` 回退
+  （直接按晶胞占位质量算 ρ），输出 `density_source="cell_mass"` 与
+  「请核对结构模型」warning；7 样全部相可算
+- `tools/bench_v14.py::stage_base` 引用了未定义的 `runner`（重跑 base
+  阶段才触发），改为显式构造 `RecipeRunner`
+- `tests/test_biso.py` 一条过时断言仍期待 `xyz` 步 `available=False`，
+  已同步为 v1.4 口径；`recipe.py` 模块 docstring 从 v1.1 的
+  「xyz/B 未落地」更新为 v1.4 的 opt-in 语义
+- `README-en.md` 长期停在 v1.1.0，补上当前版本与「功能描述仍为 v1.1.0
+  基线、新特性见中文 CHANGELOG」的明确说明，不再假装已同步
+
+### 测试
+
+- 新增 `tests/test_po_probe.py`（4 项）、`tests/test_biso.py`（6 项）、
+  `tests/test_xyz_recipe.py`（6 项）：配置默认关、真值轴回收、
+  互斥/阈值护栏、registry 逐位对拍、合成 ΔB 回收与撞界告警、xyz 步
+  skipped / 欠定 / 迭代封顶 / 元数据继承 / 不恶化承诺
+- `tests/test_absorption.py` 加密度回退用例（用 `try/finally` 恢复 fixture）
+- `tests/test_gui_smoke.py` / `tests/test_recipe.py` 同步
+  「7 done / 1 skipped」与 `len(DEFAULT_STEPS)-1` 快照口径
+- **全量回归**：368 项收集 / 364 通过 / 4 skip / 0 失败
+  （v1.3.0 为 350 收集，净增 18 项）
+
+### 实样复测结论（7 样，详见评估报告 §11.5）
+
+- **v1.3 零回归**：base 与 v1.2 tent14 基线逐位一致，均值 18.8439%
+- **PO 自动试探**：样品 1/3/7 端到端 −4.816 / −12.604 / −4.451 pt；
+  样品 3 自动选中 CaF₂(111) `r≈0.448`，与全轴穷举上界差 ≤0.05 pt；
+  窗口 5–120° 再降 0.81–0.94 pt
+- **EWIMV / Popa LB**：织构在 1/3/7 值 −6.004 / −13.666 / −5.206 pt
+  （但 19 自由参数，不设默认）；样品 5 各向异性 −0.768 pt
+- **μ·r QPA**：Rwp 不变（数学简并），样品 4 hematite wt% +4.60 pt 最大；
+  样品 5 gehlenite 触发 `cell_mass` 密度回退
+- **组合口径**：5–120° + PO + B + xyz 一起开，样品 1 23.880 → 17.185%、
+  样品 3 24.525 → 13.537%；**收益不可加**——B 先把 CaF₂ 的 ΔB 顶到
+  6 Å² 吸收大半高角失配，组合里 micro 步只剩单项收益的三分之一
+- **#21 无序方石英**：不引入无序模型。三多型 Rwp 26.709/26.350/25.235、
+  wt% 2.72/3.52/5.27；移除该相 +1.00 pt；ΔB_iso 阻尼最多只动 0.11 pt
+  且 wt% 仍漂移。降级为「仅参照相」、wt% 不报告，需 TEM/IR 或
+  21.9° 单峰 Le Bail 人工判读；不新增引擎开关、不改用户数据
+
+### 文档
+
+- `docs/评估报告-实样对拍-MAUD-v1.md` §11.5：v1.4 全量复测记录
+  （零回归基线 / 增量口径修正 / PO·EWIMV·μ·r / PO 试探与窗口 /
+  ΔB_iso 与撞界 / xyz 与组合口径 / 无序方石英 / 发布口径与遗留缺口）
+- 可复现脚本 `tools/bench_v14.py`、`tools/eval_cristobalite.py`
+  （基准数据落临时目录，不入 Git）
+
+## v1.3.0（已推送）
 
 主题：MAUD 源码复核借鉴清单**全部落地**（μ·r 计算器、theoreticalWeights、
 画布点选背景、EWIMV 织构、Popa LB 各向异性、优化器插拔）+ 一项重要设计
