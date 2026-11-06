@@ -34,12 +34,12 @@ def _inputs():
 
 
 def test_default_steps_cover_sketch():
-    """8 步覆盖草图自上而下顺序；xyz/B 标记不可用（不做假执行）。"""
+    """8 步覆盖草图自上而下顺序；v1.4 起 xyz/B 均已落地（opt-in 开启）。"""
     assert len(DEFAULT_STEPS) == 8
     keys = [s.key for s in DEFAULT_STEPS]
     assert keys[:4] == ["zero", "bg", "scale", "cell"]
     unavailable = [s.key for s in DEFAULT_STEPS if not s.available]
-    assert unavailable == ["xyz", "B"]
+    assert unavailable == []
 
 
 def test_step_config_translation():
@@ -75,9 +75,9 @@ def test_run_all_and_rollback():
     result, records = runner.run_all(_inputs())
     assert result is not None and result.rwp < 10.0
     assert len(records) == len(DEFAULT_STEPS)
-    assert sum(r.status == "skipped" for r in records) == 2
+    assert sum(r.status == "skipped" for r in records) == 1
     assert runner.state.current == len(DEFAULT_STEPS)
-    assert len(runner.state.snapshots) == len(DEFAULT_STEPS) - 2  # 跳过步不快照
+    assert len(runner.state.snapshots) == len(DEFAULT_STEPS) - 1  # xyz 默认跳过
 
     snap = runner.state.rollback(1)
     assert snap is not None and len(snap) == 9

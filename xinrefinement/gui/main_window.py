@@ -887,9 +887,14 @@ class MainWindow(QMainWindow):
                                     "请先导入谱图和至少一个 CIF")
             return None
         bg = self._settings.get("bg", {})
+        micro = self._settings.get("micro", {}) or {}
         # v1.2.0 P1（实样对拍 §11.2 实测 −4 点均值）：真实数据出厂默认
         # tent，节点数随精修窗口自适应 ≈1 节点/6°；齿轮弹窗显式设置优先。
-        tmin, tmax = 5.0, 90.0
+        # v1.4 #19：窗口可在 micro 齿轮里放开到谱图高角（背景节点数随之自适应）。
+        tmin = float(micro.get("tmin", bg.get("tmin", 5.0)))
+        tmax = float(micro.get("tmax", bg.get("tmax", 90.0)))
+        if tmax <= tmin:
+            tmin, tmax = 5.0, 90.0
         bg_points = tuple((float(x), float(v))
                           for x, v in (bg.get("bg_points") or ()))
         cfg = RefineConfig(
@@ -905,6 +910,15 @@ class MainWindow(QMainWindow):
             # v1.3 #15：各向异性（物相编辑里显式勾选才精修；默认只放 size）
             refine_aniso=bool(self._phase_aniso),
             aniso_mode=self._aniso_mode,
+            # v1.4 #18/#19：B_iso 默认关；PO 自动试探 GUI 出厂默认开
+            # （实样对拍 3 个差距样 −4.82 / −12.60 / −4.45 pt），
+            # 可在 micro 齿轮关闭；CLI/API 默认关以保持 golden。
+            refine_biso=bool(micro.get("refine_biso", False)),
+            refine_xyz=bool(micro.get("refine_xyz", False)),
+            po_probe=bool(micro.get("po_probe", True)),
+            po_probe_min_gain=float(micro.get("po_probe_min_gain", 0.3)),
+            po_probe_max_phases=int(micro.get("po_probe_max_phases", 2)),
+            po_probe_max_iter=int(micro.get("po_probe_max_iter", 12)),
             tmin=tmin, tmax=tmax, max_iter=40)
         # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
         # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及

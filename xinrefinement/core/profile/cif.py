@@ -174,6 +174,10 @@ class CifStructure:
         # 与教科书配方 LiNi0.8Co0.1Mn0.1O2 不同，手填会直接算错摩尔质量）。
         self.formula = None       # _chemical_formula_sum 原样（COD 风格，带空格）
         self.z_declared = None    # _cell_formula_units_Z（CIF 自述值，仅作交叉校验）
+        #: v1.4 #17：CIF 源路径。原子坐标精修需要重读**未展开**的不对称
+        #: 单位与 symop（parse_cif 已把等价位置展开，无法反推 Wyckoff 位）。
+        #: parse_cif_string / 手工构造的结构为 None，此时 xyz 步应跳过。
+        self.source_path = None
 
     @property
     def volume(self) -> float:
@@ -484,7 +488,9 @@ def parse_cif(path: str | Path) -> CifStructure:
     """解析 CIF 文件 -> CifStructure（含对称展开）。"""
     p = Path(path)
     text = p.read_text(encoding="utf-8", errors="replace")
-    return _parse_cif_lines(text.splitlines(), p.stem)
+    st = _parse_cif_lines(text.splitlines(), p.stem)
+    st.source_path = str(p)
+    return st
 
 
 def parse_cif_string(text: str, name: str = "builtin") -> CifStructure:

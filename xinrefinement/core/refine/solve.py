@@ -319,6 +319,35 @@ def _resolve_aniso(cfg: RefineConfig, phases: list[CifStructure],
     return _replace(prm, aniso=out)
 
 
+def _resolve_biso(cfg: RefineConfig, phases: list[CifStructure],
+                  prm: ProfileParams, warnings: list[str]) -> ProfileParams:
+    """v1.4 #18：每相 ΔB_iso 的入口校验与可辨识性提示（一次性，不进热路径）。
+
+    - 缺省相补 0 起点（COD CIF 的 B_iso 全为 0）；
+    - 高角数据不足（tmax<60°）时 B 与峰形/背景强相关，显式提示；
+    - 与全局 bfactor 同时开会完全重叠一个自由度，提示只保留其一。
+    """
+    from dataclasses import replace as _replace
+
+    from xinrefinement.core.refine.nonlinear import BISO_BOUNDS, _ensure_biso
+
+    if not cfg.refine_biso:
+        return prm
+    b = _ensure_biso(phases, prm, cfg)
+    if float(cfg.tmax) < 60.0:
+        warnings.append(
+            "ΔB_iso：精修窗口上限 < 60°，高角信息不足，"
+            "温度因子与峰形/背景可能不可分辨（建议放宽窗口）")
+    if cfg.refine_bfactor:
+        warnings.append(
+            "ΔB_iso：全局 bfactor 同时开启，两者作用形式完全相同，"
+            "自由度重叠（建议只开 refine_biso）")
+    warnings.append(
+        f"ΔB_iso：{len(b or {})} 相逐相精修，上界 "
+        f"{BISO_BOUNDS[1]:g} Å²；只压高角、不改峰位")
+    return _replace(prm, b_iso=b)
+
+
 def solve(inputs: RefineInputs) -> SolveResult:
     """执行一次全谱拟合（Rietveld / Le Bail 在 P2 扩展；M0 为 Rietveld）。
 
@@ -335,7 +364,23 @@ def solve(inputs: RefineInputs) -> SolveResult:
                                      warnings)
     prm = _resolve_texture(cfg, inputs.phases, inputs.profile, warnings)
     prm = _resolve_aniso(cfg, inputs.phases, prm, warnings)
+    prm = _resolve_biso(cfg, inputs.phases, prm, warnings)
     engine = refine(inputs.phases, pat, prm, cfg)
+    # v1.4 #18 实样基准护栏：ΔB_iso 顶到上界时，该相的高角失配多半不是
+    # 温度因子，而是择优取向 / 织构 / 标度的模型误差被 B 吸收（7 样复测里
+    # 4 样出现，且撞界相与 PO 收益相高度重合）。必须显式提示，不能让用户
+    # 把一个过拟合参数当成物理 B 值。
+    if cfg.refine_biso and getattr(engine.params, "b_iso", None):
+        from xinrefinement.core.refine.nonlinear import BISO_BOUNDS as _BB
+
+        hit = [str(k) for k, v in engine.params.b_iso.items()
+               if float(v) >= _BB[1] - 1e-6]
+        if hit:
+            warnings.append(
+                f"ΔB_iso：{len(hit)} 相顶到上界 {_BB[1]:g} Å²（"
+                + "、".join(hit[:3]) + ("…" if len(hit) > 3 else "")
+                + "）；高角失配可能来自择优取向/织构/标度误差被 B 吸收，"
+                  "建议先确认 PO 与织构再启用 B 步")
     weights = _phase_weights(inputs.phases, engine.scales, inputs.formulas,
                              warnings)
     return SolveResult(

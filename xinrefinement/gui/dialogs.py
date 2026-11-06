@@ -489,6 +489,82 @@ class PhaseEditDialog(_BaseDialog):
         return out
 
 
+class MicroDialog(_BaseDialog):
+    """v1.4 #19：micro 步策略（PO 自动试探）+ 全局精修窗口。"""
+
+    def __init__(self, current: dict | None = None, parent=None) -> None:
+        super().__init__("微结构与精修窗口", parent)
+        cur = current or {}
+        form = QFormLayout()
+
+        self.probe = QCheckBox("micro 步自动试探择优取向惯习面 (hkl)")
+        # v1.4 #20 实测：7 样对拍中 3 个差距样分别 −4.82 / −12.60 /
+        # −4.45 pt（样品 3 精确选中 CaF₂(111)，与 MAUD 报告一致），
+        # 故 GUI 出厂默认开启；CLI/API 仍默认关，保证 golden 零回归。
+        self.probe.setChecked(bool(cur.get("po_probe", True)))
+        self.probe.setToolTip(
+            "逐相 × 低指数候选轴短精修 March–Dollase r，按 Rwp 增益自动选轴；"
+            "用户已设置的 PO 相与开 EWIMV 织构的相不参与试探")
+        form.addRow(self.probe)
+
+        self.min_gain = QDoubleSpinBox()
+        self.min_gain.setRange(0.0, 20.0)
+        self.min_gain.setDecimals(2)
+        self.min_gain.setSingleStep(0.1)
+        self.min_gain.setValue(float(cur.get("po_probe_min_gain", 0.3)))
+        self.min_gain.setToolTip("Rwp 至少下降这么多百分点才纳入该相（挡噪声）")
+        form.addRow("PO 试探阈值 (Rwp pt)", self.min_gain)
+
+        self.max_phases = QSpinBox()
+        self.max_phases.setRange(1, 10)
+        self.max_phases.setValue(int(cur.get("po_probe_max_phases", 2)))
+        form.addRow("最多纳入相数", self.max_phases)
+
+        self.max_iter = QSpinBox()
+        self.max_iter.setRange(2, 40)
+        self.max_iter.setValue(int(cur.get("po_probe_max_iter", 12)))
+        form.addRow("每候选迭代上限", self.max_iter)
+
+        self.refine_biso = QCheckBox("B 步精修每相 ΔB_iso（高角衰减）")
+        self.refine_biso.setChecked(bool(cur.get("refine_biso", False)))
+        self.refine_biso.setToolTip(
+            "COD 导出 CIF 的 B_iso 恒为 0，会系统性高估高角强度；"
+            "开启后配方 B 步逐相精修一个 0–6 Å² 的温度因子增量")
+        form.addRow(self.refine_biso)
+
+        self.refine_xyz = QCheckBox("xyz 步精修原子坐标（Wyckoff 位约束）")
+        self.refine_xyz.setChecked(bool(cur.get("refine_xyz", False)))
+        self.refine_xyz.setToolTip(
+            "重读 CIF 未展开的不对称单位，等价原子联动；"
+            "自由坐标过多或精修后 Rwp 未改善会自动跳过/回退。"
+            "内置结构（无 CIF 源路径）不参与")
+        form.addRow(self.refine_xyz)
+
+        self.tmin = QDoubleSpinBox()
+        self.tmin.setRange(0.0, 179.0)
+        self.tmin.setDecimals(1)
+        self.tmin.setValue(float(cur.get("tmin", 5.0)))
+        self.tmax = QDoubleSpinBox()
+        self.tmax.setRange(1.0, 180.0)
+        self.tmax.setDecimals(1)
+        self.tmax.setValue(float(cur.get("tmax", 90.0)))
+        self.tmax.setToolTip("放开到谱图全范围可纳入高角弱峰；背景节点数按窗口自适应")
+        form.addRow("精修窗口 2θ 下限 (°)", self.tmin)
+        form.addRow("精修窗口 2θ 上限 (°)", self.tmax)
+        self._root.addLayout(form)
+        self._add_buttons()
+
+    def settings(self) -> dict:
+        return {"po_probe": bool(self.probe.isChecked()),
+                "po_probe_min_gain": float(self.min_gain.value()),
+                "po_probe_max_phases": int(self.max_phases.value()),
+                "po_probe_max_iter": int(self.max_iter.value()),
+                "refine_biso": bool(self.refine_biso.isChecked()),
+                "refine_xyz": bool(self.refine_xyz.isChecked()),
+                "tmin": float(self.tmin.value()),
+                "tmax": float(self.tmax.value())}
+
+
 def open_settings(step: str, title: str, phase_names: list[str],
                   current: dict | None = None,
                   parent: QWidget | None = None) -> dict | None:
@@ -497,6 +573,8 @@ def open_settings(step: str, title: str, phase_names: list[str],
         dlg = BackgroundDialog(current, parent)
     elif step == "cell":
         dlg = CellDialog(phase_names, current, parent)
+    elif step == "micro":
+        dlg = MicroDialog(current, parent)
     else:
         dlg = GenericDialog(step, title, current, parent)
     return dlg.settings() if dlg.exec() == QDialog.Accepted else None

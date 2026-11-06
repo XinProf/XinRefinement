@@ -110,6 +110,12 @@ class ProfileParams:
     Y: float = 0.0
     # ---- v1.2.0：Brindley 微吸收（每相 μ·r，None = 全部关闭） ----
     microabs: dict | None = None
+    # ---- v1.4 任务 #18：每相各向同性温度因子增量 ΔB_iso (Å²) ----
+    #: ``{phase_name: ΔB}``。前向里直接叠加到全局 ``bfactor``：
+    #: F 含 ``exp(−B·s²)``（s=sinθ/λ=1/2d），故强度 = exp(−ΔB/(2d²))，
+    #: 与 ``bfactor`` 同形同单位。COD 导出 CIF 的 B_iso 全是 0，精修一个
+    #: 正值可压回系统性偏高的高角强度；缺相视为不校正（保持 golden）。
+    b_iso: dict | None = None
     # ---- v1.3 任务 #14：EWIMV 离散 ODF 织构（每相，None = 关闭） ----
     #: ``{phase_name: {"axis": (h0, k0, l0), "grid": [T(χ_0) … T(χ_90)]}}``
     #: v1 仅 Bragg–Brentano 平板对称反射几何：散射矢量恒沿样品法向，织构
@@ -486,6 +492,8 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
     fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
     tch_on = (prm.X != 0.0) or (prm.Y != 0.0)   # NCA 修改（T2.1）
     aniso = prm.aniso.get(struct.name) if prm.aniso else None
+    # v1.4 #18：每相 ΔB_iso 与全局 bfactor 同为 exp(−B/(2d²))，直接相加
+    bf = prm.bfactor + float((prm.b_iso or {}).get(struct.name, 0.0))
     for peak in peaks:
         pos, height, d = peak[0], peak[1], peak[2]
         if height <= 0:
@@ -503,7 +511,7 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
             fwhm = max(fwhm_func(pos), MIN_W)
             eta = prm.eta
         _add_peak_windowed(prof, grid, pos + prm.zero, height, fwhm, eta,
-                           prm.asym, prm.bfactor, d, prm.integrated)
+                           prm.asym, bf, d, prm.integrated)
 
 
 def compute_phase_profile(struct: CifStructure, grid: np.ndarray,

@@ -148,8 +148,9 @@ def test_recipe_all_runs_in_background(win, qapp):
     assert win.canvas.has_fit
     records = win._worker.runner.records
     assert len(records) == 8
-    assert sum(r.status == "done" for r in records) == 6
-    assert sum(r.status == "skipped" for r in records) == 2
+    # v1.4 #18：B 步已落地，配方只剩 xyz 一步 skipped
+    assert sum(r.status == "done" for r in records) == 7
+    assert sum(r.status == "skipped" for r in records) == 1
     assert win._step_status.get("xyz") == "skipped"
     assert win.btn_run_all.isEnabled()
     assert not win.btn_cancel.isEnabled()

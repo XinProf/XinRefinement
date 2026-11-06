@@ -11,10 +11,14 @@ GUI 只负责把按钮/弹窗/进度映射到它（MVVM 边界：core 不碰 Qt�
 
 步骤与能力映射
 --------------
-v1 当前 core 能力（P0/M0 + P1.2）：零点 / 背景 / 标度 / 峰形 /
-晶胞（P1.2）/ 择优取向。原子坐标（P1.3）、温度因子 B 与占位（P1.4）
-尚未落地，配方里保留步骤但标记 ``available=False``，连跑时自动跳过并
-记入 warning —— 不做假执行。
+v1.4 当前 core 能力：零点 / 背景 / 标度 / 峰形 / 晶胞（P1.2）/
+择优取向 / 原子坐标（P1.3，v1.4 接入配方）/ 每相 ΔB_iso（P1.4 的
+温度因子部分）。占位精修仍未接入配方。
+
+三个后加能力都是 **opt-in**：``xyz``、``B``、``po_probe`` 在
+``RefineConfig`` 里默认关闭（CLI/API 零回归），GUI 只把 ``po_probe``
+出厂默认开（实样收益见评估报告 §11.5）。步骤本身 ``available=True``，
+但未被显式开启时 ``run_step`` 仍记 ``skipped`` —— 不做假执行。
 
 cell 步的特殊地位（v1.2 修正）
 ------------------------------
@@ -34,13 +38,20 @@ cell 步 status 显示 ``done`` 但 Rwp 前后**逐位相同**，等于假装执
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
 from xinrefinement.core.profile.forward import ProfileParams
 from xinrefinement.core.refine.cell import refine_cell_full, structure_with_cell
-from xinrefinement.core.refine.nonlinear import RefineConfig
+from xinrefinement.core.refine.nonlinear import DEFAULT_PO_HKL, RefineConfig
 from xinrefinement.core.refine.solve import RefineInputs, SolveResult, solve
+
+#: v1.4 #17 性能护栏：站点 LM 用数值雅可比，每次迭代要 O(n_free) 次
+#: 「多相全谱 + 线性层」评估；实样 5 相体系按配方的 ``max_iter=40`` 会
+#: 跑十几分钟仍不收敛。坐标精修一般 8–12 次即到平台，这里给 xyz 步
+#: 单独封顶，避免一条配方链被站点引擎拖死（主 solve 的迭代预算不变）。
+XYZ_SITE_MAX_ITER = 12
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,12 @@ class RefineStep:
                        refine_eta=(self.key == "profile"),
                        refine_asym=(self.key == "profile"),
                        refine_bfactor=False,
+                       # v1.4 #18：调用方显式开启 refine_biso 时，B 步逐相
+                       # 精修 ΔB_iso（solve 自动补 0 起点）；其余步一律关，
+                       # 避免每步都把高角衰减当自由度抢峰形参数。
+                       refine_biso=(self.key == "B" and cfg.refine_biso),
+                       # v1.4 #17：xyz 步由独立站点引擎执行（不走 solve）
+                       refine_xyz=(self.key == "xyz" and cfg.refine_xyz),
                        refine_cell=False,
                        refine_po=(self.key == "micro"),
                        refine_size=(self.key == "micro"),
@@ -101,8 +118,11 @@ DEFAULT_STEPS: tuple[RefineStep, ...] = (
                "P1.2 全晶胞按晶系约束精修"),
     RefineStep("profile", "峰形参数", "profile", True,
                "U/V/W/η + TCH 尺寸应变"),
-    RefineStep("xyz", "原子坐标", "xyz", False, "待 P1.3（Wyckoff 位约束）"),
-    RefineStep("B", "温度因子", "B", False, "待 P1.4（B_iso / 占位）"),
+    RefineStep("xyz", "原子坐标", "xyz", True,
+               "P1.3 已落地（Wyckoff 位约束）；需 --refine-xyz 显式开启，"
+               "缺 CIF 源路径的相自动跳过"),
+    RefineStep("B", "温度因子", "B", True,
+               "v1.4 #18：每相 ΔB_iso（逐相高角衰减，占位精修仍待 P1.4）"),
     RefineStep("micro", "微结构 / 应力 / 择优取向", "micro", True,
                "March-Dollase r + TCH X/Y"),
 )
@@ -159,6 +179,10 @@ class RecipeRunner:
         #: （profile/micro）必须看到改过的晶胞，否则整条链又退化成
         #: 「晶胞精修对最终结果无贡献」。
         self._phases: list[CifStructure] | None = None
+        #: v1.4 #19：最近一次 micro 步 PO 试探的逐候选明细（诊断/测试用）
+        self.po_probe_report: list[dict] = []
+        #: v1.4 #17：最近一次 xyz 步的站点精修明细（诊断/测试用）
+        self.xyz_report: dict = {}
 
     @property
     def records(self) -> list[StepRecord]:
@@ -173,6 +197,8 @@ class RecipeRunner:
         """清空运行状态与相列表（同一 runner 复用于下一次精修时调用）。"""
         self.state = RecipeState(steps=self.state.steps)
         self._phases = None
+        self.po_probe_report = []
+        self.xyz_report = {}
 
     def _phases_for(self, inputs: RefineInputs) -> list[CifStructure]:
         """首次调用时把输入的相列表接管进来（之后 cell 步会改写它）。"""
@@ -196,6 +222,13 @@ class RecipeRunner:
         cfg = step.config_for(inputs.config)
         if step.key == "cell" and phases:
             return self._run_cell(step, inputs, prev, phases, cfg)
+        # v1.4 #17：xyz 步由独立站点引擎执行；未开启时按 skip 记录
+        if step.key == "xyz":
+            return self._run_xyz(step, inputs, prev, phases, cfg)
+        # v1.4 #19：仅当调用方显式开启 po_probe 才走试探分支（默认关，
+        # 与 v1.3 逐位一致）。
+        if step.key == "micro" and inputs.config.po_probe:
+            return self._run_micro(step, inputs, prev, phases, cfg)
 
         inp = replace(inputs, config=cfg, phases=phases,
                       profile=(prev.params if prev is not None
@@ -259,6 +292,248 @@ class RecipeRunner:
         self.state.records.append(rec)
         return res, rec
 
+    def _run_xyz(self, step: RefineStep, inputs: RefineInputs,
+                 prev: SolveResult | None, phases: list[CifStructure],
+                 cfg: RefineConfig) -> tuple[SolveResult | None, StepRecord]:
+        """v1.4 #17：xyz 步调用独立站点引擎精修原子坐标。
+
+        关键约束（全部来自 ``core.refine.site``）：
+
+        - 重读 CIF **未展开**的不对称单位 + symop，用 site symmetry 的
+          ``(R−I)`` 零空间求自由坐标方向；等价原子通过同一组 symop 联动，
+          不会把对称性精修坏；
+        - 已精修过的晶胞（cell 步产物）覆盖 ``SiteModel.cell``；
+        - 没有 CIF 源路径的相作为 ``fixed_structures`` 常量基进入变量投影，
+          避免它们的强度被算到被精修相的标度上；
+        - 自由坐标系数超过 ``xyz_max_params`` 直接判失败（欠定护栏）；
+        - 精修后**重新 solve 一次比较 Rwp**，没有改善就整体回退，不把
+          结构改成更差的样子（这是配方层对用户的承诺）。
+        """
+        src = inputs.config
+        prm0 = prev.params if prev is not None else inputs.profile
+        # 单步执行（prev=None）时先解一次作为对照，否则"没有改善就回退"
+        # 会因缺少基准 Rwp 把任何结果都判成回退。
+        fallback = prev
+        if prev is None:
+            fallback = solve(replace(inputs,
+                                     config=replace(cfg, refine_xyz=False),
+                                     phases=phases, profile=prm0))
+        before = float(fallback.rwp) if fallback is not None else None
+
+        def _rec(status: str, msg: str, after=None,
+                 res: SolveResult | None = None):
+            rec = StepRecord(step.key, step.title, status, before, after, msg)
+            self.state.records.append(rec)
+            return res, rec
+
+        if not src.refine_xyz:
+            return _rec("skipped",
+                        "P1.3 原子坐标精修未开启（--refine-xyz / micro 齿轮）",
+                        before, prev)
+        from xinrefinement.core.refine.site import (
+            parse_site_model, refine_sites)
+
+        models, fixed, index = [], [], []
+        model_sources: list[CifStructure] = []
+        for st in phases:
+            path = getattr(st, "source_path", None)
+            if path and Path(path).exists():
+                try:
+                    m = parse_site_model(path)
+                except Exception:                              # noqa: BLE001
+                    index.append(("fixed", len(fixed)))
+                    fixed.append(st)
+                    continue
+                m = replace(m, name=st.name, cell=tuple(float(v) for v in st.cell),
+                            formula=getattr(st, "formula", None),
+                            spacegroup=getattr(st, "spacegroup", None),
+                            sg_number=getattr(st, "sg_number", None))
+                models.append(m)
+                model_sources.append(st)
+                index.append(("model", len(models) - 1))
+            else:
+                index.append(("fixed", len(fixed)))
+                fixed.append(st)
+        if not models:
+            return _rec("skipped",
+                        "P1.3 原子坐标精修：无相带 CIF 源路径（如 "
+                        "parse_cif_string 构造的结构），已跳过",
+                        before, prev)
+
+        n_free = sum(int(s.n_free) for m in models for s in m.sites)
+        if n_free > int(src.xyz_max_params):
+            return _rec("failed",
+                        f"原子坐标欠定：自由坐标系数 {n_free} > "
+                        f"xyz_max_params={src.xyz_max_params}", None, prev)
+
+        # 站点引擎不裁剪谱图，且线性背景口径要与主 solve 一致
+        pat = (prev.pattern if prev is not None else inputs.pattern)
+        mask = ((pat.two_theta >= src.tmin) & (pat.two_theta <= src.tmax))
+        clip = replace(pat, two_theta=pat.two_theta[mask],
+                       intensity=pat.intensity[mask])
+        backend = "lm" if src.backend in ("", "lm") else "scipy"
+        site_cfg = replace(src, max_iter=min(int(src.max_iter),
+                                             XYZ_SITE_MAX_ITER))
+        try:
+            sr = refine_sites(models, clip, prm0, site_cfg, backend=backend,
+                              free_kinds=("xyz",), fixed_structures=fixed)
+        except Exception as exc:                              # noqa: BLE001
+            return _rec("failed", f"原子坐标精修失败：{exc}", None, prev)
+
+        new_phases, mi, fi = [], 0, 0
+        for kind, _j in index:
+            if kind == "model":
+                st_new = sr.structures[mi]
+                src_st = model_sources[mi]
+                mi += 1
+                # 站点引擎由「未展开不对称单位」重建结构，to_structure 只回填
+                # formula/spacegroup；QPA 的 z_declared 与对称性/源路径元数据
+                # 必须逐项继承，否则精修后定量静默退化、下一轮 xyz 步找不到 CIF。
+                for attr in ("z_declared", "n_asym", "n_sym_ops",
+                             "source_path"):
+                    if hasattr(src_st, attr):
+                        setattr(st_new, attr, getattr(src_st, attr))
+                new_phases.append(st_new)
+            else:
+                new_phases.append(fixed[fi]); fi += 1
+        try:
+            res = solve(replace(inputs, config=replace(cfg, refine_xyz=False),
+                                phases=new_phases, profile=prm0))
+        except Exception as exc:                              # noqa: BLE001
+            return _rec("failed", f"原子坐标精修后重解失败：{exc}", None, prev)
+
+        if before is not None and res.rwp >= before - 1e-9:
+            self.xyz_report = {"params": tuple(float(v) for v in sr.params),
+                               "rwp": float(sr.rwp), "success": bool(sr.success),
+                               "n_free": n_free,
+                               "phases": [m.name for m in models],
+                               "accepted": False}
+            return _rec("done",
+                        f"原子坐标精修未改善 Rwp（{res.rwp:.3f} ≥ "
+                        f"{before:.3f}），已回退原结构",
+                        before, fallback)
+        drift = max((abs(float(v)) for v in sr.params), default=0.0)
+        self.xyz_report = {"params": tuple(float(v) for v in sr.params),
+                           "rwp": float(sr.rwp), "success": bool(sr.success),
+                           "n_free": n_free, "phases": [m.name for m in models],
+                           "accepted": True}
+        msg = (f"原子坐标：{len(models)} 相 / {n_free} 个自由系数，"
+               f"Rwp {before:.3f} → {res.rwp:.3f}，最大位移 {drift:.4f}")
+        if drift > 0.03:
+            msg += "（位移偏大，建议核查结构模型）"
+        self._phases = new_phases
+        self.state.push_snapshot(res.params)
+        rec = StepRecord(step.key, step.title, "done", before, res.rwp, msg,
+                         snapshot=self.state.snapshots[-1])
+        self.state.records.append(rec)
+        return res, rec
+
+    def _run_micro(self, step: RefineStep, inputs: RefineInputs,
+                   prev: SolveResult | None, phases: list[CifStructure],
+                   cfg: RefineConfig) -> tuple[SolveResult | None, StepRecord]:
+        """v1.4 #19：micro 步先自动试探 March–Dollase 惯习面，再正式精修。
+
+        为什么有这一步：实样对拍（§11.2）里样品 3 的 CaF₂(111) 择优取向
+        一项就值 −12.06 个百分点，但引擎只有在 ``prm.po_r`` 里**预先填好**
+        (h,k,l) 才会精修 r —— 出厂配方没有这些信息，micro 步等于空转。
+
+        流程（全部由配方层编排，``solve``/registry 接口不变）：
+
+        1. 以当前参数为初值，关掉除 po 以外的全部非线性自由度；
+        2. 对「用户未配置 po_r、且未开 EWIMV 织构」的每一相，逐个候选轴
+           短精修 r（每个候选只有 1 个有效自由度），记录 Rwp 增益；
+        3. 增益 ≥ ``po_probe_min_gain`` 的相按增益降序取前
+           ``po_probe_max_phases`` 个（同一相只留最佳轴），把 ``r=1`` 写入
+           po_r，交给正式 micro 步连同 X/Y 一起精修；
+        4. 试探细节存 ``self.po_probe_report``，并写入 StepRecord.message。
+
+        试探本身是启发式（不是统计检验），阈值默认 0.3 个百分点用于挡噪声。
+        ``po_probe=False``（默认）时 ``run_step`` 完全不走这里，逐位零回归。
+        """
+        src = inputs.config
+        prm0 = prev.params if prev is not None else inputs.profile
+        existing = dict(prm0.po_r or {})
+        tex_names = set(prm0.texture or {})
+        # 只放 r：其余非线性参数保持当前值，避免试探把峰形改动算成 PO 收益
+        probe_cfg = replace(
+            cfg, refine_zero=False, refine_uvw=False, refine_eta=False,
+            refine_asym=False, refine_bfactor=False, refine_cell=False,
+            refine_size=False, refine_strain=False, refine_texture=False,
+            refine_aniso=False, refine_microabs=False, refine_po=True,
+            po_probe=False, max_iter=int(src.po_probe_max_iter))
+        base_cfg = replace(probe_cfg, refine_po=False)
+        try:
+            base_rwp = float(solve(RefineInputs(
+                inputs.pattern, phases, prm0, base_cfg)).rwp)
+        except Exception:                                          # noqa: BLE001
+            base_rwp = float(prev.rwp) if prev is not None else float("inf")
+
+        report: list[dict] = []
+        for st in phases:
+            # DEFAULT_PO_HKL 覆盖的相由 nonlinear._ensure_po_r 自动补已知
+            # 惯习面（锐钛 (001) / 金红石 (110)）；若让试探覆盖它，实测会把
+            # 更准的默认轴换成噪声轴（合成对照 Rwp 5.4235 → 5.4265）。
+            if (st.name in existing or st.name in tex_names
+                    or st.name in DEFAULT_PO_HKL):
+                continue
+            for axis in src.po_probe_axes:
+                hkl = tuple(int(v) for v in axis[:3])
+                if hkl == (0, 0, 0):
+                    continue
+                prm = replace(prm0, po_r={**existing,
+                                          st.name: (*hkl, 1.0)})
+                try:
+                    res = solve(RefineInputs(
+                        inputs.pattern, phases, prm, probe_cfg))
+                    gain = base_rwp - float(res.rwp)
+                    r = (float(res.params.po_r[st.name][3])
+                         if res.params.po_r else 1.0)
+                    report.append({"phase": st.name, "axis": list(hkl),
+                                   "rwp_pct": float(res.rwp),
+                                   "gain": gain, "r": r,
+                                   "success": bool(res.success)})
+                except Exception as exc:                          # noqa: BLE001
+                    report.append({"phase": st.name, "axis": list(hkl),
+                                   "rwp_pct": None, "gain": None,
+                                   "error": f"{type(exc).__name__}: {exc}"})
+
+        self.po_probe_report = report
+        best_per_phase: dict[str, dict] = {}
+        for row in report:
+            g = row.get("gain")
+            if g is None or g < float(src.po_probe_min_gain):
+                continue
+            cur = best_per_phase.get(row["phase"])
+            if cur is None or g > cur["gain"]:
+                best_per_phase[row["phase"]] = row
+        accepted = sorted(best_per_phase.values(),
+                          key=lambda r: -r["gain"])[:max(1, int(
+                              src.po_probe_max_phases))]
+        po_r = dict(existing)
+        for row in accepted:
+            po_r[row["phase"]] = (*tuple(row["axis"]), 1.0)
+        prm_final = replace(prm0, po_r=(po_r or None))
+        msg = ("PO 试探：" + ("；".join(
+            f"{r['phase'][:18]}({''.join(str(v) for v in r['axis'])}) "
+            f"−{r['gain']:.2f}pt" for r in accepted)
+            if accepted else "无相达到增益阈值，未启用 PO"))
+
+        inp = replace(inputs, config=cfg, phases=phases, profile=prm_final)
+        try:
+            res = solve(inp)
+        except Exception as exc:                                  # noqa: BLE001
+            rec = StepRecord(step.key, step.title, "failed",
+                             None if prev is None else prev.rwp, None,
+                             f"{msg}；正式精修失败：{exc}")
+            self.state.records.append(rec)
+            return prev, rec
+        before = None if prev is None else prev.rwp
+        self.state.push_snapshot(res.params)
+        rec = StepRecord(step.key, step.title, "done", before, res.rwp,
+                         msg, snapshot=self.state.snapshots[-1])
+        self.state.records.append(rec)
+        return res, rec
+
     @staticmethod
     def _describe_cell_change(old: list[CifStructure],
                               new: list[CifStructure],
@@ -288,6 +563,8 @@ class RecipeRunner:
         result: SolveResult | None = None
         self.state.current = 0
         self._phases = list(inputs.phases)
+        self.po_probe_report = []
+        self.xyz_report = {}
         for i, step in enumerate(todo):
             if cancel_cb is not None and cancel_cb():
                 break

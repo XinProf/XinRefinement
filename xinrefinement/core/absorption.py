@@ -75,17 +75,49 @@ def phase_mu_rho(struct: CifStructure, anode: str = "Cu") -> float:
     return sum(w * MU_RHO[e][key] for e, w in fr.items())
 
 
+def _density_from_cell_mass(struct: CifStructure) -> float:
+    """ρ = (Σ_i n_i·A_i / N_A) / V —— 只需晶胞占位原子，**不需要化学式/Z**。
+
+    与 ``Z·M/(N_A·V)`` 在化学式一致时数学等价，但对 par 重建 CIF
+    （化学式带归约/占位小数、``infer_z`` 反算不一致）仍可得物理正确的密度。
+    微吸收只关心单位体积的吸收截面，本来就不该被化学式解析失败卡住。
+    """
+    from xinrefinement.core.refine.qpa import ATOMIC_MASS
+
+    mass_cell = 0.0
+    for (elem, _x, _y, _z, occ, _B) in struct.atoms:
+        e = (elem or "").strip().capitalize()
+        if e not in ATOMIC_MASS:
+            raise ValueError(f"CIF「{struct.name}」含未知元素: {elem!r}")
+        mass_cell += float(occ) * ATOMIC_MASS[e]
+    if mass_cell <= 0:
+        raise ValueError(f"CIF「{struct.name}」晶胞质量非法")
+    vol_a3 = float(struct.volume)
+    if vol_a3 <= 0:
+        raise ValueError(f"CIF「{struct.name}」晶胞体积非法")
+    return (mass_cell / N_AVOGADRO) / (vol_a3 * 1e-24)
+
+
+def _density_with_source(struct: CifStructure, formula: str | None = None
+                         ) -> tuple[float, str]:
+    from xinrefinement.core.refine.qpa import qpa_inputs_from_cif
+
+    try:
+        z, vol_a3, mass = qpa_inputs_from_cif(struct, formula)
+    except ValueError:
+        return _density_from_cell_mass(struct), "cell_mass"
+    # V[Å³] = V·1e-24 cm³；每晶胞质量 = Z·M/N_A (g)
+    return (z * mass / N_AVOGADRO) / (vol_a3 * 1e-24), "formula_z"
+
+
 def phase_density(struct: CifStructure, formula: str | None = None) -> float:
     """理论密度 ρ = Z·M / (N_A·V) (g/cm³)。
 
-    Z/口径与 ``qpa.qpa_inputs_from_cif`` 完全一致（Z 按占位反算，
-    不信 CIF 自述值）；formula 省略时用 CIF 自带化学式。
+    主路径与 ``qpa.qpa_inputs_from_cif`` 同源（Z 按占位反算）；若 CIF
+    化学式与占位不一致导致 Z 反算失败（实样样品 5 的 par 重建 CIF），
+    **回退**到直接按晶胞占位质量计算（v1.4 #20），不静默跳过该相。
     """
-    from xinrefinement.core.refine.qpa import qpa_inputs_from_cif
-
-    z, vol_a3, mass = qpa_inputs_from_cif(struct, formula)
-    # V[Å³] = V·1e-24 cm³；每晶胞质量 = Z·M/N_A (g)
-    return (z * mass / N_AVOGADRO) / (vol_a3 * 1e-24)
+    return _density_with_source(struct, formula)[0]
 
 
 def calc_mu_r(struct: CifStructure, grain_um: float,
@@ -104,7 +136,7 @@ def calc_mu_r(struct: CifStructure, grain_um: float,
     if not math.isfinite(g) or g <= 0:
         raise ValueError(f"晶粒尺寸 r 必须为正数，得到 {grain_um!r}")
     mu_rho = phase_mu_rho(struct, anode)
-    rho = phase_density(struct, formula)
+    rho, source = _density_with_source(struct, formula)
     mu_cm = mu_rho * rho                    # cm⁻¹
     mur = mu_cm / 1e4 * g                   # μm⁻¹ × μm
     return {
@@ -112,6 +144,10 @@ def calc_mu_r(struct: CifStructure, grain_um: float,
         "mu_cm": mu_cm,
         "mu_rho": mu_rho,
         "density": rho,
+        "density_source": source,
+        "warning": (None if source == "formula_z" else
+                    "CIF 化学式与占位不一致，密度按晶胞占位质量估算；"
+                    "请核对结构模型（μ·r 可信度较低）"),
         "anode": (anode or "").strip(),
     }
 

@@ -79,7 +79,25 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--refine-eta", action="store_true")
     r.add_argument("--refine-asym", action="store_true")
     r.add_argument("--refine-bfactor", action="store_true")
+    r.add_argument("--refine-biso", action="store_true",
+                   help="v1.4 #18：逐相精修各向同性温度因子 ΔB_iso (Å²)，"
+                        "压回 COD CIF B=0 导致的高角强度偏高；"
+                        "配 --recipe 时由 B 步执行")
+    r.add_argument("--refine-xyz", action="store_true",
+                   help="v1.4 #17：配方 xyz 步按 Wyckoff 位约束精修原子坐标"
+                        "（需 --recipe；无 CIF 源路径的相自动跳过）")
+    r.add_argument("--xyz-max-params", type=int, default=40, metavar="N",
+                   help="xyz 步最多放开的自由坐标系数（默认 40，超出判失败）")
     r.add_argument("--refine-po", action="store_true")
+    r.add_argument("--po-probe", action="store_true",
+                   help="v1.4 #19：配方 micro 步自动逐相试探择优取向惯习面"
+                        "（需 --recipe；按 Rwp 增益选轴，默认关）")
+    r.add_argument("--po-probe-min-gain", type=float, default=0.3,
+                   metavar="PT", help="PO 试探接受阈值（Rwp 百分点，默认 0.3）")
+    r.add_argument("--po-probe-max-phases", type=int, default=2,
+                   metavar="N", help="PO 试探最多纳入相数（默认 2）")
+    r.add_argument("--po-probe-max-iter", type=int, default=12,
+                   metavar="N", help="每个候选轴的短精修迭代上限（默认 12）")
     r.add_argument("--refine-size", action="store_true")
     r.add_argument("--refine-strain", action="store_true")
     r.add_argument("--peak-height", action="store_true",
@@ -210,7 +228,14 @@ def _build_inputs(args) -> RefineInputs:
         refine_eta=args.refine_eta,
         refine_asym=args.refine_asym,
         refine_bfactor=args.refine_bfactor,
+        refine_biso=args.refine_biso,
+        refine_xyz=args.refine_xyz,
+        xyz_max_params=args.xyz_max_params,
         refine_po=args.refine_po,
+        po_probe=args.po_probe,
+        po_probe_min_gain=args.po_probe_min_gain,
+        po_probe_max_phases=args.po_probe_max_phases,
+        po_probe_max_iter=args.po_probe_max_iter,
         refine_size=args.refine_size,
         refine_strain=args.refine_strain,
         refine_texture=bool(texture),

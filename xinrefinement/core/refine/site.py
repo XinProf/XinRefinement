@@ -287,11 +287,17 @@ class SiteRefineResult:
 def refine_sites(models: list[SiteModel], pat: Pattern, prm0: ProfileParams,
                  cfg, backend: str = "lm",
                  free_kinds: tuple[str, ...] = ("xyz", "B", "occ"),
-                 occ_anchor: bool = True) -> SiteRefineResult:
+                 occ_anchor: bool = True,
+                 fixed_structures=()) -> SiteRefineResult:
     """独立结构精修（变量投影 + LM/scipy-trf）。
 
     ``free_kinds`` 可选 ``xyz`` / ``B`` / ``occ`` 的任意组合，便于 P1.3
     与 P1.4 分步验收；不启用的维度在向量里固定为 0。
+
+    ``fixed_structures``（v1.4 #17）：多相体系里**不参与**结构精修的相。
+    它们的计算谱作为常量基向量一并进入线性层，否则变量投影会把这些相的
+    强度也算到被精修相的标度上，得到虚假的坐标位移。顺序不影响结果
+    （线性层逐列求解），但必须与调用方后续重建相列表时的映射一致。
 
     **occ 锚定（``occ_anchor=True``，默认）**：单相里所有位点 occ 的绝对标度
     会被变量投影的线性层 scale 完全吸收（数学上不可辨识）——实测真值
@@ -318,12 +324,20 @@ def refine_sites(models: list[SiteModel], pat: Pattern, prm0: ProfileParams,
            else np.asarray(sigma, dtype=np.float64))
     history: list[float] = []
 
+    fixed_rows = [compute_phase_profile(s, tt, prm0, tmin, tmax)
+                  for s in fixed_structures]
+
     def residual_fn(x: np.ndarray) -> np.ndarray:
         structs = [m.to_structure(x[offsets[i]:offsets[i + 1]])
                    for i, m in enumerate(models)]
-        rows = [compute_phase_profile(s, tt, prm0, tmin, tmax) for s in structs]
+        rows = list(fixed_rows) + [
+            compute_phase_profile(s, tt, prm0, tmin, tmax) for s in structs]
         basis = np.vstack(rows) if rows else np.zeros((0, tt.size))
-        _c, ycalc, _d = solve_linear_detail(basis, tt, yo, sig, n_bg, bg_mode)
+        # v1.4 #17：手动/插值背景的固定锚点必须一并传入，否则结构精修
+        # 用的是另一条背景曲线，坐标会被背景差吸收。
+        bg_points = list(getattr(cfg, "bg_points", ()) or ()) or None
+        _c, ycalc, _d = solve_linear_detail(basis, tt, yo, sig, n_bg, bg_mode,
+                                            bg_points=bg_points)
         rwp = compute_rfactors(
             yo, ycalc, n_params=x.size + basis.shape[0] + n_bg).rwp
         history.append(rwp)

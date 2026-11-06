@@ -64,3 +64,21 @@ def test_cli_grain_size_auto_mur(tmp_path):
     wa = next(p for p in data["phases"] if p["name"] == "anatase")
     wb = next(p for p in base["phases"] if p["name"] == "anatase")
     assert wa["weight_pct"] > wb["weight_pct"]
+
+
+def test_cli_po_probe_wires_to_config(tmp_path):
+    """v1.4 #19：--po-probe 及阈值参数真正进入 RefineConfig。"""
+    from xinrefinement.cli.refine import _build_inputs, build_parser
+
+    args = build_parser().parse_args([
+        "refine", *_common(tmp_path, "probe.json"),
+        "--po-probe", "--po-probe-min-gain", "1.25",
+        "--po-probe-max-phases", "3", "--po-probe-max-iter", "8"])
+    cfg = _build_inputs(args).config
+    assert cfg.po_probe is True
+    assert cfg.po_probe_min_gain == 1.25
+    assert cfg.po_probe_max_phases == 3
+    assert cfg.po_probe_max_iter == 8
+    # 默认仍关闭（零回归）
+    assert _build_inputs(build_parser().parse_args(
+        ["refine", *_common(tmp_path, "p2.json")])).config.po_probe is False

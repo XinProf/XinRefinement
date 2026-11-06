@@ -146,3 +146,24 @@ def test_gui_dialog_smoke(qapp, anatase, rutile):
     for st in (anatase, rutile):
         assert st.name in got
         assert got[st.name]["microabs"] is None    # 默认未启用
+
+
+def test_density_fallback_on_inconsistent_formula(anatase):
+    """v1.4 #20：化学式与占位不一致时按晶胞占位质量回退，不抛错。
+
+    构造：把锐钛矿的 ``formula`` 改成与占位不符的 TiO3，``infer_z`` 必失败；
+    回退密度仍应等于按正常公式算出的物理密度（晶胞原子没变）。
+    """
+    good = calc_mu_r(anatase, 2.0)
+    assert good["density_source"] == "formula_z"
+    assert good["warning"] is None
+    saved = anatase.formula
+    try:
+        anatase.formula = "TiO3"
+        got = calc_mu_r(anatase, 2.0)
+    finally:
+        anatase.formula = saved
+    assert got["density_source"] == "cell_mass"
+    assert got["warning"] and "化学式" in got["warning"]
+    assert got["density"] == pytest.approx(good["density"], rel=1e-12)
+    assert got["mur"] == pytest.approx(good["mur"], rel=1e-12)

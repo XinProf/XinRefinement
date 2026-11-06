@@ -120,6 +120,19 @@ def _s_ma(name: str):
     return _fn
 
 
+def _g_biso(name: str):
+    return lambda prm, cell, po: float(prm.b_iso[name])
+
+
+def _s_biso(name: str):
+    def _fn(prm, cell, po, v):
+        from xinrefinement.core.refine import nonlinear as nl
+        b = dict(prm.b_iso)
+        b[name] = min(max(float(v), nl.BISO_BOUNDS[0]), nl.BISO_BOUNDS[1])
+        return replace(prm, b_iso=b), cell, po
+    return _fn
+
+
 def _g_tex(name: str, k: int):
     def _fn(prm, cell, po):
         grid = normalize_texture_grid(prm.texture[name].get("grid"))
@@ -235,6 +248,11 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
                     add(f"phase[{name}].aniso.{kind}.{k}", "phase", "micro",
                         diag_b if k in nl.ANISO_DIAG_IDX else cross_b,
                         _g_aniso(name, kind, k), _s_aniso(name, kind, k))
+    # v1.4 任务 #18：每相各向同性温度因子增量 ΔB_iso（与 _pack 同序）
+    if cfg.refine_biso and getattr(prm, "b_iso", None):
+        for name in sorted(prm.b_iso):
+            add(f"phase[{name}].B_iso", "phase", "B", nl.BISO_BOUNDS,
+                _g_biso(name), _s_biso(name))
     if cfg.refine_strain:
         add("global.micro.X", "global", "micro", nl.STRAIN_BOUNDS,
             _g_prm("X"), _s_prm("X"))

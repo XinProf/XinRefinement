@@ -65,6 +65,9 @@ V_BOUNDS = (-0.5, 0.5)              # v1.0.0: 真实数据 Caglioti V 可为负�
 ETA_BOUNDS = (0.05, 1.0)
 ASYM_BOUNDS = (-0.05, 0.30)
 BFACTOR_BOUNDS = (0.0, 6.0)
+# v1.4 任务 #18：每相 ΔB_iso (Å²)；COD 导出 CIF 的 B_iso 全为 0，
+# 上界 6 已远超常见 0.5–2 Å²，主要防止 LM 在欠定方向漂移。
+BISO_BOUNDS = (0.0, 6.0)
 CELL_BOUNDS = (0.99, 1.01)          # 晶胞 a,c 缩放 ±1%
 # v1.4.0: March–Dollase 择优取向参数 r 边界（r=1 为无择优）
 PO_BOUNDS = (0.2, 5.0)
@@ -87,6 +90,10 @@ STRAIN_BOUNDS = (0.0, 0.5)   # X
 # v1.4.0: 已知惯习面的内置相择优取向默认 (h,k,l)（TiO2 惯习：锐钛板状
 # (001)、金红石柱状 (110)）；未知相名不纳入 PO 精修。
 DEFAULT_PO_HKL = {"anatase": (0, 0, 1), "rutile": (1, 1, 0)}
+#: v1.4 任务 #19：micro 步自动试探的候选惯习面（低指数，纤维织构常见轴）。
+#: March–Dollase 权重对 (hkl) 与 (−h,−k,−l) 等价，故只需正指数。
+DEFAULT_PO_AXES: tuple[tuple[int, int, int], ...] = (
+    (0, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))
 
 
 class RefineCancelled(Exception):
@@ -112,7 +119,10 @@ class RefineConfig:
     # ---- v1.0.0 扩展（默认关闭，保持 v0.1.0 行为） ----
     bg_mode: str = "cheb"            # "cheb" | "tent" | "interp"（v1.2.0）
     refine_asym: bool = False        # 低角不对称尾
-    refine_bfactor: bool = False     # 经验高角衰减 B
+    refine_bfactor: bool = False     # 经验高角衰减 B（全局）
+    #: v1.4 #18：每相各向同性温度因子增量 ΔB_iso（默认关）。开启时
+    #: solve() 会为缺相补 0 起点；与全局 bfactor 叠加，共用 exp(−B/2d²)。
+    refine_biso: bool = False
     refine_cell: bool = False        # 每相晶胞 a,c 缩放 (T4.7)
     #: v1.3 #16：优化器插拔——"lm"（自研，默认）| "trf" | "dogbox" |
     #: 历史别名 "scipy"（= trf）。见 core.refine.optimizers.OPTIMIZERS。
@@ -132,8 +142,25 @@ class RefineConfig:
     bg_points: tuple = ()
     #: "interp" 提取迭代次数（MAUD 默认 10）
     bg_interp_iters: int = 10
-    # ---- v1.4.0 扩展 ----
     refine_po: bool = False          # March–Dollase 择优取向 r 精修（默认关）
+    # ---- v1.4 任务 #19：micro 步择优取向自动试探（默认关，零回归） ----
+    #: 为真时配方 micro 步先逐相×逐轴短精修 r，按 Rwp 增益挑选惯习面，
+    #: 再把选中的相纳入正式 micro 步。用户已在 prm.po_r 配好的相不试探；
+    #: 开 EWIMV 织构的相也不试探（两模型互斥）。
+    po_probe: bool = False
+    po_probe_axes: tuple = DEFAULT_PO_AXES
+    #: 接受阈值：Rwp 至少下降这么多**百分点**才纳入（防过拟合噪声）
+    po_probe_min_gain: float = 0.3
+    #: 最多纳入几个相（按增益降序；同一相只取最佳轴）
+    po_probe_max_phases: int = 2
+    #: 每个候选的短精修迭代上限（只放 r 一个非线性参数）
+    po_probe_max_iter: int = 12
+    # ---- v1.4 任务 #17：原子坐标精修（配方 xyz 步，默认关） ----
+    #: 开启后 xyz 步重读 CIF 未展开不对称单位，按 Wyckoff 位约束联动等价原子；
+    #: 缺 CIF 源路径（如 parse_cif_string 构造的结构）自动跳过该相。
+    refine_xyz: bool = False
+    #: 单次最多放开的自由坐标系数（超过即报错，避免欠定/耗时失控）
+    xyz_max_params: int = 40
     # ---- v1.3 评审降级（实验用，勿在生产路径开启）：每相 Brindley mu*r
     # 精修。已证伪：Brindley 因子是每相常数标量，与线性层每相自由 scale
     # **完全简并**（乘积 S_p·f(μr_p) 才可辨识），单谱精修数学上不可辨识，
@@ -228,6 +255,10 @@ def _pack(prm: ProfileParams, cfg: RefineConfig, n_phase: int) -> np.ndarray:
                 c = list(entry.get(key) or [])
                 c = (c + [0.0] * 6)[:6]
                 x.extend(float(v) for v in c)
+    # v1.4 #18: 每相 ΔB_iso（sorted(b_iso)；位置在 aniso 之后、X/Y 之前）
+    if cfg.refine_biso and prm.b_iso:
+        for name in sorted(prm.b_iso):
+            x.append(float(prm.b_iso[name]))
     # NCA 修改（T2.1）: X/Y 追加在最后（PO 之后），_unpack/_bounds 同序
     if cfg.refine_strain:
         x.append(float(getattr(prm, "X", 0.0)))
@@ -315,19 +346,28 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
                               for k in range(6)]
                 i += 6
             aniso[name] = entry
+    # v1.4 #18: ΔB_iso 与 _pack 同序（sorted(b_iso)）；X/Y 末端倒读不受影响
+    b_iso = base.b_iso
+    if cfg.refine_biso and base.b_iso:
+        b_iso = dict(base.b_iso)
+        for name in sorted(base.b_iso):
+            b_iso[name] = max(min(float(x[i]), BISO_BOUNDS[1]),
+                              BISO_BOUNDS[0]); i += 1
     prm = ProfileParams(zero=zero, U=U, V=V, W=max(W, MIN_W), eta=eta,
                         anode=base.anode, ka_ratio=base.ka_ratio,
                         po_r=po_r, wavelength=base.wavelength,
                         asym=asym, bfactor=bfactor,
                         integrated=base.integrated,
                         microabs=microabs, texture=texture, aniso=aniso,
+                        b_iso=b_iso,
                         X=X, Y=Y)   # NCA 修改（T2.1）
     return prm, cell
 
 
 def _bounds(cfg: RefineConfig, n_phase: int,
             n_po: int = 0, n_ma: int = 0,
-            n_tex: int = 0, n_aniso: int = 0) -> tuple[np.ndarray, np.ndarray]:
+            n_tex: int = 0, n_aniso: int = 0,
+            n_biso: int = 0) -> tuple[np.ndarray, np.ndarray]:
     lo, hi = [], []
     if cfg.refine_zero:
         lo.append(ZERO_BOUNDS[0]); hi.append(ZERO_BOUNDS[1])
@@ -365,12 +405,30 @@ def _bounds(cfg: RefineConfig, n_phase: int,
                 else:
                     b = ANISO_SIZE_BOUNDS if diag else ANISO_SIZE_CROSS
                 lo.append(b[0]); hi.append(b[1])
+    # v1.4 #18: 每相一个 ΔB_iso（顺序与 _pack 一致：sorted(b_iso)）
+    for _ in range(n_biso):
+        lo.append(BISO_BOUNDS[0]); hi.append(BISO_BOUNDS[1])
     # NCA 修改（T2.1）: X/Y 边界（顺序与 _pack 一致：先 X 后 Y）
     if cfg.refine_strain:
         lo.append(STRAIN_BOUNDS[0]); hi.append(STRAIN_BOUNDS[1])
     if cfg.refine_size:
         lo.append(SIZE_BOUNDS[0]); hi.append(SIZE_BOUNDS[1])
     return np.array(lo), np.array(hi)
+
+
+def _ensure_biso(phases: list[CifStructure], prm0: ProfileParams,
+                 cfg: RefineConfig) -> dict | None:
+    """v1.4 #18：refine_biso 时给缺相补 ΔB_iso=0 起点（其余沿用原值）。
+
+    COD 导出的 CIF 里 B_iso 恒为 0，故 0 是物理正确的精修起点；用户若
+    已给出非零 ΔB 则尊重。关闭开关时原样返回，不触碰 golden。
+    """
+    if not cfg.refine_biso:
+        return prm0.b_iso
+    b = dict(prm0.b_iso or {})
+    for st in phases:
+        b.setdefault(st.name, 0.0)
+    return b
 
 
 def _aniso_kinds(cfg: RefineConfig) -> tuple[str, ...]:
@@ -618,7 +676,8 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
     gen = [0]
     n_phase = len(phases)
     # v1.4.0: refine_po 时按内置惯习面补缺失相的 (h,k,l,1.0) 起点
-    prm0 = replace(prm0, po_r=_ensure_po_r(phases, prm0, cfg))
+    prm0 = replace(prm0, po_r=_ensure_po_r(phases, prm0, cfg),
+                   b_iso=_ensure_biso(phases, prm0, cfg))
     # P1.0c：生产路径全程走声明式注册表；x0 / bounds / unpack 均出自 reg，
     # 旧 _pack/_bounds/_unpack 仅保留为兼容 API 与双轨回归参照。
     reg = _registry_for(cfg, prm0, n_phase)
