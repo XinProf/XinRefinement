@@ -1,0 +1,54 @@
+#------------------------------------------------------------------------------
+# alpha-Cristobalite, SiO2, tetragonal P 41 21 2 (#92)
+#
+# Structure parameters from the Crystallography Open Database entry 9017338
+# (COD, http://www.crystallography.net/), which republishes:
+#   Lee, S. & Xu, H. (2019). Acta Cryst. B75, 812-822.
+#   "Using powder XRD and pair distribution function to determine anisotropic
+#    atomic displacement parameters of orthorhombic tridymite and tetragonal
+#    cristobalite"
+#
+# 用途：v1.5 M8c 多型建议。样品里若出现「方石英 + ΔB_iso 撞界 + 低角主峰
+# 计算偏低」，常见根因是把低温 α 相（本文件）误用成高温 β 相（Fd-3m）。
+# 产品只做提示与「试用」，不自动替换用户 CIF。
+#
+# 注意：本文件是**结构数值的重新编排**（晶胞 + 不对称单元 + 对称操作），
+# 不含任何 PDF 卡片或 ICDD 数据。
+#------------------------------------------------------------------------------
+data_cristobalite_alpha
+
+_chemical_formula_sum            'O2 Si'
+_chemical_name_mineral           'Cristobalite (alpha, low)'
+_symmetry_space_group_name_H-M   'P 41 21 2'
+_space_group_IT_number           92
+_space_group_crystal_system      'tetragonal'
+
+_cell_length_a                   4.97270
+_cell_length_b                   4.97270
+_cell_length_c                   6.92570
+_cell_angle_alpha                90.0000
+_cell_angle_beta                 90.0000
+_cell_angle_gamma                90.0000
+_cell_formula_units_Z            4
+_cell_volume                     171.25
+
+loop_
+_symmetry_equiv_pos_as_xyz
+  'x, y, z'
+  '-y+1/2, x+1/2, z+1/4'
+  '-x, -y, z+1/2'
+  'y+1/2, -x+1/2, z+3/4'
+  'x+1/2, -y+1/2, -z+3/4'
+  '-x+1/2, y+1/2, -z+1/4'
+  'y, x, -z'
+  '-y, -x, -z+1/2'
+
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_atom_site_B_iso_or_equiv
+Si   0.3010   0.3010   0.0000   1.00000   2.728
+O    0.2390   0.1040   0.1790   1.00000   1.475

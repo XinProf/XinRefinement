@@ -494,6 +494,22 @@ def _run(args) -> int:
     out.write_text(text, encoding="utf-8")
     print(text)
 
+    # v1.5 M8c：多型建议。只在「ΔB_iso 撞界 + 化学式 + 空间群」三条同时
+    # 命中时出现；**不自动替换**输入 CIF（结构模型是实验事实）。
+    try:
+        from xinrefinement.core.refine.polymorph import suggest as _suggest
+        _sug = _suggest(res, inputs.phases)
+    except Exception:
+        _sug = []
+    if _sug:
+        print()
+        print("## 建议：相结构可能是另一个多型")
+        for s in _sug:
+            print(f"  - {s.reason}")
+            print(f"    候选：{s.candidate.label}"
+                  f"（内置 {s.candidate.cif_file}）")
+            print(f"    依据：{s.candidate.gain_note}")
+
     if args.report:
         from xinrefinement.core.report import export_report
         paths = export_report(res, args.report, esd=esd)

@@ -40,7 +40,11 @@ ALPHA = {"s4": DIRS[3] / "1-cristobalite-Entry_96-900-9688.cif",
          "s6": DIRS[5] / "4-cristobalite-Entry_96-901-7339.cif",
          # 对照：不换相（仍是用户给的 β Fd-3m），用来把「换多型」的收益
          # 与「本脚本与 combo_tex_aniso 的口径差（PO 试探同时开着）」分开
-         "beta": None}
+         "beta": None,
+         # 产品内置的 α 方石英（COD 9017338 数值）——必须与 s6 逐位等效，
+         # 否则「一键试用 α」拿不到真实收益
+         "builtin": Path(__file__).resolve().parents[1]
+         / "xinrefinement" / "data" / "cristobalite_alpha.cif"}
 
 
 def main(argv: list[str]) -> int:

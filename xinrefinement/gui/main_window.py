@@ -358,6 +358,15 @@ class MainWindow(QMainWindow):
         self.corr_table.horizontalHeader().setStretchLastSection(True)
         self.result_tabs.addTab(self.corr_table, tr("result.tab.correlation"))
         rl.addWidget(self.result_tabs)
+        # v1.5 M8c：多型建议按钮。默认隐藏，只在「ΔB_iso 撞界 + 化学式 +
+        # 空间群」三条件同时命中时出现（见 core/refine/polymorph.py）。
+        # 用按钮而不是模态框：既不给用户「必须立刻决定」的压力，也避免
+        # 离屏/自动化测试里模态框阻塞事件循环（同 _on_worker_failed 的教训）。
+        self.btn_polymorph = QPushButton("")
+        self.btn_polymorph.setVisible(False)
+        self.btn_polymorph.clicked.connect(self._on_apply_polymorph)
+        rl.addWidget(self.btn_polymorph)
+        self._polymorph_suggestion = None
         rv.addWidget(res, 1)
         split.addWidget(right)
         split.setSizes([220, 660, 300])
@@ -974,6 +983,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "正在精修", "请等待当前精修结束或点「停止」")
             return
         self._step_status.clear()
+        # 新一轮开始，上一次的多型建议已过期（旧结果不再对应当前模型）
+        self._polymorph_suggestion = None
+        self.btn_polymorph.setVisible(False)
         self._start_worker(single_step=None)
 
     def _start_worker(self, single_step: str | None) -> None:
@@ -1029,6 +1041,55 @@ class MainWindow(QMainWindow):
                              res.pattern.intensity, res.ycalc,
                              background=bg_curve)
         self._fill_results(res)
+        self._refresh_polymorph_suggestion(res)
+
+    def _refresh_polymorph_suggestion(self, res) -> None:
+        """ΔB_iso 撞界 + 化学式 + 空间群命中时给出「试用另一多型」按钮。"""
+        from xinrefinement.core.refine.polymorph import suggest
+
+        try:
+            sug = suggest(res, self._phases)
+        except Exception:
+            sug = []
+        self._polymorph_suggestion = sug[0] if sug else None
+        s = self._polymorph_suggestion
+        if s is None:
+            self.btn_polymorph.setVisible(False)
+            return
+        self.btn_polymorph.setText(f"{s.action_text} 并重新精修")
+        self.btn_polymorph.setToolTip(f"{s.reason}\n{s.candidate.gain_note}")
+        self.btn_polymorph.setVisible(True)
+
+    def _on_apply_polymorph(self) -> None:
+        """把命中的相换成内置多型 CIF，然后自动重跑配方。
+
+        **只改当前会话的内存模型与 `_cif_paths`**，不回写用户磁盘上的 CIF
+        文件——结构模型属于实验事实，软件不替用户改原始数据。
+        """
+        s = self._polymorph_suggestion
+        if s is None:
+            return
+        from xinrefinement.core.refine.polymorph import apply_suggestion
+
+        try:
+            new_phases = apply_suggestion(self._phases, s)
+        except Exception as exc:
+            QMessageBox.warning(self, "多型替换失败", str(exc))
+            return
+        names = [st.name for st in self._phases]
+        idx = names.index(s.phase_name)
+        self._phases[:] = new_phases
+        if 0 <= idx < len(self._cif_paths):
+            self._cif_paths[idx] = str(s.candidate.path)
+        # 旧相上的手工编辑（占位/坐标/择优取向轴）对新多型不再成立，必须丢弃
+        self._phase_edits.pop(s.phase_name, None)
+        self._phase_po.pop(s.phase_name, None)
+        self._refresh_sticks()
+        self.btn_polymorph.setVisible(False)
+        self._polymorph_suggestion = None
+        self.statusBar().showMessage(
+            f"已把「{s.phase_name}」换成{s.candidate.label}，重新精修中…")
+        self.run_recipe_all()
 
     def _on_worker_failed(self, msg: str) -> None:
         # 取消是用户主动行为，不弹模态框：离屏/自动化测试里模态框会
