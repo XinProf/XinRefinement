@@ -76,7 +76,11 @@ def _run_lm(residual, x0, lo, hi, max_iter: int, **kw) -> OptimizeResult:
             on_eval(nfev[0])
         return residual(xv)
 
-    lm = lm_minimize(counted, x0, bounds=(lo, hi), max_iter=max_iter)
+    # v1.5 M7：λ 初值与雅可比步长可调（对齐 MAUD Marquardt LS 的
+    # λ=0.01 / 步长 1e-4）；不给时用历史默认，逐位不变。
+    lm = lm_minimize(counted, x0, bounds=(lo, hi), max_iter=max_iter,
+                     lambda0=float(kw.get("lambda0", 1e-3)),
+                     step=float(kw.get("step", 1e-4)))
     return OptimizeResult(x=np.asarray(lm.x, float), cost=float(lm.cost),
                           success=bool(lm.success),
                           nfev=nfev[0] if nfev[0] else getattr(lm, "nfev", 0))

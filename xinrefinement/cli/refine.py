@@ -119,6 +119,13 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--refine-strain", action="store_true")
     r.add_argument("--peak-height", action="store_true",
                    help="峰高口径（默认积分强度口径；合成 bench 数据用此项）")
+    r.add_argument("--lm-lambda", type=float, default=1e-3, metavar="L",
+                   help="v1.5 M7：LM 初始阻尼 λ（默认 1e-3，与 v1.0 逐位一致）。"
+                        "MAUD Marquardt LS 取 0.01——越大单步越保守，"
+                        "只在对照实验时改它")
+    r.add_argument("--lm-step", type=float, default=1e-4, metavar="H",
+                   help="v1.5 M7：数值雅可比相对步长基值（默认 1e-4，与 MAUD 一致；"
+                        "改它属于实验行为）")
     r.add_argument("--recipe", action="store_true",
                    help="按标准导航配方分步精修（P3.3 RecipeRunner），"
                         "输出每步 Rwp；省略则单次整体精修")
@@ -288,6 +295,8 @@ def _build_inputs(args) -> RefineInputs:
         weight_mode=args.weight_mode,
         max_iter=args.max_iter,
         backend=args.backend,
+        lm_lambda0=args.lm_lambda,
+        lm_step=args.lm_step,
         tmin=args.tmin,
         tmax=args.tmax,
     )

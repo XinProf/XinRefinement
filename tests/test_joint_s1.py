@@ -39,8 +39,10 @@ def xm_api():
         from xinmatch.core.model.pattern import Pattern as XmPattern
         from xinmatch.core.model.phase import Phase
         from xinmatch.core.model.project import Project
-    except ImportError:  # pragma: no cover
-        pytest.skip("XinMatch 不在 import 路径上")
+    except ImportError as exc:  # pragma: no cover
+        # 不要把理由写死成「不在 import 路径上」——2026-11-07 实测真因是
+        # 缺 gemmi（XinMatch 的依赖），路径本身是好的，误导了很久
+        pytest.skip(f"XinMatch 不可用：{exc}")
     return {"export_xinm": export_xinm, "CellParams": CellParams,
             "Entry": Entry, "XmPattern": XmPattern, "Phase": Phase,
             "Project": Project}

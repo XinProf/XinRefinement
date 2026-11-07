@@ -28,8 +28,12 @@ class LMResult:
     message: str
 
 
-def _jacobian(residual_fn, x: np.ndarray) -> np.ndarray:
+def _jacobian(residual_fn, x: np.ndarray, step: float = 1e-4) -> np.ndarray:
     """中心差分数值 Jacobian，shape (m, n)。
+
+    ``step`` 为相对步长基值（``h = step·max(1, |x_j|)``）。默认 1e-4 与
+    vendor 原样一致；v1.5 M7 起可由 ``RefineConfig.lm_step`` 覆盖，用于
+    对齐 MAUD ``Marquardt LS`` 的导数步长做对照实验。
 
     注意：中心差分的试探点 `x±h` 在参数位于下界时**会越界**（如 TCH 尺寸项
     Y 的初值 0 恰在下界，试探 -1e-4）。这会让 LM 无法把参数推离下界 ——
@@ -47,7 +51,7 @@ def _jacobian(residual_fn, x: np.ndarray) -> np.ndarray:
     r0 = np.asarray(residual_fn(x), dtype=np.float64)
     J = np.empty((r0.size, x.size), dtype=np.float64)
     for j in range(x.size):
-        h = 1e-4 * max(1.0, abs(x[j]))
+        h = step * max(1.0, abs(x[j]))
         xp = x.copy(); xp[j] += h
         xm = x.copy(); xm[j] -= h
         J[:, j] = (np.asarray(residual_fn(xp), float)
@@ -57,10 +61,12 @@ def _jacobian(residual_fn, x: np.ndarray) -> np.ndarray:
 
 def lm_minimize(residual_fn, x0: np.ndarray, *, bounds=None, max_iter: int = 60,
                 ftol: float = 1e-8, xtol: float = 1e-8,
-                lambda0: float = 1e-3) -> LMResult:
+                lambda0: float = 1e-3, step: float = 1e-4) -> LMResult:
     """最小化 0.5·||residual_fn(x)||²。
 
     residual_fn(x) -> 1D 残差向量；bounds: (lo, hi) 数组对或 None。
+    ``lambda0``（初始 λ）与 ``step``（雅可比相对步长）是 v1.5 M7 暴露的
+    对齐旋钮，默认值与 v1.0 起的历史行为一致（逐位不变）。
     """
     x = np.clip(np.asarray(x0, dtype=np.float64).copy(),
                 *(bounds if bounds is not None else (None, None)))
@@ -73,7 +79,7 @@ def lm_minimize(residual_fn, x0: np.ndarray, *, bounds=None, max_iter: int = 60,
     ever_accepted = False
 
     while n_iter < max_iter:
-        J = _jacobian(residual_fn, x)
+        J = _jacobian(residual_fn, x, step)
         JTJ = J.T @ J
         g = -(J.T @ r)
         diag = np.diag(JTJ).copy()

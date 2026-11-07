@@ -138,6 +138,14 @@ class RefineConfig:
     #: v1.3 #16：优化器插拔——"lm"（自研，默认）| "trf" | "dogbox" |
     #: 历史别名 "scipy"（= trf）。见 core.refine.optimizers.OPTIMIZERS。
     backend: str = "lm"
+    # ---- v1.5 M7：LM 数值参数（对齐 MAUD ``Marquardt LS``） ----
+    #: 初始阻尼 λ。MAUD 取 **0.01**，我们历史默认 1e-3——λ 越大单步越保守、
+    #: 越不容易在角点(U/V→0)附近跳进坏局部极小，但每轮接受的步数变少。
+    #: 默认保持 1e-3（v1.0 起逐位一致）；要对照 MAUD 口径传 0.01。
+    lm_lambda0: float = 1e-3
+    #: 数值雅可比的相对步长基值（``h = step·max(1,|x|)``）。MAUD 取 1e-4，
+    #: 与本实现历史默认一致，故这里只作为可调项暴露，改它属于实验行为。
+    lm_step: float = 1e-4
     progress_cb: object = None       # callable(msg: str, pct: float | None)
     on_iter: object = None           # callable(gen: int, rwp: float)
     # ---- v1.2.0 扩展：定权模式（对照 MAUD DiffrDataFile.getWeight） ----
@@ -844,7 +852,8 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
                 pass
 
         opt = _optimize(residual_fn, x0, (lo, hi), method=cfg.backend,
-                        max_iter=cfg.max_iter, on_eval=_progress)
+                        max_iter=cfg.max_iter, on_eval=_progress,
+                        lambda0=cfg.lm_lambda0, step=cfg.lm_step)
         best_x, best_cost, success = opt.x, opt.cost, opt.success
         # ---- 多起点重启（仅 refine_uvw）: 角点陷阱检测 ----
         restarted = False
@@ -863,7 +872,8 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
                                                history, gen, reg=reg)
                     lm2 = _optimize(r2, reg.pack(cand, po_r=cand.po_r),
                                     (lo, hi), method=cfg.backend,
-                                    max_iter=cfg.max_iter)
+                                    max_iter=cfg.max_iter,
+                                    lambda0=cfg.lm_lambda0, step=cfg.lm_step)
                     if lm2.cost < best_cost:
                         best_x, best_cost = lm2.x, lm2.cost
                         success = lm2.success
