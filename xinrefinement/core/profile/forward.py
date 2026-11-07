@@ -37,6 +37,23 @@ TEXTURE_BOUNDS = (0.1, 10.0)
 #: 默认织构轴（(001) 纤维轴，BB 几何最常见）
 DEFAULT_TEXTURE_AXIS = (0, 0, 1)
 
+# ---- v1.5 M3：球谐（纤维对称 → Legendre）ODF 织构 ----
+#: 球谐展开最高阶。MAUD ``_rita_harmonic_expansion_degree`` 实测用到
+#: **10**（样 3 的萤石、样 1 的白云石），故上限与之对齐。阶 10 = 5 个系数
+#: （l = 2,4,6,8,10）——纤维对称下 (χ, 180°−χ) 等价使奇数阶恒零。
+TEXTURE_MAX_DEGREE = 10
+#: 默认展开阶（2 个系数 c2/c4）。阶 4 已能表达「(00l) 强、高角弱」的典型
+#: 板状/片状织构；强织构（如样 3 萤石那种 ~70:1 的方向选择性）需要阶 8/10。
+TEXTURE_DEFAULT_DEGREE = 4
+#: 球谐系数边界。T(χ) = 1 + Σ c_k·P_k(cosχ)。
+#: **别收太紧**：实测样 3 用 ±0.8 时 c2/c4 双双撞界仍差 6 pt（真值需要
+#: |c| ~ 1.5 量级的强各向异性）。代价是可能出现负 T，由 TEXTURE_FLOOR
+#: 截断兜住（与 MAUD「负 ODF 截断」同策略）。
+TEXTURE_COEFF_BOUNDS = (-1.5, 1.5)
+#: T(χ) 下限（负 ODF 截断）。负值物理上无意义（负衍射强度），但直接删反射
+#: 会让残差面出现断崖，故取一个极小正值地板。
+TEXTURE_FLOOR = 1e-3
+
 # ---- v1.3 任务 #15：Popa LB 各向异性尺寸/应变（2 阶截断，Cholesky 参数化） ----
 #: 尺寸项 L 的对角/非对角边界（Å⁻¹）；非对角可负（任意取向椭球）
 ANISO_SIZE_BOUNDS = (1.0e-4, 1.6)
@@ -116,11 +133,21 @@ class ProfileParams:
     #: 与 ``bfactor`` 同形同单位。COD 导出 CIF 的 B_iso 全是 0，精修一个
     #: 正值可压回系统性偏高的高角强度；缺相视为不校正（保持 golden）。
     b_iso: dict | None = None
-    # ---- v1.3 任务 #14：EWIMV 离散 ODF 织构（每相，None = 关闭） ----
-    #: ``{phase_name: {"axis": (h0, k0, l0), "grid": [T(χ_0) … T(χ_90)]}}``
+    # ---- v1.3 任务 #14：织构（每相，None = 关闭）；v1.5 M3 增加球谐模型 ----
+    #: ``{phase_name: {"axis": (h0, k0, l0), "model": ..., ...}}``
     #: v1 仅 Bragg–Brentano 平板对称反射几何：散射矢量恒沿样品法向，织构
     #: 因子退化为每反射常数 ``T(χ_hkl)``（χ 为该反射法向与织构轴夹角）。
     #: **开织构的相自动忽略 po_r**（同一自由度不给两套模型抢，结果里告警）。
+    #:
+    #: 两种 ``model``（见 :func:`texture_model`）：
+    #:
+    #: * ``"ewimv"``（v1.3，默认）：19 点离散网格 ``"grid"``，χ∈[0°,90°]
+    #:   线性插值。自由度高但基不正交、相邻 bin 常不可辨识（实测精修后
+    #:   T(χ) 在 0.1 与 6.9 之间乱跳），需二阶差分光滑罚兜住。
+    #: * ``"harmonic"``（v1.5 M3）：球谐展开在纤维对称下的精确子空间，
+    #:   ``T(χ) = 1 + Σ_k c_k·P_k(cos χ)``，``"degree"``（偶数，≤ 8）与
+    #:   ``"coeffs"``（c2, c4, …）。与 MAUD ``Harmonic`` 模型同类，
+    #:   基正交、球面平均恒为 1，无需光滑罚。
     texture: dict | None = None
     # ---- v1.3 任务 #15：Popa LB 各向异性尺寸/应变（每相，None = 关闭） ----
     #: ``{phase_name: {"size": [c11,c22,c33,c12,c13,c23],
@@ -194,10 +221,136 @@ def texture_factor(chi_deg: np.ndarray, grid) -> np.ndarray:
     return np.interp(np.asarray(chi_deg, dtype=np.float64), chi_grid, g)
 
 
+def texture_degrees(degree: int = TEXTURE_DEFAULT_DEGREE) -> tuple[int, ...]:
+    """球谐展开的**偶数**阶序列 ``(2, 4, …, degree)``（纤维对称只留偶数阶）。
+
+    χ 与 180°−χ 在纤维织构里等价（我们取 ``|cos α|``），奇阶 Legendre 在
+    该折叠下恒为 0 或在 χ=90° 处反号，物理上不允许出现，故直接排除。
+    """
+    d = int(degree)
+    if d < 2:
+        raise ValueError(f"球谐展开阶数必须 ≥ 2（收到 {d}）")
+    if d > TEXTURE_MAX_DEGREE:
+        raise ValueError(
+            f"球谐展开阶数上限 {TEXTURE_MAX_DEGREE}（收到 {d}）；"
+            "更高阶在单谱上不可辨识")
+    if d % 2:
+        raise ValueError(
+            f"纤维织构只允许偶数阶（收到 {d}）；(χ, 180°−χ) 等价使奇阶恒零")
+    return tuple(range(2, d + 1, 2))
+
+
+def texture_model(entry) -> str:
+    """该相的织构模型名：``"harmonic"``（球谐）| ``"ewimv"``（离散网格）。
+
+    判定顺序：显式 ``model`` 字段优先；否则「带 ``coeffs`` 或 ``degree``」
+    视为球谐、「只带 ``grid``」视为 EWIMV。两条都没有时按 EWIMV 处理
+    （向后兼容：v1.3/v1.4 的配置里只有 ``axis`` + ``grid``）。
+    """
+    if isinstance(entry, dict):
+        m = entry.get("model")
+        if m:
+            return str(m).strip().lower()
+        if entry.get("coeffs") is not None or entry.get("degree") is not None:
+            return "harmonic"
+    return "ewimv"
+
+
+def texture_coeffs(entry) -> list[float]:
+    """球谐系数（按 ``degree`` 补齐/截断，缺省全 0 = 无织构）。"""
+    e = entry if isinstance(entry, dict) else {}
+    degs = texture_degrees(int(e.get("degree") or TEXTURE_DEFAULT_DEGREE))
+    c = [float(v) for v in (e.get("coeffs") or [])]
+    return (c + [0.0] * len(degs))[:len(degs)]
+
+
+def texture_n_params(entry) -> int:
+    """该相织构在 LM 向量里占几维（球谐 = 阶数/2，EWIMV = 19）。"""
+    if texture_model(entry) == "harmonic":
+        return len(texture_coeffs(entry))
+    return TEXTURE_N_GRID
+
+
+def default_texture_coeffs(degree: int = TEXTURE_DEFAULT_DEGREE) -> list[float]:
+    """无织构的球谐初值（系数全 0，即 T(χ)≡1）。"""
+    return [0.0] * len(texture_degrees(degree))
+
+
+#: 偶数阶 Legendre 多项式的**闭式**系数（x = cos χ，按 x 的偶次幂升序）。
+#: 用它替代 ``np.polynomial.legendre.legval`` 的 Clenshaw 循环：残差评估里
+#: 每相每次都要算一遍，闭式只需几次乘加，实测快 3–5 倍且数值等价
+#: （P_l 由三项递推生成，闭式系数是同一递推的解析解，差值在 1e-16 量级）。
+_LEGENDRE_EVEN_POLY: dict[int, tuple[float, ...]] = {
+    # P2 = (3x² − 1)/2
+    2: (-0.5, 1.5),
+    # P4 = (35x⁴ − 30x² + 3)/8
+    4: (0.375, -3.75, 4.375),
+    # P6 = (231x⁶ − 315x⁴ + 105x² − 5)/16
+    6: (-0.3125, 6.5625, -19.6875, 14.4375),
+    # P8 = (6435x⁸ − 12012x⁶ + 6930x⁴ − 1260x² + 35)/128
+    8: (0.2734375, -9.84375, 54.140625, -93.84375, 50.2734375),
+    # P10 = (46189x¹⁰ − 109395x⁸ + 90090x⁶ − 30030x⁴ + 3465x² − 63)/256
+    10: (-0.24609375, 13.53515625, -117.3046875, 351.9140625,
+         -427.32421875, 180.42578125),
+}
+
+
+def legendre_even(chi_deg, degree: int = TEXTURE_DEFAULT_DEGREE) -> np.ndarray:
+    """偶数阶 Legendre 多项式矩阵 ``P[k-2 // 2, i] = P_k(cos χ_i)``。"""
+    degs = texture_degrees(degree)
+    x = np.cos(np.radians(np.asarray(chi_deg, dtype=np.float64)))
+    x = np.clip(x, -1.0, 1.0)
+    x2 = x * x
+    out = np.empty((len(degs), x.size), dtype=np.float64)
+    for i, k in enumerate(degs):
+        c = _LEGENDRE_EVEN_POLY[k]
+        acc = np.full_like(x, c[-1])
+        for coef in reversed(c[:-1]):
+            acc = acc * x2 + coef
+        out[i] = acc
+    return out
+
+
+def texture_factor_harmonic(chi_deg, coeffs) -> np.ndarray:
+    """球谐（Legendre）织构因子 ``T(χ) = 1 + Σ_k c_k·P_k(cos χ)``。
+
+    为什么这等价「球谐 ODF」：纤维织构（Bragg–Brentano 平板 + 样品自转）
+    下 ODF 只依赖极角 χ，把球谐展开 ``f = Σ_{l,m} C_lm Y_lm`` 对 m 求和后，
+    m≠0 项因轴对称全部消失、奇数 l 项因 χ↔180°−χ 等价而消失，只剩
+    :math:`\\sum_{l \\text{ even}} c_l P_l(\\cos\\chi)`——即 MAUD 的
+    ``Harmonic`` 模型在本仪器几何下的**精确子空间**（MAUD 阶 6/8）。
+
+    与 EWIMV 19 点离散网格相比：基函数正交、条件数好、天然光滑，
+    不需要二阶差分光滑罚，且球面平均恒为 1（``∫P_k dΩ/4π = 0, k ≥ 2``），
+    连「T 整体乘常数 ↔ 该相 scale 除常数」这条零空间都自动消除。
+
+    返回值下限截断到 :data:`TEXTURE_FLOOR`（负 ODF 截断，见该常量说明）。
+    """
+    chi = np.asarray(chi_deg, dtype=np.float64)
+    c = [float(v) for v in (coeffs or [])]
+    if not c or all(v == 0.0 for v in c):
+        return np.ones_like(chi)
+    degs = tuple(range(2, 2 * len(c) + 1, 2))
+    p = legendre_even(chi, degs[-1])
+    t = 1.0 + np.tensordot(np.asarray(c, dtype=np.float64), p,
+                           axes=(0, 0))
+    return np.maximum(t, TEXTURE_FLOOR)
+
+
+def texture_factor_entry(chi_deg, entry) -> np.ndarray:
+    """按该相 ``entry`` 的模型（球谐 / EWIMV）取 T(χ)。"""
+    if texture_model(entry) == "harmonic":
+        return texture_factor_harmonic(chi_deg, texture_coeffs(entry))
+    e = entry if isinstance(entry, dict) else None
+    grid = normalize_texture_grid(e.get("grid")) if e else None
+    return texture_factor(chi_deg, grid)
+
+
 def texture_chi_buckets(struct: CifStructure, prm: "ProfileParams", axis,
                         tmin: float = 5.0,
                         tmax: float = 90.0) -> tuple[int, np.ndarray]:
     """相内独立 χ 桶数（5° 分桶去重）与全部 χ 值——织构可辨识性护栏。
+
 
     返回 ``(n_buckets, chis)``。``n_buckets < 3`` 时该相开织构属于欠定
     （不能分辨多于两个自由度的形状），调用方应显式报错而非静默给出结果。
@@ -218,25 +371,28 @@ def texture_chi_buckets(struct: CifStructure, prm: "ProfileParams", axis,
     return int(np.unique(np.floor(arr / 5.0)).size), arr
 
 
-def _apply_texture(peaks, detail, grid):
+def _apply_texture(peaks, detail, entry):
     """按 T(χ) 重算各峰积分强度（O(峰数)，精修每次评估可承受）。
 
     ``detail`` 来自 ``compute_peaks(po_detail=True)``（po 取织构轴、r=1），
     每项 ``(val_pre, cos_alpha)``。数值与「在 compute_peaks 内逐 hkl 乘
     T(χ)」等价；T 变化只重算乘法，峰列表缓存不失效。
+
+    ``entry`` 为该相的织构配置字典（含 ``axis`` 与 ``model``）：v1.3 的
+    EWIMV 走 ``grid`` 插值，v1.5 M3 的球谐走 Legendre 展开，由
+    :func:`texture_factor_entry` 统一分派。
     """
-    g = np.asarray(grid, dtype=np.float64)
-    if g.size < 2 or not detail:
+    if not detail:
         return peaks
     out = []
-    for entry, contribs in zip(peaks, detail):
+    for pk, contribs in zip(peaks, detail):
         if not contribs:
             continue
         arr = np.asarray(contribs, dtype=np.float64)
         chi = np.degrees(np.arccos(np.clip(np.abs(arr[:, 1]), 0.0, 1.0)))
-        i = float(np.sum(arr[:, 0] * texture_factor(chi, g)))
+        i = float(np.sum(arr[:, 0] * texture_factor_entry(chi, entry)))
         if i > 0:
-            out.append((entry[0], i, entry[2]) + tuple(entry[3:]))
+            out.append((pk[0], i, pk[2]) + tuple(pk[3:]))
     return out
 
 
@@ -324,6 +480,15 @@ def _window_slice(grid: np.ndarray, pos: float, half: float) -> tuple[int, int]:
     return max(i0, 0), min(i1, grid.size)
 
 
+#: 峰枚举的窗口外扩余量（度）。**必须 > 8×FWHM**（``_add_peak_windowed``
+#: 的累加半宽），否则窗口边界外一点点位置的强峰会被整体丢掉，而它在窗口
+#: **内**的尾巴本该贡献强度。IUCr 纯刚玉实测：149–150° 区间 tmax=150 时
+#: 单相计算谱最大值 142370，tmax=152 时 300805——**差 2.1 倍**，那半度
+#: 因此贡献了整个谱 18.8% 的加权残差（窗口边界上还有刚玉 (1 4 6) 的
+#: Kα2 支）。取 3.0° 覆盖 FWHM ≤ 0.37° 的场景；更宽的峰由 8×FWHM 的
+#: 尾截断本身兜住，边界泄漏可忽略。
+_EDGE_MARGIN = 3.0
+
 # 衍射峰枚举缓存：peaks 只依赖 (结构, 波长, 窗口, po 的 hkl 部分)，与
 # zero/U/V/W/eta 及 March–Dollase r 无关。v1.4.0 起缓存键只含 po 的
 # (h,k,l) 部分——r 变化不再击穿缓存（PO 精修每次残差评估只廉价重加权）。
@@ -363,15 +528,19 @@ def _phase_peaks(struct: CifStructure, prm: ProfileParams,
     hit = _PEAKS_CACHE.get(key)
     if hit is None:
         comps = resolve_wavelengths(prm.wavelength, prm.anode, prm.ka_ratio)
+        # 枚举窗口外扩 _EDGE_MARGIN：窗口外一点点位置的峰在窗口内仍有可测
+        # 尾巴，丢掉它们会让边界半度系统性计算偏低（见 _EDGE_MARGIN 注释）。
+        # 累加侧 _window_slice 会把峰裁到网格内，不会引入窗口外强度。
+        e_min, e_max = float(tmin) - _EDGE_MARGIN, float(tmax) + _EDGE_MARGIN
         if po is None:
-            peaks, skipped = compute_peaks(struct, prm.wavelength, tmin, tmax,
+            peaks, skipped = compute_peaks(struct, prm.wavelength, e_min, e_max,
                                            po=None, wavelengths=comps,
                                            with_dirs=aniso is not None)
             hit = (peaks, None, skipped)
         else:
             # r 固定取 1.0：峰位/权重在明细路径外与实际 r 解耦
             peaks, skipped, detail = compute_peaks(
-                struct, prm.wavelength, tmin, tmax,
+                struct, prm.wavelength, e_min, e_max,
                 po=(po[0], po[1], po[2], 1.0), wavelengths=comps,
                 po_detail=True, with_dirs=aniso is not None)
             hit = (peaks, detail, skipped)
@@ -423,7 +592,7 @@ def _peaks_with_po(prm: ProfileParams, struct: CifStructure,
         return peaks
     tex = prm.texture.get(struct.name) if prm.texture else None
     if tex is not None:
-        return _apply_texture(peaks, detail, tex.get("grid"))
+        return _apply_texture(peaks, detail, tex)
     r = _po_r_of(prm, struct)
     if r is not None and r != 1.0:
         peaks = _apply_po_r(peaks, detail, r)

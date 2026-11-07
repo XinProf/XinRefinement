@@ -25,6 +25,8 @@ from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
 from xinrefinement.core.profile.forward import ProfileParams
 from xinrefinement.core.refine.nonlinear import (
+    ANISO_MIN_DIRS,
+    ANISO_SEED_Y,
     RefineConfig,
     RefineResult as EngineResult,
     refine,
@@ -212,6 +214,10 @@ def _resolve_texture(cfg: RefineConfig, phases: list[CifStructure],
     - 相内独立 χ 桶数 < 3 → **显式报错**（欠定，不能静默给结果）；
     - 开织构的相与 March–Dollase 互斥，给出 warning（该相 r 被忽略）；
     - 未配置织构却开了开关 → 忽略并提示（不静默改变模型）。
+
+    v1.5 M3：按 ``entry["model"]`` 分派——``"harmonic"``（球谐）只规范
+    ``degree``/``coeffs``，不写 19 点 ``grid``；其可辨识性判据为
+    「χ 桶数 ≥ 系数个数 + 1」。
     """
     from dataclasses import replace as _replace
 
@@ -219,6 +225,9 @@ def _resolve_texture(cfg: RefineConfig, phases: list[CifStructure],
         DEFAULT_TEXTURE_AXIS,
         normalize_texture_grid,
         texture_chi_buckets,
+        texture_coeffs,
+        texture_model,
+        texture_n_params,
     )
 
     if not prm.texture:
@@ -237,7 +246,14 @@ def _resolve_texture(cfg: RefineConfig, phases: list[CifStructure],
         entry = dict(prm.texture[name])
         axis = entry.get("axis") or DEFAULT_TEXTURE_AXIS
         entry["axis"] = (int(axis[0]), int(axis[1]), int(axis[2]))
-        entry["grid"] = normalize_texture_grid(entry.get("grid"))
+        # v1.5 M3：按模型分派规范化。球谐只规范 degree/coeffs（**不能**顺手
+        # 写 19 点 grid，否则 texture_n_params 与实际自由度脱节、pack/bounds 错位）
+        if texture_model(entry) == "harmonic":
+            entry["model"] = "harmonic"
+            entry["coeffs"] = texture_coeffs(entry)
+        else:
+            entry["model"] = "ewimv"
+            entry["grid"] = normalize_texture_grid(entry.get("grid"))
         tex[name] = entry
     if not tex:
         return _replace(prm, texture=None)
@@ -249,40 +265,86 @@ def _resolve_texture(cfg: RefineConfig, phases: list[CifStructure],
             continue
         n_buckets, _chis = texture_chi_buckets(
             st, prm, entry["axis"], cfg.tmin, cfg.tmax)
-        if n_buckets < 3:
+        if texture_model(entry) == "harmonic":
+            n_coef = texture_n_params(entry)
+            need = n_coef + 1
+            if n_buckets < need:
+                raise ValueError(
+                    f"相「{st.name}」球谐织构欠定：窗口内独立 χ 桶数 "
+                    f"{n_buckets} < {need}（{n_coef} 个系数至少需要 {need} 个"
+                    "不同 χ 才可辨识，请降低展开阶数或改织构轴/窗口）")
+        elif n_buckets < 3:
             raise ValueError(
                 f"相「{st.name}」开织构欠定：窗口内独立 χ 桶数 {n_buckets} < 3，"
                 "T(χ) 形状不可分辨（请改织构轴或调整精修窗口）")
         if prm.po_r and st.name in prm.po_r:
+            _mdl = ("球谐 ODF（M3）" if texture_model(entry) == "harmonic"
+                    else "EWIMV 离散 ODF")
             warnings.append(
-                f"织构：相「{st.name}」已开 EWIMV 离散 ODF，"
+                f"织构：相「{st.name}」已开{_mdl}，"
                 "March–Dollase r 被忽略（两模型互斥）")
     if cfg.refine_texture:
-        warnings.append(
-            f"EWIMV 织构：{len(tex)} 相 × {cfg.texture_lambda:g} 光滑罚权重"
-            "（MAUD 离散 ODF 语义，BB 几何退化为每反射 T(χ)）")
+        n_h = sum(1 for e in tex.values() if texture_model(e) == "harmonic")
+        if n_h:
+            orders = sorted({len(texture_coeffs(e)) * 2 for e in tex.values()
+                             if texture_model(e) == "harmonic"})
+            warnings.append(
+                f"球谐织构（M3）：{n_h} 相 × 阶 "
+                f"{'/'.join(str(d) for d in orders)}"
+                "（Legendre 展开＝MAUD Harmonic 模型在纤维对称下的精确子空间）")
+        if len(tex) - n_h:
+            warnings.append(
+                f"EWIMV 织构：{len(tex) - n_h} 相 × "
+                f"{cfg.texture_lambda:g} 光滑罚权重"
+                "（MAUD 离散 ODF 语义，BB 几何退化为每反射 T(χ)）")
     return _replace(prm, texture=tex)
 
 
 def _resolve_aniso(cfg: RefineConfig, phases: list[CifStructure],
                    prm: ProfileParams,
-                   warnings: list[str]) -> ProfileParams:
+                   warnings: list[str]) -> tuple[RefineConfig, ProfileParams]:
     """v1.3 任务 #15：Popa LB 各向异性配置的入口校验（一次性）。
 
     - 系数统一补齐/截断为 6 个（``size`` 与 ``strain`` 各 6）；
     - 开精修时要求窗口内独立晶向数 ≥ :data:`nl.ANISO_MIN_DIRS`，否则**报错**
       （12 个系数在方向不足时不可辨识，静默给结果等于给噪声）；
     - 给出各向异性比作为诊断（Dmax/Dmin、εmax/εmin）。
+
+    v1.5 M4：``cfg.aniso_auto`` 为真时**自动为缺系数的相补各向同性起点**
+    （:func:`aniso_default`，以当前标量 X/Y 为种），并把 ``refine_aniso``
+    置为生效；自动补的相若方向数不足则**跳过该相**（不整体报错——自动模式
+    不该让一次精修失败），显式配置的相仍按硬护栏报错。
     """
     from dataclasses import replace as _replace
 
-    from xinrefinement.core.profile.forward import aniso_dirs, aniso_ratios
+    from xinrefinement.core.profile.forward import (
+        aniso_default, aniso_dirs, aniso_ratios)
+
+    auto = bool(getattr(cfg, "aniso_auto", False))
+    auto_names: set[str] = set()
+    if auto:
+        cfg = _replace(cfg, refine_aniso=True)
+        have = dict(prm.aniso or {})
+        seed_y = float(prm.Y) if float(prm.Y) > 0 else ANISO_SEED_Y
+        for st in phases:
+            if st.name in have:
+                continue
+            have[st.name] = aniso_default(prm.wavelength, float(prm.X),
+                                          seed_y)
+            auto_names.add(st.name)
+        if auto_names:
+            prm = _replace(prm, aniso=have)
+            shown = "、".join(sorted(auto_names)[:3])
+            warnings.append(
+                f"Popa LB 自动启用（M4）：{len(auto_names)} 相补各向同性起点"
+                f"（{shown}{'…' if len(auto_names) > 3 else ''}），"
+                f"size 6 参/相，起点取标量 X={prm.X:g}°、Y={seed_y:g}°")
 
     if not prm.aniso:
         if cfg.refine_aniso:
             warnings.append(
                 "各向异性精修已开启，但没有相配置系数 —— 该参数组不参与")
-        return prm
+        return cfg, prm
     names = {st.name for st in phases}
     out: dict[str, dict] = {}
     for name in sorted(prm.aniso):
@@ -295,15 +357,21 @@ def _resolve_aniso(cfg: RefineConfig, phases: list[CifStructure],
             "strain": (list(entry.get("strain") or []) + [0.0] * 6)[:6],
         }
     if not out:
-        return _replace(prm, aniso=None)
+        return cfg, _replace(prm, aniso=None)
     if cfg.refine_aniso:
-        from xinrefinement.core.refine.nonlinear import ANISO_MIN_DIRS
         for st in phases:
             if st.name not in out:
                 continue
             dirs = aniso_dirs(st, prm, cfg.tmin, cfg.tmax)
             n_dirs = int(dirs.shape[0])
             if n_dirs < ANISO_MIN_DIRS:
+                if st.name in auto_names:
+                    warnings.append(
+                        f"Popa LB 自动启用：相「{st.name}」窗口内独立晶向 "
+                        f"{n_dirs} 个 < {ANISO_MIN_DIRS}，跳过该相"
+                        "（无法辨识，请扩大窗口或改用显式配置）")
+                    out.pop(st.name, None)
+                    continue
                 raise ValueError(
                     f"相「{st.name}」各向异性欠定：窗口内独立晶向 {n_dirs} 个 "
                     f"< {ANISO_MIN_DIRS}（12 个二次型系数不可辨识，请扩大窗口）")
@@ -316,7 +384,10 @@ def _resolve_aniso(cfg: RefineConfig, phases: list[CifStructure],
                 warnings.append(
                     "Popa LB：size 与 strain 同时精修存在互相吸收风险，"
                     "建议先只放 size（aniso_mode=\"size\"）再视残差决定")
-    return _replace(prm, aniso=out)
+    if not out:
+        warnings.append("Popa LB：没有可辨识的相，该参数组不参与")
+        return cfg, _replace(prm, aniso=None)
+    return cfg, _replace(prm, aniso=out)
 
 
 def _resolve_biso(cfg: RefineConfig, phases: list[CifStructure],
@@ -363,7 +434,7 @@ def solve(inputs: RefineInputs) -> SolveResult:
     cfg = _resolve_theoretical_sigma(cfg, inputs.phases, inputs.profile, pat,
                                      warnings)
     prm = _resolve_texture(cfg, inputs.phases, inputs.profile, warnings)
-    prm = _resolve_aniso(cfg, inputs.phases, prm, warnings)
+    cfg, prm = _resolve_aniso(cfg, inputs.phases, prm, warnings)
     prm = _resolve_biso(cfg, inputs.phases, prm, warnings)
     engine = refine(inputs.phases, pat, prm, cfg)
     # v1.4 #18 实样基准护栏：ΔB_iso 顶到上界时，该相的高角失配多半不是
@@ -380,7 +451,9 @@ def solve(inputs: RefineInputs) -> SolveResult:
                 f"ΔB_iso：{len(hit)} 相顶到上界 {_BB[1]:g} Å²（"
                 + "、".join(hit[:3]) + ("…" if len(hit) > 3 else "")
                 + "）；高角失配可能来自择优取向/织构/标度误差被 B 吸收，"
-                  "建议先确认 PO 与织构再启用 B 步")
+                  "建议先确认 PO 与织构再启用 B 步；也可能是该相**结构模型**"
+                  "与样品不符（多型/占位/无序）——实测样品 7 换成低对称"
+                  "方石英多型后 Rwp −1.84 pt 且撞界同时消失")
     weights = _phase_weights(inputs.phases, engine.scales, inputs.formulas,
                              warnings)
     return SolveResult(

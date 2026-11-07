@@ -76,22 +76,33 @@ def _aniso_from_edits(edits: dict, wavelength: float = 1.5406) -> dict:
     return out
 
 
-def _texture_from_edits(edits: dict) -> dict:
-    """``phase_edits`` -> ``ProfileParams.texture``（v1.3 #14）。
+def _texture_from_edits(edits: dict, model: str = "harmonic:10") -> dict:
+    """``phase_edits`` -> ``ProfileParams.texture``（v1.3 #14 / v1.5 M3）。
 
-    只保留显式勾选织构轴的相；grid 缺省全 1（精修起点即「无织构」）。
+    只保留显式勾选织构轴的相；``model`` 形如 ``"ewimv"`` 或
+    ``"harmonic:阶数"``（来自 micro 齿轮的「织构模型」下拉）。缺省初值即
+    「无织构」（EWIMV 全 1 网格 / 球谐系数全 0），两者 T(χ)≡1。
     """
-    from xinrefinement.core.profile.forward import default_texture_grid
+    from xinrefinement.core.profile.forward import (
+        default_texture_coeffs, default_texture_grid, texture_degrees)
 
+    mdl, _, deg = str(model or "harmonic:4").partition(":")
     out: dict[str, dict] = {}
     for name, s in (edits or {}).items():
         tx = s.get("texture")
         if not tx:
             continue
-        out[name] = {
-            "axis": tuple(int(v) for v in tx["axis"]),
-            "grid": list(tx.get("grid") or default_texture_grid()),
-        }
+        entry = {"axis": tuple(int(v) for v in tx["axis"])}
+        if mdl == "harmonic":
+            d = int(deg or 4)
+            texture_degrees(d)          # 阶数非法时早报错（偶数、≤ 8）
+            entry.update({"model": "harmonic", "degree": d,
+                          "coeffs": list(tx.get("coeffs")
+                                         or default_texture_coeffs(d))})
+        else:
+            entry.update({"model": "ewimv",
+                          "grid": list(tx.get("grid") or default_texture_grid())})
+        out[name] = entry
     return out
 from xinrefinement.gui.dialogs import STEPS, PhaseEditDialog, open_settings
 from xinrefinement.gui.project import load_project, save_project
@@ -640,7 +651,10 @@ class MainWindow(QMainWindow):
         self._phase_microabs = {n: s["microabs"]
                                 for n, s in self._phase_edits.items()
                                 if s.get("microabs")}
-        self._phase_texture = _texture_from_edits(self._phase_edits)
+        self._phase_texture = _texture_from_edits(
+            self._phase_edits,
+            str((self._settings.get("micro") or {}).get(
+                "texture_model", "harmonic:10")))
         self._phase_aniso = _aniso_from_edits(self._phase_edits)
         self._aniso_mode = next(
             (s["aniso"]["mode"] for s in self._phase_edits.values()
@@ -867,7 +881,10 @@ class MainWindow(QMainWindow):
         self._phase_microabs = {n: s["microabs"]
                                 for n, s in self._phase_edits.items()
                                 if s.get("microabs")}
-        self._phase_texture = _texture_from_edits(self._phase_edits)
+        self._phase_texture = _texture_from_edits(
+            self._phase_edits,
+            str((self._settings.get("micro") or {}).get(
+                "texture_model", "harmonic:10")))
         self._phase_aniso = _aniso_from_edits(self._phase_edits)
         self._aniso_mode = next(
             (s["aniso"]["mode"] for s in self._phase_edits.values()
@@ -909,12 +926,17 @@ class MainWindow(QMainWindow):
             texture_lambda=float(bg.get("texture_lambda", 1.0)),
             # v1.3 #15：各向异性（物相编辑里显式勾选才精修；默认只放 size）
             refine_aniso=bool(self._phase_aniso),
+            # v1.5 M4：GUI 出厂默认自动启用 Popa LB（物相编辑里逐相
+            # 显式配置 aniso 时以用户配置为准，不再自动铺开）
+            aniso_auto=(bool(micro.get("aniso_auto", True))
+                        and not self._phase_aniso),
             aniso_mode=self._aniso_mode,
             # v1.4 #18/#19：B_iso 默认关；PO 自动试探 GUI 出厂默认开
             # （实样对拍 3 个差距样 −4.82 / −12.60 / −4.45 pt），
             # 可在 micro 齿轮关闭；CLI/API 默认关以保持 golden。
             refine_biso=bool(micro.get("refine_biso", False)),
             refine_xyz=bool(micro.get("refine_xyz", False)),
+            xyz_phase_select=str(micro.get("xyz_phase_select", "largest")),
             po_probe=bool(micro.get("po_probe", True)),
             po_probe_min_gain=float(micro.get("po_probe_min_gain", 0.3)),
             po_probe_max_phases=int(micro.get("po_probe_max_phases", 2)),

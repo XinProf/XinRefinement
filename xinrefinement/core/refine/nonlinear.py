@@ -32,6 +32,8 @@ NCA 修改（T6.3a）：可取消的精修。
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from dataclasses import dataclass, field, replace
 
@@ -45,10 +47,14 @@ from xinrefinement.core.profile.forward import (
     ANISO_STRAIN_CROSS,
     MIN_W,
     TEXTURE_BOUNDS,
+    TEXTURE_COEFF_BOUNDS,
     TEXTURE_N_GRID,
     ProfileParams,
     compute_phase_profile,
     normalize_texture_grid,
+    texture_coeffs,
+    texture_model,
+    texture_n_params,
 )
 from xinrefinement.core.refine.optimizers import minimize as _optimize
 from xinrefinement.core.refine.linear import solve_linear_detail
@@ -79,6 +85,11 @@ TEXTURE_LAMBDA = 1.0
 ANISO_BOUNDS = (ANISO_SIZE_BOUNDS, ANISO_STRAIN_BOUNDS)
 #: 开各向异性所需的最少独立晶向数（12 参数的可辨识性护栏）
 ANISO_MIN_DIRS = 8
+#: v1.5 M4：自动各向异性起点的标量 Y 种子（度）。
+#: 标量 Y 为 0 时不能从边界 1e-4 附近起跑（LM 在二次型对角项上收敛慢），
+#: 给一个「纳米晶量级」的小展宽作为起点；与实样对拍 combo_tex_aniso
+#: （aniso_default(λ, 0.0, 0.05)）口径一致，保证复测可复现。
+ANISO_SEED_Y = 0.05
 #: 织构网格末端节点（χ=90°，远离织构轴）锚定到 1.0 的权重。
 #: 物理依据：纤维织构的「远场」回归无织构；数学上它同时消除
 #: 「T 整体乘常数 ↔ 该相 scale 除常数」这条零空间（否则 T 水平不可辨识）。
@@ -161,6 +172,16 @@ class RefineConfig:
     refine_xyz: bool = False
     #: 单次最多放开的自由坐标系数（超过即报错，避免欠定/耗时失控）
     xyz_max_params: int = 40
+    # ---- v1.5 M9：xyz 步欠定时的「按相降级」 ----
+    #: v1.4 的护栏是对**所有相**的自由坐标求和，超限就整步判 failed。
+    #: 实测样 7：48 = 高岭石 39 + 萤石 4 + 白云石 4 + 方石英 1 > 40，
+    #: 于是 5 相一个都没精修；而单独精修高岭石（39 ≤ 40）在增量口径下
+    #: 有 −1.87 pt，排除它反而只有 −0.27 pt。故超限时改为按相选择：
+    #:   "largest"（默认）：每相自由坐标数**降序**贪心保留，其余转 fixed；
+    #:   "small"：升序（诊断对照用）；
+    #:   "off"：保持 v1.4 行为（整步判 failed）。
+    #: **只在 n_free > xyz_max_params 时生效**，不超限的路径逐位不变。
+    xyz_phase_select: str = "largest"
     # ---- v1.3 评审降级（实验用，勿在生产路径开启）：每相 Brindley mu*r
     # 精修。已证伪：Brindley 因子是每相常数标量，与线性层每相自由 scale
     # **完全简并**（乘积 S_p·f(μr_p) 才可辨识），单谱精修数学上不可辨识，
@@ -176,6 +197,11 @@ class RefineConfig:
     # ---- v1.3 任务 #15: Popa LB 各向异性尺寸/应变（默认关） ----
     # 仅精修 prm.aniso 中已给出的相；开该相的标量 X/Y 被每峰方向值取代。
     refine_aniso: bool = False
+    #: v1.5 M4：各向异性**自动启用**（默认关，零回归）。为真时 solve()
+    #: 为每个未配置 aniso 的相补一个各向同性起点（6 维 size 二次型），
+    #: 并把 refine_aniso 置为生效——用户不必再手写每相系数（K17 同族：
+    #: 只开开关不初始化 prm.aniso 等于没开）。方向数不足的相自动跳过并告警。
+    aniso_auto: bool = False
     #: "size"（默认，6 维）| "strain"（6 维）| "both"（12 维，可能不可辨识）。
     #: size 与 strain 都能改变峰宽的方向依赖，同时自由会被此消彼长地吸收。
     aniso_mode: str = "size"
@@ -184,6 +210,24 @@ class RefineConfig:
     refine_strain: bool = False      # 精修 X（4ε，应变项）
     # ---- NCA 修改（T3.2）: 收敛点相关性矩阵（默认关，约 +2n 次残差评估） ----
     refine_corr: bool = False
+    # ---- v1.5 M10（2026-11-07）: 峰宽一维探针，改善 LM 起点 ----
+    #: Caglioti 的 U 与 W 强相关，且 Rwp(FWHM) 在「过宽盆地」里只是浅谷：
+    #: LM 从平坦起点（U=V=0, W=0.02）出发会滑进去。IUCr 纯刚玉标样实测
+    #: LM 收敛到 U=0.188（FWHM(136°)=1.07°，而实测 Kα 双线单支仅 0.26°），
+    #: Rwp 31.5%；同一模型在 U=0.025/eta=0.6 邻域是 19.9%——**11 个点纯属
+    #: 起点选错**。开启后先用线性层（scale+背景）代价在 FWHM 网格上挑起点，
+    #: 只在明显更优（<95%）时切换，故虚拟样这类起点本就正确的场景逐位不变。
+    width_probe: bool = False
+    #: 探针网格：低角（2θ≈25°）的 FWHM（度）。覆盖 0.05°（高分辨同步辐射）
+    #: 到 0.45°。与 ``width_probe_u`` 组成二维网格：
+    #: ``W = fwhm_low² − U·tan²θ_low``，即宽度按 Caglioti 随角度增长。
+    width_probe_grid: tuple = (0.05, 0.07, 0.09, 0.11, 0.14, 0.18, 0.24, 0.32, 0.45)
+    #: 探针的 U 网格（宽度随角度增长的速率）。只用平坦宽度不够：IUCr 纯刚玉
+    #: 实测真实宽度 0.11°(35°)→0.30°(150°)，平坦近似会挑到 0.24° 折中值，
+    #: 低角过宽 → cell 与 zero 在低角退化，晶胞被修偏 0.09%。
+    width_probe_u: tuple = (0.0, 0.005, 0.010, 0.020, 0.040, 0.080)
+    #: 探针同时试的 eta（仅 cfg.refine_eta 时生效）
+    width_probe_eta: tuple = (0.5, 0.7, 0.9)
     # ---- NCA 修改（T6.3a）: 取消钩子（callable() -> bool，True 表示请求取消） ----
     cancel_cb: object = None
 
@@ -241,11 +285,16 @@ def _pack(prm: ProfileParams, cfg: RefineConfig, n_phase: int) -> np.ndarray:
     if cfg.refine_microabs and prm.microabs:
         for name in sorted(prm.microabs):
             x.append(float(prm.microabs[name]))
-    # v1.3 #14: 每相织构网格（sorted(texture)，每相 TEXTURE_N_GRID 维）
+    # v1.3 #14 / v1.5 M3: 每相织构参数（sorted(texture)；EWIMV 19 维，
+    # 球谐按展开阶数 2–4 维，见 forward.texture_n_params）
     if cfg.refine_texture and prm.texture:
         for name in sorted(prm.texture):
-            for v in normalize_texture_grid(prm.texture[name].get("grid")):
-                x.append(float(v))
+            entry = prm.texture[name]
+            if texture_model(entry) == "harmonic":
+                x.extend(float(v) for v in texture_coeffs(entry))
+            else:
+                for v in normalize_texture_grid(entry.get("grid")):
+                    x.append(float(v))
     # v1.3 #15: 每相各向异性（sorted(aniso)：size 6 后 strain 6）
     if cfg.refine_aniso and prm.aniso:
         kinds = _aniso_kinds(cfg)
@@ -316,16 +365,23 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
         microabs = dict(base.microabs)
         for name in sorted(base.microabs):
             microabs[name] = max(float(x[i]), MICROABS_BOUNDS[0]); i += 1
-    # v1.3 #14: 织构网格与 _pack 同序（sorted(texture)），axis 取 base 值
+    # v1.3 #14 / v1.5 M3: 织构与 _pack 同序（sorted(texture)），axis 取 base 值
     texture = base.texture
     if cfg.refine_texture and base.texture:
         texture = {}
         for name in sorted(base.texture):
             entry = dict(base.texture[name])
-            entry["grid"] = [max(min(float(x[i + k]), TEXTURE_BOUNDS[1]),
-                                 TEXTURE_BOUNDS[0])
-                             for k in range(TEXTURE_N_GRID)]
-            i += TEXTURE_N_GRID
+            if texture_model(entry) == "harmonic":
+                n = texture_n_params(entry)
+                lo_c, hi_c = TEXTURE_COEFF_BOUNDS
+                entry["coeffs"] = [max(min(float(x[i + k]), hi_c), lo_c)
+                                   for k in range(n)]
+                i += n
+            else:
+                entry["grid"] = [max(min(float(x[i + k]), TEXTURE_BOUNDS[1]),
+                                     TEXTURE_BOUNDS[0])
+                                 for k in range(TEXTURE_N_GRID)]
+                i += TEXTURE_N_GRID
             texture[name] = entry
     # v1.3 #15: 各向异性与 _pack 同序（sorted(aniso)：size 6 后 strain 6）
     aniso = base.aniso
@@ -390,9 +446,15 @@ def _bounds(cfg: RefineConfig, n_phase: int,
     # v1.3: 每相一个 Brindley mu*r（顺序与 _pack 一致：sorted(microabs)）
     for _ in range(n_ma):
         lo.append(MICROABS_BOUNDS[0]); hi.append(MICROABS_BOUNDS[1])
-    # v1.3 #14: 每相 TEXTURE_N_GRID 个 T(χ)（顺序与 _pack 一致）
-    for _ in range(n_tex):
-        lo.append(TEXTURE_BOUNDS[0]); hi.append(TEXTURE_BOUNDS[1])
+    # v1.3 #14 / v1.5 M3: 每相织构参数（顺序与 _pack 一致）。
+    # ``n_tex`` 可以是整数（全部按 EWIMV 19 维处理）或逐参边界序列
+    # （球谐系数用 forward.TEXTURE_COEFF_BOUNDS，与网格边界不同）。
+    if isinstance(n_tex, (list, tuple)):
+        for _b in n_tex:
+            lo.append(_b[0]); hi.append(_b[1])
+    else:
+        for _ in range(n_tex):
+            lo.append(TEXTURE_BOUNDS[0]); hi.append(TEXTURE_BOUNDS[1])
     # v1.3 #15: 每相各向异性系数（Cholesky 下三角，按 aniso_mode 取 size/strain）
     n_kind = len(_aniso_kinds(cfg))
     for _p in range(n_aniso):
@@ -606,13 +668,20 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
                 pass
         r = (yo - ycalc) / sig
         # v1.3 #14：织构 T(χ) 正则化 —— 二阶差分光滑罚（λ=0 关闭）
-        # + 末端节点锚定 1.0（消除「T 乘常数 ↔ scale 除常数」零空间）
+        # + 末端节点锚定 1.0（消除「T 乘常数 ↔ scale 除常数」零空间）。
+        # v1.5 M3：球谐模型**不需要**这两项——Legendre 基正交（各阶互不
+        # 抢自由度，低阶截断本身即最光滑），且 ∫P_k dΩ = 0 (k ≥ 2) 使 T 的
+        # 球面平均恒为 1，「乘常数 ↔ scale」零空间天然不存在。若对系数
+        # 向量误加 19 维网格罚会维度不匹配直接崩，故这里显式分派。
         if cfg.refine_texture and prm.texture:
             lam = float(getattr(cfg, "texture_lambda", 0.0) or 0.0)
             pen = []
             for name in sorted(prm.texture):
+                entry = prm.texture[name]
+                if texture_model(entry) == "harmonic":
+                    continue
                 g = np.asarray(normalize_texture_grid(
-                    prm.texture[name].get("grid")), dtype=np.float64)
+                    entry.get("grid")), dtype=np.float64)
                 if lam > 0.0:
                     pen.append(np.sqrt(lam) * (g[:-2] - 2.0 * g[1:-1] + g[2:]))
                 pen.append(np.array([TEXTURE_ANCHOR_W * (g[-1] - 1.0)]))
@@ -655,6 +724,56 @@ def _restart_points(prm_try: ProfileParams) -> list[ProfileParams]:
     return pts
 
 
+def _width_probe_start(phases: list[CifStructure], pat: Pattern,
+                       prm0: ProfileParams,
+                       cfg: RefineConfig) -> ProfileParams:
+    """峰宽一维探针：用线性层代价给 LM 选一个靠谱的峰形起点（M10）。
+
+    为什么需要（2026-11-07，IUCr CPD 纯刚玉标样实证）
+    ---------------------------------------------------
+    `U` 与 `W` 在 Caglioti 里强相关，而 Rwp 对「整体峰宽」是一个**浅谷**，
+    谷底还很宽。LM 从平坦起点（``U=V=0, W=0.02``，即各处 FWHM≈0.14°）
+    出发时，梯度会把 U 一路推大去补高角——收敛到 ``U=0.188``，即
+    FWHM(136°)=1.07°；而数据上刚玉 (1 4 6) 的 Kα1/Kα2 双线是**分辨开的**，
+    单支实测 FWHM 仅 0.26°。该点的 Rwp 是 31.5%，而同一模型在
+    ``U=0.025 / eta=0.6`` 邻域是 19.9% —— 11 个点纯属起点选错，
+    与 MEMORY 里「样 7 各向异性起点差 58 倍、数值雅可比走不过去」同源。
+
+    做法：固定 ``U=V=0``（平坦宽度）在一维 FWHM 网格上枚举，每个候选只解
+    一次线性层（scale+背景）算 Rwp，取最优作为 LM 起点。成本约
+    ``len(grid)×len(eta)`` 次前向，比一次 LM 迭代还便宜。
+
+    保守切换：**只有最优候选比原起点低 5% 以上才换**。虚拟样 round-trip
+    这类「起点本就对」的场景，网格点与原起点代价几乎相同（同网格含 0.14
+    一档），因此不会触发切换，golden 逐位不变。
+
+    也允许在**不精修 U/V/W 的步**（如配方 cell 步）调用：此时返回的
+    ``U/V/W`` 会作为**固定宽度**参与该步（探针只改起点，不进 LM 向量）。
+    IUCr 纯刚玉实测：cell 步若沿用平坦 0.14°，会把晶胞修偏到
+    a=4.7545/c=12.9791（真值 4.7587/12.9952），此后 Rwp 卡在 37.6%；
+    先定宽度再修晶胞才收敛到正确值。
+    """
+    base = _rwp_at(phases, pat, prm0, cfg)
+    etas = tuple(cfg.width_probe_eta) if cfg.refine_eta else (prm0.eta,)
+    #: 低角锚点取 2θ=25°（多数物相首个强峰附近）：网格值即此处的 FWHM。
+    tl = math.tan(math.radians(12.5))
+    best_p, best_r = prm0, base
+    for fwhm in tuple(cfg.width_probe_grid):
+        f2 = float(fwhm) ** 2
+        for u in tuple(cfg.width_probe_u):
+            w = f2 - float(u) * tl * tl
+            if w <= 0.0:
+                continue
+            for eta in etas:
+                cand = replace(prm0, U=float(u), V=0.0, W=w, eta=float(eta))
+                r = _rwp_at(phases, pat, cand, cfg)
+                if r < best_r:
+                    best_p, best_r = cand, r
+    if best_r < 0.95 * base:
+        return best_p
+    return prm0
+
+
 def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
            cfg: RefineConfig) -> RefineResult:
     """Rietveld 精修主入口（变量投影 + 自写 LM + 确定性多起点重启）。
@@ -678,6 +797,10 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
     # v1.4.0: refine_po 时按内置惯习面补缺失相的 (h,k,l,1.0) 起点
     prm0 = replace(prm0, po_r=_ensure_po_r(phases, prm0, cfg),
                    b_iso=_ensure_biso(phases, prm0, cfg))
+    # v1.5 M10：峰宽探针（默认关）。改的是**起点**而非目标函数，且只在
+    # 明显更优（<95%）时切换，故既有 golden 与「起点本就对」的场景逐位不变。
+    if cfg.width_probe:
+        prm0 = _width_probe_start(phases, pat, prm0, cfg)
     # P1.0c：生产路径全程走声明式注册表；x0 / bounds / unpack 均出自 reg，
     # 旧 _pack/_bounds/_unpack 仅保留为兼容 API 与双轨回归参照。
     reg = _registry_for(cfg, prm0, n_phase)

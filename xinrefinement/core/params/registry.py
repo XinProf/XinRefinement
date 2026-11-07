@@ -28,7 +28,12 @@ import numpy as np
 from xinrefinement.core.profile.forward import (
     MIN_W,
     ProfileParams,
+    TEXTURE_COEFF_BOUNDS,
+    TEXTURE_N_GRID,
     normalize_texture_grid,
+    texture_coeffs,
+    texture_model,
+    texture_n_params,
 )
 
 # 注：``nonlinear`` 在模块级导入会形成 registry ↔ nonlinear 循环（nonlinear
@@ -151,6 +156,25 @@ def _s_tex(name: str, k: int):
     return _fn
 
 
+def _g_texc(name: str, j: int):
+    """v1.5 M3：球谐系数第 j 个（c2, c4, …）。"""
+    def _fn(prm, cell, po):
+        return float(texture_coeffs(prm.texture[name])[j])
+    return _fn
+
+
+def _s_texc(name: str, j: int):
+    def _fn(prm, cell, po, v):
+        tex = {key: dict(val) for key, val in prm.texture.items()}
+        coeffs = texture_coeffs(tex[name])
+        lo, hi = TEXTURE_COEFF_BOUNDS
+        coeffs[j] = min(max(float(v), lo), hi)
+        tex[name]["coeffs"] = coeffs
+        tex[name]["model"] = "harmonic"
+        return replace(prm, texture=tex), cell, po
+    return _fn
+
+
 def _aniso_coeff(prm, name: str, kind: str) -> list[float]:
     c = list((prm.aniso.get(name) or {}).get(kind) or [])
     return (c + [0.0] * 6)[:6]
@@ -230,12 +254,21 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
         for name in sorted(prm.microabs):
             add(f"phase[{name}].microabs.mur", "phase", "micro",
                 nl.MICROABS_BOUNDS, _g_ma(name), _s_ma(name))
-    # v1.3 任务 #14：每相 TEXTURE_N_GRID 个织构因子 T(χ)（EWIMV 离散 ODF）
+    # v1.3 任务 #14：每相织构因子（EWIMV 离散 ODF 19 维 / v1.5 M3 球谐 2–4 维）
     if cfg.refine_texture and getattr(prm, "texture", None):
         for name in sorted(prm.texture):
-            for k in range(nl.TEXTURE_N_GRID):
-                add(f"phase[{name}].texture.T{k}", "phase", "texture",
-                    nl.TEXTURE_BOUNDS, _g_tex(name, k), _s_tex(name, k))
+            entry = prm.texture[name]
+            if texture_model(entry) == "harmonic":
+                # v1.5 M3：球谐系数槽位（键名 c2/c4/… 直接可读，便于诊断）
+                n = texture_n_params(entry)
+                for j, k in enumerate(range(2, 2 * n + 1, 2)):
+                    add(f"phase[{name}].texture.c{k}", "phase", "texture",
+                        TEXTURE_COEFF_BOUNDS, _g_texc(name, j),
+                        _s_texc(name, j))
+            else:
+                for k in range(TEXTURE_N_GRID):
+                    add(f"phase[{name}].texture.T{k}", "phase", "texture",
+                        nl.TEXTURE_BOUNDS, _g_tex(name, k), _s_tex(name, k))
     # v1.3 任务 #15：每相 12 个 Popa LB 各向异性系数（size 6 + strain 6）
     if cfg.refine_aniso and getattr(prm, "aniso", None):
         for name in sorted(prm.aniso):

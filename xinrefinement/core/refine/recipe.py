@@ -54,6 +54,15 @@ from xinrefinement.core.refine.solve import RefineInputs, SolveResult, solve
 XYZ_SITE_MAX_ITER = 12
 
 
+def _extra_micro_freedom(cfg: RefineConfig) -> bool:
+    """micro 步是否叠加了「新自由度」（各向异性 / 织构）。
+
+    用于决定是否启用「不改善就回退」护栏：只有自由度陡增时才有意义，
+    默认路径（两者皆关）行为逐位不变，保证既有 golden 不漂。
+    """
+    return bool(cfg.refine_aniso or cfg.aniso_auto or cfg.refine_texture)
+
+
 @dataclass(frozen=True)
 class RefineStep:
     """导航面板的一行。"""
@@ -74,10 +83,58 @@ class RefineStep:
         :meth:`RecipeRunner._run_cell` 调独立的全晶胞引擎
         （``refine_cell_full``）编排，若这里再打开 ``refine_cell`` 会让
         ``solve`` 顺带做一遍 (fa, fc) 缩放，两套机制抢同一组自由度。
+
+        ``profile`` 步**则必须**打开 ``refine_cell``（v1.5 M10）：峰形与晶胞
+        强相关，若晶胞在 profile 步冻结，两步交替投影会停在偏差点——IUCr
+        纯刚玉实测 31.4% vs 联合精修 14.63%（同数据同窗口 GSAS-II 15.8%）。
+        同时 ``profile`` 步也要**重新放开 zero**（v1.5 M10b）：zero 步是在
+        默认峰宽下跑的，峰形不对时 zero 极平、会漂到 −0.19（真值 −0.065），
+        之后一路冻结会把晶胞与 asym 一起带偏。
         """
+        # v1.5 M4：aniso 覆盖某相后，该相的标量 X/Y 在 forward 里被
+        # **逐峰方向值完全取代**（ProfileParams 明确语义），再把 X/Y 放进
+        # LM 就是两个死维度：只会让残差面多两个不可辨识方向、拖慢收敛。
+        # 故开各向异性时 micro 步不再精修标量尺寸/应变。
+        aniso_on = (self.key == "micro"
+                    and (cfg.refine_aniso or cfg.aniso_auto))
+        # ``refine_asym`` 由 profile 步**无条件**打开，不看 ``cfg.refine_asym``：
+        # 低角不对称尾在实测谱上几乎总存在，且与 U/V/W/eta 只弱相关，
+        # 交给用户在配方外记得打开不现实。副作用是
+        # ``RefineConfig.refine_asym`` 在 ``RecipeRunner`` 路径上**是无效开关**
+        # （只在裸 ``solve()`` 路径生效）——2026-11-06 做 IUCr CPD 对照时
+        # 实测「开/不开 refine_asym 两次结果 Rwp 相同到 1e-11」才发现。
+        # 保留无条件打开是对的（MAUD 的 ``_riet_asymmetry_tan_dep`` 同样是
+        # 全局开），但**不要再把这个字段当成配方开关用**。
         return replace(cfg,
-                       refine_zero=(self.key in ("zero", "bg", "scale")),
+                       # v1.5 M10b（2026-11-07）：``profile`` 步**必须**连带
+                       # 重新精修 zero。实测 IUCr 纯刚玉：``zero`` 步是在默认
+                       # 峰宽（U=V=0、W=0.02）下跑的，峰形完全不对时 zero 的
+                       # 极小值极平，直接漂到 **−0.193**（真值约 −0.065）；
+                       # 之后 ``bg`` 步虽再修一次仍停在 −0.160，而 ``cell`` /
+                       # ``profile`` 步把 zero 冻结后，晶胞被 zero 偏差带偏
+                       # （a/c 均偏小 0.12%/0.18%）、asym 被顶到 −0.05 下界，
+                       # Rwp 卡 **28.58%**。把 zero 放回 profile 步后与
+                       # cell+U/V/W+η+asym 联合精修，即复现 solve() 层实测的
+                       # **14.64%**（同数据同窗口 GSAS-II 15.8%）。
+                       refine_zero=(self.key in ("zero", "bg", "scale",
+                                                 "profile")),
                        refine_uvw=(self.key in ("bg", "profile")),
+                       # v1.5 M10（2026-11-07，IUCr 纯刚玉实测）：profile 步
+                       # 必须**连带晶胞一起**精修。晶胞与峰形强相关，此前
+                       # 「cell 步修晶胞（宽度冻结）→ profile 步修峰形（晶胞
+                       # 冻结）」的两步交替投影收敛到偏差点：晶胞被错宽度带偏
+                       # 到 a=4.7545/c=12.9791（真值 4.7587/12.9952），Rwp 卡
+                       # 31.4%；而联合精修时**三种起点都收敛到 14.63%**
+                       # （U=0.010/W=0.016/eta=0.45/asym=+0.056），优于
+                       # GSAS-II 同数据同窗口的 15.8%。这就是"分步"与
+                       # "联合"的差别，不是优化器缺陷。
+                       refine_cell=(self.key == "profile"),
+                       # 峰宽探针**不在配方里开**：v1.5 M10b 实测表明，只要
+                       # zero 在 profile 步放开，探针开/关的收敛结果**逐位
+                       # 相同**（纯刚玉 14.635%，U/V/W/eta/zero 全同），它
+                       # 只多花 162 次网格评估。保留 ``RefineConfig.
+                       # width_probe`` 供单点实验用，默认路径不启用。
+                       width_probe=False,
                        refine_eta=(self.key == "profile"),
                        refine_asym=(self.key == "profile"),
                        refine_bfactor=False,
@@ -87,10 +144,9 @@ class RefineStep:
                        refine_biso=(self.key == "B" and cfg.refine_biso),
                        # v1.4 #17：xyz 步由独立站点引擎执行（不走 solve）
                        refine_xyz=(self.key == "xyz" and cfg.refine_xyz),
-                       refine_cell=False,
                        refine_po=(self.key == "micro"),
-                       refine_size=(self.key == "micro"),
-                       refine_strain=(self.key == "micro"),
+                       refine_size=(self.key == "micro" and not aniso_on),
+                       refine_strain=(self.key == "micro" and not aniso_on),
                        # v1.3 #14：织构只在 micro 步精修，且必须由调用方
                        # 显式配置（cfg.refine_texture）——配方不自动开。
                        # 其它步仍然**施加** T(χ)（prm.texture 一直在），
@@ -99,7 +155,11 @@ class RefineStep:
                                        and cfg.refine_texture),
                        # v1.3 #15：各向异性同样只在 micro 步精修，且需
                        # 调用方显式配置（cfg.refine_aniso）。
-                       refine_aniso=(self.key == "micro" and cfg.refine_aniso))
+                       # v1.5 M4：aniso_auto 时由 micro 步自动为每相补
+                       # 各向同性起点（solve 里完成），其余步仍把已精修的
+                       # aniso 当**固定因子**施加，不放进 LM 向量。
+                       refine_aniso=aniso_on,
+                       aniso_auto=(self.key == "micro" and cfg.aniso_auto))
         # v1.3 评审：refine_microabs **不**在此开启。μ·r 与每相 scale 数学
         # 简并（Brindley 因子是每相常数标量，被线性层自由 scale 完全吸收），
         # 单谱精修不可辨识且 LM 会数值漂移到边界；μ·r 应由化学成分计算
@@ -121,10 +181,12 @@ DEFAULT_STEPS: tuple[RefineStep, ...] = (
     RefineStep("xyz", "原子坐标", "xyz", True,
                "P1.3 已落地（Wyckoff 位约束）；需 --refine-xyz 显式开启，"
                "缺 CIF 源路径的相自动跳过"),
-    RefineStep("B", "温度因子", "B", True,
-               "v1.4 #18：每相 ΔB_iso（逐相高角衰减，占位精修仍待 P1.4）"),
     RefineStep("micro", "微结构 / 应力 / 择优取向", "micro", True,
-               "March-Dollase r + TCH X/Y"),
+               "P1.5：PO 试探 + EWIMV 织构 + TCH X/Y；置于 B 之前先充分释放"
+               "织构/微结构自由度，避免温度因子先抢自由度"),
+    RefineStep("B", "温度因子", "B", True,
+               "v1.4 #18：每相 ΔB_iso（逐相高角衰减，占位精修仍待 P1.4）；"
+               "置于 micro 之后收尾，吸收残差"),
 )
 
 
@@ -243,7 +305,35 @@ class RecipeRunner:
             return prev, rec
 
         before = None if prev is None else prev.rwp
+        # v1.5 M4 护栏：micro 步叠加各向异性/织构后自由度陡增（每相 6 或
+        # 19 维），短迭代预算下可能收敛到比入参更差的点。**不改善就整体
+        # 回退**——这是配方层对用户的承诺（同 xyz 步语义），也保证
+        # aniso_auto 能安全默认开启。
+        # v1.5 M10（2026-11-07）：护栏对**所有** micro 与 B 步生效，不再只限
+        # 「开新自由度」。实测 IUCr 纯刚玉：基础路径 micro 步把 28.58%
+        # 恶化到 33.74%、B 步再把 28.58% 恶化到 37.42%，两次都因为没有新
+        # 自由度而被保留下来，最终结果比上游各步都差——回退语义应当无条件
+        # （单步内变差就是白跑）。
+        if (step.key in ("micro", "B") and prev is not None
+                and res.rwp >= before - 1e-9):
+            self.state.push_snapshot(prev.params)
+            rec = StepRecord(step.key, step.title, "done", before, before,
+                             f"微结构自由度未改善 Rwp（{res.rwp:.3f} ≥ "
+                             f"{before:.3f}），已回退到上一步参数",
+                             snapshot=self.state.snapshots[-1])
+            self.state.records.append(rec)
+            return prev, rec
         self.state.push_snapshot(res.params)
+        # v1.5 M10b（2026-11-07）：``refine_cell`` 步在 ``solve`` 内部精修了
+        # 每相 (fa, fc) 晶胞缩放，但 ``SolveResult.params`` 不携带晶胞——
+        # 不回写 ``self._phases`` 的话，后续 micro/B 步仍在**旧晶胞**上算
+        # （IUCr 纯刚玉实测 profile 步后晶胞已到 4.7587/12.9952，而
+        # ``runner.phases`` 还停在 cell 步的 4.7529/12.972）。回写来源用
+        # ``res.phases[i].cell``：它已是 ``st.cell × (fa, fc)``，与 QPA 口径
+        # 同一来源，不需要再猜晶系约束。
+        if cfg.refine_cell and phases:
+            self._phases = [structure_with_cell(st, info.cell)
+                            for st, info in zip(phases, res.phases)]
         rec = StepRecord(step.key, step.title, "done", before, res.rwp,
                          snapshot=self.state.snapshots[-1])
         self.state.records.append(rec)
@@ -333,38 +423,78 @@ class RecipeRunner:
         from xinrefinement.core.refine.site import (
             parse_site_model, refine_sites)
 
-        models, fixed, index = [], [], []
-        model_sources: list[CifStructure] = []
+        # v1.5 M9：先按相枚举（保留相位顺序），再在超预算时按策略降级。
+        # v1.4 是「所有相 n_free 求和 > 预算 → 整步 failed」，实测样 7 因此
+        # 丢了 39 参高岭石（单独精修增量 −1.87 pt）。
+        entries: list[tuple[CifStructure, object | None]] = []
         for st in phases:
             path = getattr(st, "source_path", None)
+            m = None
             if path and Path(path).exists():
                 try:
                     m = parse_site_model(path)
                 except Exception:                              # noqa: BLE001
-                    index.append(("fixed", len(fixed)))
-                    fixed.append(st)
-                    continue
-                m = replace(m, name=st.name, cell=tuple(float(v) for v in st.cell),
-                            formula=getattr(st, "formula", None),
-                            spacegroup=getattr(st, "spacegroup", None),
-                            sg_number=getattr(st, "sg_number", None))
-                models.append(m)
-                model_sources.append(st)
-                index.append(("model", len(models) - 1))
-            else:
-                index.append(("fixed", len(fixed)))
-                fixed.append(st)
-        if not models:
+                    m = None
+                if m is not None:
+                    m = replace(m, name=st.name,
+                                cell=tuple(float(v) for v in st.cell),
+                                formula=getattr(st, "formula", None),
+                                spacegroup=getattr(st, "spacegroup", None),
+                                sg_number=getattr(st, "sg_number", None))
+            entries.append((st, m))
+
+        def _nfree(m) -> int:
+            return sum(int(s.n_free) for s in m.sites) if m is not None else 0
+
+        if not any(m is not None for _st, m in entries):
             return _rec("skipped",
                         "P1.3 原子坐标精修：无相带 CIF 源路径（如 "
                         "parse_cif_string 构造的结构），已跳过",
                         before, prev)
 
-        n_free = sum(int(s.n_free) for m in models for s in m.sites)
-        if n_free > int(src.xyz_max_params):
-            return _rec("failed",
-                        f"原子坐标欠定：自由坐标系数 {n_free} > "
-                        f"xyz_max_params={src.xyz_max_params}", None, prev)
+        budget = int(src.xyz_max_params)
+        n_free = sum(_nfree(m) for _st, m in entries)
+        dropped: list[str] = []
+        strategy = "off"
+        if n_free > budget:
+            strategy = str(getattr(src, "xyz_phase_select", "off") or "off").lower()
+            if strategy not in ("largest", "small"):
+                return _rec("failed",
+                            f"原子坐标欠定：自由坐标系数 {n_free} > "
+                            f"xyz_max_params={budget}", None, prev)
+            cand = [(i, _nfree(m)) for i, (_st, m) in enumerate(entries)
+                    if m is not None and _nfree(m) > 0]
+            cand.sort(key=lambda t: t[1], reverse=(strategy == "largest"))
+            keep: set[int] = set()
+            acc = 0
+            for i, n in cand:
+                if n <= budget and acc + n <= budget:
+                    keep.add(i)
+                    acc += n
+            if not keep:
+                return _rec("failed",
+                            f"原子坐标欠定：自由坐标系数 {n_free} > "
+                            f"xyz_max_params={budget}，且无单个相可在预算内精修",
+                            None, prev)
+            # n_free==0 的相不占预算，保持参与（占位/B 维度仍由引擎处理）
+            keep.update(i for i, (_st, m) in enumerate(entries)
+                        if m is not None and _nfree(m) == 0)
+            dropped = [entries[i][0].name for i in range(len(entries))
+                       if entries[i][1] is not None and i not in keep]
+            entries = [(st, m if (m is None or i in keep) else None)
+                       for i, (st, m) in enumerate(entries)]
+            n_free = sum(_nfree(m) for _st, m in entries)
+
+        models, fixed, index = [], [], []
+        model_sources: list[CifStructure] = []
+        for st, m in entries:
+            if m is not None:
+                models.append(m)
+                model_sources.append(st)
+                index.append(("model", len(models) - 1))
+            else:
+                fixed.append(st)
+                index.append(("fixed", len(fixed) - 1))
 
         # 站点引擎不裁剪谱图，且线性背景口径要与主 solve 一致
         pat = (prev.pattern if prev is not None else inputs.pattern)
@@ -407,6 +537,7 @@ class RecipeRunner:
                                "rwp": float(sr.rwp), "success": bool(sr.success),
                                "n_free": n_free,
                                "phases": [m.name for m in models],
+                               "dropped_phases": tuple(dropped),
                                "accepted": False}
             return _rec("done",
                         f"原子坐标精修未改善 Rwp（{res.rwp:.3f} ≥ "
@@ -416,11 +547,16 @@ class RecipeRunner:
         self.xyz_report = {"params": tuple(float(v) for v in sr.params),
                            "rwp": float(sr.rwp), "success": bool(sr.success),
                            "n_free": n_free, "phases": [m.name for m in models],
+                           "dropped_phases": tuple(dropped),
                            "accepted": True}
         msg = (f"原子坐标：{len(models)} 相 / {n_free} 个自由系数，"
                f"Rwp {before:.3f} → {res.rwp:.3f}，最大位移 {drift:.4f}")
         if drift > 0.03:
             msg += "（位移偏大，建议核查结构模型）"
+        if dropped:
+            shown = "、".join(dropped[:2]) + ("…" if len(dropped) > 2 else "")
+            msg += (f"；欠定降级（{strategy}）：跳过 {len(dropped)} 相"
+                    f"（{shown}）")
         self._phases = new_phases
         self.state.push_snapshot(res.params)
         rec = StepRecord(step.key, step.title, "done", before, res.rwp, msg,
@@ -528,6 +664,16 @@ class RecipeRunner:
             self.state.records.append(rec)
             return prev, rec
         before = None if prev is None else prev.rwp
+        # v1.5 M4：与通用路径同一条护栏——叠加各向异性/织构后未改善即回退。
+        if (prev is not None and _extra_micro_freedom(cfg)
+                and res.rwp >= before - 1e-9):
+            self.state.push_snapshot(prev.params)
+            rec = StepRecord(step.key, step.title, "done", before, before,
+                             f"{msg}；微结构自由度未改善 Rwp（{res.rwp:.3f} ≥ "
+                             f"{before:.3f}），已回退到上一步参数",
+                             snapshot=self.state.snapshots[-1])
+            self.state.records.append(rec)
+            return prev, rec
         self.state.push_snapshot(res.params)
         rec = StepRecord(step.key, step.title, "done", before, res.rwp,
                          msg, snapshot=self.state.snapshots[-1])

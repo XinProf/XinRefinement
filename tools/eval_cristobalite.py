@@ -156,9 +156,85 @@ def stage_damp() -> None:
                              ensure_ascii=False), flush=True)
 
 
+def stage_models_m4m5() -> None:
+    """M8 v2：在 M4+M5 口径（Popa LB + EWIMV 织构 + ΔB_iso）下重做多型对照。
+
+    与 :func:`stage_models` 的差别只在非线性层：这里叠加 EWIMV 织构
+    （``po.json`` 命中轴）、每相 Popa LB（``aniso_auto``）与每相 ``ΔB_iso``。
+    这样既比较各模型的 Rwp，也能看到方石英的 ``ΔB_iso`` 是否**仍在撞
+    6 Å² 上界**——撞界说明该相结构仍在替别的模型误差背锅，而不是物理温度
+    因子（v1.4 #18 / K7）。
+    """
+    rows = B._read_json("crist_models_m4m5.json")
+    done = {r["model"] for r in rows}
+    pat = B._load(7, D7, D7)[0]
+    b = B._load_base(7)
+    refined = B._refined_phases(7, D7, D7)
+
+    # 织构：沿用 combo 口径（po.json 中增益 > 0.3 pt 的相与轴）
+    po = B._read_json("po.json")
+    best_axis: dict = {}
+    for r in po:
+        if (r.get("i") == 7 and r.get("delta") is not None
+                and r["delta"] < -0.3 and r.get("axis")):
+            ph, ax = r["phase"], tuple(int(v) for v in r["axis"])
+            if ph not in best_axis or r["delta"] < best_axis[ph][1]:
+                best_axis[ph] = (ax, r["delta"])
+    from xinrefinement.core.profile.forward import default_texture_grid
+    tex = {ph: {"axis": ax, "grid": default_texture_grid()}
+           for ph, (ax, _d) in best_axis.items()}
+    prm0 = replace(b["prm"], texture=(tex or None), aniso=None)
+    cfg0 = B._only(b["cfg"], refine_texture=True, refine_aniso=True,
+                   refine_biso=True, max_iter=25, aniso_auto=True)
+
+    cases = (
+        ("high_T_Fd-3m", None, False),
+        ("low_T_s6_P41212", LOW_S6, False),
+        ("low_T_s4_P41212", LOW_S4, False),
+        ("no_cristobalite", None, True),
+    )
+    for label, swap, drop in cases:
+        if label in done:
+            continue
+        try:
+            phases = list(refined)
+            idx = _crist_index(phases)
+            crist = phases[idx].name
+            if drop:
+                phases.pop(idx)
+            elif swap is not None:
+                st = parse_cif(swap)
+                st.name = crist
+                phases[idx] = st
+            t0 = time.time()
+            res = solve(RefineInputs(pat, phases, prm0, cfg0))
+            biso = {k: round(float(v), 4) for k, v in (res.params.b_iso or {}).items()}
+            row = {"model": label, "swap": None if swap is None else str(swap),
+                   "drop": drop, "crist_phase": crist,
+                   "rwp_pct": float(res.rwp),
+                   "seconds": round(time.time() - t0, 1),
+                   "biso": biso,
+                   "crist_biso_hit_bound": bool(
+                       crist in biso and biso[crist] >= 5.99),
+                   "weights": _weights(res),
+                   "warnings": [w for w in res.warnings
+                                if "Popa LB（" in w][:6]}
+        except Exception as exc:                                  # noqa: BLE001
+            row = {"model": label, "rwp_pct": None,
+                   "error": f"{type(exc).__name__}: {exc}",
+                   "trace": traceback.format_exc()[-1200:]}
+        rows.append(row)
+        B._write_json("crist_models_m4m5.json", rows)
+        print(json.dumps({"stage": "crist_models_m4m5", "model": label,
+                          "rwp_pct": row["rwp_pct"],
+                          "crist_hit": row.get("crist_biso_hit_bound")},
+                         ensure_ascii=False), flush=True)
+
+
 def main(argv: list[str]) -> int:
     stage = argv[1] if len(argv) > 1 else "models"
-    {"models": stage_models, "damp": stage_damp}[stage]()
+    {"models": stage_models, "damp": stage_damp,
+     "models_m4m5": stage_models_m4m5}[stage]()
     return 0
 
 

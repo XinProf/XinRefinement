@@ -114,12 +114,17 @@ def test_no_source_path_is_skipped(fixture_data):
 
 
 def test_free_param_cap_fails(fixture_data):
-    """自由系数上限是欠定护栏，触顶必须报 failed 而不是静默跑。"""
+    """v1.4 护栏（xyz_phase_select="off"）：触顶必须报 failed 而非静默跑。
+
+    v1.5 M9 默认会按相降级，故这里显式 off 以锁定旧语义；
+    降级后的「预算内无相可放」分支由 test_xyz_phase_select.py 单独覆盖。
+    """
     pat, phases, base = fixture_data
     runner = RecipeRunner()
     res, recs = runner.run_all(
         RefineInputs(pat, phases, _prm(),
-                     _cfg(refine_xyz=True, xyz_max_params=0)), steps=XYZ)
+                     _cfg(refine_xyz=True, xyz_max_params=0,
+                          xyz_phase_select="off")), steps=XYZ)
     assert recs[0].status == "failed"
     assert "欠定" in recs[0].message
     assert res is None

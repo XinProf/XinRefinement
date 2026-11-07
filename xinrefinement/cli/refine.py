@@ -65,9 +65,16 @@ def _add_refine_parser(sub) -> None:
                         "与 --microabs 同名时后者优先")
     r.add_argument("--texture", action="append", default=[],
                    metavar="相名=h0,k0,l0",
-                   help="EWIMV 离散 ODF 织构精修（v1.3，可多次）：如 "
-                        "--texture anatase=0,0,1；BB 几何下每反射一个 "
-                        "T(χ) 因子（19 点 0–90° 网格，光滑罚正则化）")
+                   help="织构精修（可多次）：如 --texture anatase=0,0,1；"
+                        "BB 几何下每反射一个 T(χ) 因子。模型由 "
+                        "--texture-model 选择（EWIMV 19 点网格 / 球谐展开）")
+    r.add_argument("--texture-model", choices=("ewimv", "harmonic"),
+                   default="ewimv",
+                   help="v1.5 M3 织构模型：ewimv=19 点离散 ODF（v1.3 默认）；"
+                        "harmonic=球谐（Legendre）展开，MAUD Harmonic 同族，"
+                        "自由度 2–4 维、基正交无需光滑罚")
+    r.add_argument("--texture-degree", type=int, default=4, metavar="N",
+                   help="球谐展开阶数（偶数，2/4/6/8；默认 4）；阶越高越易过拟合")
     r.add_argument("--texture-lambda", type=float, default=1.0,
                    metavar="λ",
                    help="织构网格二阶差分光滑罚权重（默认 1.0，0=关闭正则化）")
@@ -76,6 +83,10 @@ def _add_refine_parser(sub) -> None:
                    help="Popa LB 各向异性尺寸/应变（v1.3，可多次）：如 "
                         "--aniso anatase=size；默认 mode=size（6 参），"
                         "both=12 参（可能不可辨识）")
+    r.add_argument("--aniso-auto", action="store_true",
+                   help="v1.5 M4：micro 步自动为每相启用 Popa LB 各向异性"
+                        "展宽（各向同性起点，6 参/相）；方向数不足的相自动"
+                        "跳过。等价于逐相 --aniso，但无需手写相名")
     r.add_argument("--refine-eta", action="store_true")
     r.add_argument("--refine-asym", action="store_true")
     r.add_argument("--refine-bfactor", action="store_true")
@@ -88,6 +99,12 @@ def _add_refine_parser(sub) -> None:
                         "（需 --recipe；无 CIF 源路径的相自动跳过）")
     r.add_argument("--xyz-max-params", type=int, default=40, metavar="N",
                    help="xyz 步最多放开的自由坐标系数（默认 40，超出判失败）")
+    r.add_argument("--xyz-phase-select", choices=("off", "largest", "small"),
+                   default="largest",
+                   help="自由坐标超预算时按相降级：largest=保留自由坐标最多的相"
+                        "（默认，样 7 实测增量 −1.87 pt）；small=升序对照；"
+                        "off=保持 v1.4 整步判失败。仅超预算时生效，"
+                        "不超限的路径逐位不变")
     r.add_argument("--refine-po", action="store_true")
     r.add_argument("--po-probe", action="store_true",
                    help="v1.4 #19：配方 micro 步自动逐相试探择优取向惯习面"
@@ -152,9 +169,25 @@ def _parse_aniso(items: list[str]):
     return out, mode
 
 
-def _parse_texture(items: list[str]):
-    """'相名=h0,k0,l0' 列表 -> ({相名: {"axis": hkl, "grid": 全 1}}, 是否启用)。"""
-    from xinrefinement.core.profile.forward import default_texture_grid
+def _parse_texture(items: list[str], model: str = "ewimv",
+                   degree: int = 4):
+    """'相名=h0,k0,l0' 列表 -> ({相名: 织构配置}, 是否启用)。
+
+    v1.5 M3：``model`` 选 ``"ewimv"``（v1.3 的 19 点离散网格）或
+    ``"harmonic"``（球谐/Legendre 展开，阶数由 ``degree`` 给，偶数）。两者互斥，
+    同一相不允许同时带 ``grid`` 与 ``coeffs``——这里按模型只写一种初值。
+    """
+    from xinrefinement.core.profile.forward import (
+        default_texture_coeffs, default_texture_grid, texture_degrees)
+
+    mdl = str(model or "ewimv").strip().lower()
+    if mdl not in ("ewimv", "harmonic"):
+        raise SystemExit(f"--texture-model 只能是 ewimv / harmonic，收到: {model!r}")
+    seed = ({"model": "harmonic", "degree": int(degree),
+             "coeffs": default_texture_coeffs(int(degree))}
+            if mdl == "harmonic" else {"grid": default_texture_grid()})
+    if mdl == "harmonic":
+        texture_degrees(int(degree))     # 阶数非法时在这里就报错
 
     out: dict[str, dict] = {}
     for item in items:
@@ -170,7 +203,7 @@ def _parse_texture(items: list[str]):
             raise SystemExit(f"--texture 指数必须是整数，收到: {item!r}")
         if axis == (0, 0, 0):
             raise SystemExit(f"--texture 织构轴不能是 0,0,0，收到: {item!r}")
-        out[name] = {"axis": axis, "grid": default_texture_grid()}
+        out[name] = {"axis": axis, **seed}
     return out
 
 
@@ -211,7 +244,8 @@ def _build_inputs(args) -> RefineInputs:
         microabs.update(calc_microabs(phases, _parse_grain_size(args.grain_size),
                                       anode=anode or "Cu"))
     microabs.update(_parse_microabs(args.microabs))
-    texture = _parse_texture(args.texture)
+    texture = _parse_texture(args.texture, args.texture_model,
+                             args.texture_degree)
     aniso, aniso_mode = _parse_aniso(args.aniso)
     prm = ProfileParams(
         zero=args.zero,
@@ -231,6 +265,7 @@ def _build_inputs(args) -> RefineInputs:
         refine_biso=args.refine_biso,
         refine_xyz=args.refine_xyz,
         xyz_max_params=args.xyz_max_params,
+        xyz_phase_select=args.xyz_phase_select,
         refine_po=args.refine_po,
         po_probe=args.po_probe,
         po_probe_min_gain=args.po_probe_min_gain,
@@ -241,6 +276,7 @@ def _build_inputs(args) -> RefineInputs:
         refine_texture=bool(texture),
         texture_lambda=args.texture_lambda,
         refine_aniso=bool(aniso),
+        aniso_auto=bool(args.aniso_auto),
         aniso_mode=aniso_mode,
         n_bg=args.n_bg,
         bg_mode=args.bg_mode,

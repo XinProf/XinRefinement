@@ -525,6 +525,38 @@ class MicroDialog(_BaseDialog):
         self.max_iter.setValue(int(cur.get("po_probe_max_iter", 12)))
         form.addRow("每候选迭代上限", self.max_iter)
 
+        self.aniso_auto = QCheckBox("micro 步自动启用 Popa LB 各向异性展宽")
+        # v1.5 M4 实测：样 1 Rwp 16.085→12.596、样 7 21.001→17.193
+        # （逐相 6 参各向异性尺寸二次型，ΔB_iso 撞界同时消失），
+        # 故 GUI 出厂默认开启；CLI/API 仍默认关，保证 golden 零回归。
+        self.aniso_auto.setChecked(bool(cur.get("aniso_auto", True)))
+        self.aniso_auto.setToolTip(
+            "为每个未单独配置的相补一个各向同性起点后精修（size 6 参/相）；"
+            "窗口内独立晶向不足的相自动跳过；"
+            "物相编辑里已显式勾选/取消各向异性的相优先")
+        form.addRow(self.aniso_auto)
+
+        # v1.5 M3：织构模型选择（对「物相编辑」里勾选了织构轴的相统一生效）
+        self.texture_model = QComboBox()
+        self.texture_model.addItem("EWIMV 离散网格（19 点 T(χ)）", "ewimv")
+        self.texture_model.addItem("球谐 Legendre 阶 4（2 参）", "harmonic:4")
+        self.texture_model.addItem("球谐 Legendre 阶 6（3 参）", "harmonic:6")
+        self.texture_model.addItem("球谐 Legendre 阶 8（4 参）", "harmonic:8")
+        self.texture_model.addItem("球谐 Legendre 阶 10（5 参）", "harmonic:10")
+        _tm = str(cur.get("texture_model", "harmonic:10"))
+        for _i in range(self.texture_model.count()):
+            if self.texture_model.itemData(_i) == _tm:
+                self.texture_model.setCurrentIndex(_i)
+                break
+        self.texture_model.setToolTip(
+            "球谐＝MAUD Harmonic 模型在纤维对称下的精确子空间"
+            "（Legendre 偶数阶展开，基正交、球面平均恒为 1、无需光滑罚）；"
+            "EWIMV 是 v1.3 的 19 点离散网格，自由度高但相邻 bin 常不可辨识。"
+            "出厂默认阶 10（5 参）：7 样实测阶 4（2 参）在强织构样上明显不足"
+            "（样 3 差 5.96 pt），阶 10 在同一数据上仅比 19 参 EWIMV 差 0.18 pt；"
+            "弱织构样可降到阶 4/6。CLI/库 API 仍默认 ewimv，零回归")
+        form.addRow("织构模型", self.texture_model)
+
         self.refine_biso = QCheckBox("B 步精修每相 ΔB_iso（高角衰减）")
         self.refine_biso.setChecked(bool(cur.get("refine_biso", False)))
         self.refine_biso.setToolTip(
@@ -539,6 +571,24 @@ class MicroDialog(_BaseDialog):
             "自由坐标过多或精修后 Rwp 未改善会自动跳过/回退。"
             "内置结构（无 CIF 源路径）不参与")
         form.addRow(self.refine_xyz)
+
+        # v1.5 M9：xyz 步欠定时不再整步放弃，按相降级
+        self.xyz_phase_select = QComboBox()
+        self.xyz_phase_select.addItem("超限按相降级：保留自由坐标最多的相", "largest")
+        self.xyz_phase_select.addItem("超限按相降级：保留自由坐标最少的相", "small")
+        self.xyz_phase_select.addItem("超限整步判失败（v1.4 行为）", "off")
+        _xs = str(cur.get("xyz_phase_select", "largest"))
+        for _i in range(self.xyz_phase_select.count()):
+            if self.xyz_phase_select.itemData(_i) == _xs:
+                self.xyz_phase_select.setCurrentIndex(_i)
+                break
+        self.xyz_phase_select.setToolTip(
+            "旧护栏把所有相的自由坐标求和，超限就把 xyz 整步判失败。"
+            "样 7 的 48 = 高岭石 39 + 其余 9 > 40，于是 5 相一个都没精修；"
+            "而单独精修高岭石（39 ≤ 40）增量口径有 −1.87 pt，排除它只有 −0.27 pt。"
+            "默认 largest 会跳过次要相、保留最值得精修的相，"
+            "被跳过的相作为常量基参与变量投影，并在配方消息里列名")
+        form.addRow("xyz 欠定策略", self.xyz_phase_select)
 
         self.tmin = QDoubleSpinBox()
         self.tmin.setRange(0.0, 179.0)
@@ -559,8 +609,11 @@ class MicroDialog(_BaseDialog):
                 "po_probe_min_gain": float(self.min_gain.value()),
                 "po_probe_max_phases": int(self.max_phases.value()),
                 "po_probe_max_iter": int(self.max_iter.value()),
+                "aniso_auto": bool(self.aniso_auto.isChecked()),
+                "texture_model": str(self.texture_model.currentData()),
                 "refine_biso": bool(self.refine_biso.isChecked()),
                 "refine_xyz": bool(self.refine_xyz.isChecked()),
+                "xyz_phase_select": str(self.xyz_phase_select.currentData()),
                 "tmin": float(self.tmin.value()),
                 "tmax": float(self.tmax.value())}
 

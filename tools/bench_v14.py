@@ -458,7 +458,32 @@ def _full_recipe(i: int, d: Path, pdir: Path, extra: dict,
     pat, phases = _load(i, d, pdir)
     prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
                         anode="Cu", integrated=True)
+    # P1 试验：refine_texture 时从 po.json 命中轴自动初始化 EWIMV 织构
+    # （每相一个 axis + 19 点 default grid），让 EWIMV 在组合口径真正精修。
+    if extra.get("refine_texture"):
+        po = _read_json("po.json")
+        best_axis: dict = {}
+        for r in po:
+            if (r.get("i") == i and r.get("delta") is not None
+                    and r["delta"] < -0.3 and r.get("axis")):
+                ph = r["phase"]
+                ax = tuple(int(v) for v in r["axis"])
+                if ph not in best_axis or r["delta"] < best_axis[ph][1]:
+                    best_axis[ph] = (ax, r["delta"])
+        if best_axis:
+            prm = replace(prm, texture={ph: {"axis": ax,
+                                            "grid": default_texture_grid()}
+                                        for ph, (ax, _d) in best_axis.items()})
+            # P1/T25：有织构相用 EWIMV 替代 MD PO，关闭 po_probe 避免两者
+            # 并存稀释 EWIMV 增益（EWIMV 是 MD 的一般化形式）
+            extra = {**extra, "po_probe": False}
+    if extra.get("refine_aniso"):
+        from xinrefinement.core.profile.forward import aniso_default
+        prm = replace(prm, aniso={st.name: aniso_default(1.5406, 0.0, 0.05)
+                                  for st in phases})
     tmin = 5.0
+    if i == 5:  # 样 5b 数据仅 10–100°，禁止按 5–120° 外推（MAUD 也用数据全谱）
+        tmin, tmax = 10.0, 100.0
     nbg = max(6, int(round((tmax - tmin) / 6.0)))
     cfg = RefineConfig(refine_zero=True, refine_uvw=True, n_bg=nbg,
                        bg_mode="tent", tmin=tmin, tmax=tmax, max_iter=40)
@@ -623,13 +648,141 @@ def stage_combo(want: set[int]) -> None:
                          ensure_ascii=False), flush=True)
 
 
+def stage_combo_tex(want: set[int]) -> None:
+    """P1 试验：combo 口径再叠加 EWIMV 织构（refine_texture=True，默认
+    texture_lambda=1.0 二阶差分光滑罚），量化 EWIMV 在组合里的真实增益
+    与过拟合风险（Delta B_iso 是否撞 6 A^2 上界）。"""
+    rows = _read_json("combo_tex.json")
+    done = {r["i"] for r in rows}
+    win = {r["i"]: r.get("rwp_pct") for r in _read_json("win.json")}
+    for i, d, pdir in sample_dirs():
+        if (want and i not in want) or i in done:
+            continue
+        try:
+            extra = {"po_probe": True, "refine_biso": True,
+                     "refine_xyz": True, "refine_texture": True}
+            res, recs, runner, secs = _full_recipe(i, d, pdir, extra, 120.0)
+            if res is None:
+                raise RuntimeError("配方无结果")
+            b, w = _base_rwp(i), win.get(i)
+            row = {"i": i, "sample": d.name, "tmax": 120.0,
+                   "rwp_pct": float(res.rwp),
+                   "delta": (None if b is None else float(res.rwp) - b),
+                   "delta_win": (None if w is None else float(res.rwp) - w),
+                   "seconds": secs,
+                   "po_r": ({k: list(v) for k, v in res.params.po_r.items()}
+                            if res.params.po_r else {}),
+                   "biso": {k: round(float(v), 4)
+                            for k, v in (res.params.b_iso or {}).items()},
+                   "texture": ({k: [round(float(x), 3) for x in v.get("grid", [])]
+                                for k, v in (res.params.texture or {}).items()}),
+                   "xyz_report": runner.xyz_report,
+                   "steps": [(r.key, r.status, r.rwp_after, r.message[:120])
+                             for r in recs]}
+        except Exception as exc:                                          # noqa: BLE001
+            row = {"i": i, "sample": d.name, "rwp_pct": None,
+                   "error": f"{type(exc).__name__}: {exc}",
+                   "trace": traceback.format_exc()[-1200:]}
+        rows.append(row)
+        _write_json("combo_tex.json", rows)
+        print(json.dumps({"stage": "combo_tex", "i": i,
+                          "rwp_pct": row["rwp_pct"],
+                          "delta": (None if row.get("delta") is None
+                                    else round(row["delta"], 3))},
+                         ensure_ascii=False), flush=True)
+
+
+def stage_combo_tex_aniso(want: set[int]) -> None:
+    """P1 试验：combo+EWIMV 再叠加 Popa LB 各向异性展宽 + eta 峰形细化，
+    定位样 1 距 15% 的最后约 1 pt 缺口是否来自微结构各向异性/峰形。"""
+    rows = _read_json("combo_tex_aniso.json")
+    done = {r["i"] for r in rows}
+    win = {r["i"]: r.get("rwp_pct") for r in _read_json("win.json")}
+    for i, d, pdir in sample_dirs():
+        if (want and i not in want) or i in done:
+            continue
+        try:
+            extra = {"po_probe": True, "refine_biso": True,
+                     "refine_xyz": True, "refine_texture": True,
+                     "refine_aniso": True, "refine_eta": True}
+            res, recs, runner, secs = _full_recipe(i, d, pdir, extra, 120.0)
+            if res is None:
+                raise RuntimeError("配方无结果")
+            b, w = _base_rwp(i), win.get(i)
+            row = {"i": i, "sample": d.name, "tmax": 120.0,
+                   "rwp_pct": float(res.rwp),
+                   "delta": (None if b is None else float(res.rwp) - b),
+                   "delta_win": (None if w is None else float(res.rwp) - w),
+                   "seconds": secs,
+                   "po_r": ({k: list(v) for k, v in res.params.po_r.items()}
+                            if res.params.po_r else {}),
+                   "biso": {k: round(float(v), 4)
+                            for k, v in (res.params.b_iso or {}).items()},
+                   "texture": ({k: [round(float(x), 3) for x in v.get("grid", [])]
+                                for k, v in (res.params.texture or {}).items()}),
+                   "xyz_report": runner.xyz_report,
+                   "steps": [(r.key, r.status, r.rwp_after, r.message[:120])
+                             for r in recs]}
+        except Exception as exc:                                          # noqa: BLE001
+            row = {"i": i, "sample": d.name, "rwp_pct": None,
+                   "error": f"{type(exc).__name__}: {exc}",
+                   "trace": traceback.format_exc()[-1200:]}
+        rows.append(row)
+        _write_json("combo_tex_aniso.json", rows)
+        print(json.dumps({"stage": "combo_tex_aniso", "i": i,
+                          "rwp_pct": row["rwp_pct"],
+                          "delta": (None if row.get("delta") is None
+                                    else round(row["delta"], 3))},
+                         ensure_ascii=False), flush=True)
+
+
+def stage_combo_interp(want: set[int]) -> None:
+    """P1 试验：combo+EWIMV 改用 MAUD 式插值背景（bg_mode=interp，
+    n_bg≈12 对齐 MAUD interpolation_range 10，bg_interp_iters=10 默认）。"""
+    rows = _read_json("combo_interp.json")
+    done = {r["i"] for r in rows}
+    win = {r["i"]: r.get("rwp_pct") for r in _read_json("win.json")}
+    for i, d, pdir in sample_dirs():
+        if (want and i not in want) or i in done:
+            continue
+        try:
+            extra = {"po_probe": True, "refine_biso": True,
+                     "refine_xyz": True, "refine_texture": True,
+                     "bg_mode": "interp", "n_bg": 12}
+            res, recs, runner, secs = _full_recipe(i, d, pdir, extra, 120.0)
+            if res is None:
+                raise RuntimeError("配方无结果")
+            b, w = _base_rwp(i), win.get(i)
+            row = {"i": i, "sample": d.name, "tmax": (100.0 if i == 5 else 120.0),
+                   "rwp_pct": float(res.rwp),
+                   "delta": (None if b is None else float(res.rwp) - b),
+                   "delta_win": (None if w is None else float(res.rwp) - w),
+                   "seconds": secs,
+                   "biso": {k: round(float(v), 4)
+                            for k, v in (res.params.b_iso or {}).items()},
+                   "steps": [(s.key, s.status, s.rwp_after) for s in recs]}
+        except Exception as exc:                                          # noqa: BLE001
+            row = {"i": i, "sample": d.name, "rwp_pct": None,
+                   "error": f"{type(exc).__name__}: {exc}",
+                   "trace": traceback.format_exc()[-1200:]}
+        rows.append(row)
+        _write_json("combo_interp.json", rows)
+        print(json.dumps({"stage": "combo_interp", "i": i,
+                          "rwp_pct": row["rwp_pct"],
+                          "delta": (None if row.get("delta") is None
+                                    else round(row["delta"], 3))},
+                         ensure_ascii=False), flush=True)
+
+
 def main(argv: list[str]) -> int:
     stage = argv[1] if len(argv) > 1 else "base"
     want = {int(x) for x in argv[2].split(",")} if len(argv) > 2 else set()
     {"base": stage_base, "po": stage_po, "tex": stage_tex,
      "mur": stage_mur, "probe": stage_probe, "win": stage_win,
      "aniso": stage_aniso, "biso": stage_biso, "biso_inc": stage_biso_inc,
-     "xyz": stage_xyz, "combo": stage_combo}[stage](want)
+     "xyz": stage_xyz, "combo": stage_combo, "combo_tex": stage_combo_tex,
+     "combo_tex_aniso": stage_combo_tex_aniso,
+     "combo_interp": stage_combo_interp}[stage](want)
     return 0
 
 
