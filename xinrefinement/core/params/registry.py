@@ -175,6 +175,32 @@ def _s_texc(name: str, j: int):
     return _fn
 
 
+def _ss_pair(prm, name: str) -> tuple[float, float]:
+    """逐相各向同性 (X, Y)；缺相返回 (0, 0)（= 不加展宽）。"""
+    v = (getattr(prm, "size_strain", None) or {}).get(name)
+    if not v:
+        return 0.0, 0.0
+    x, y = float(v[0]), float(v[1])
+    return x, y
+
+
+def _g_ss(name: str, j: int):
+    """v1.5 M8b：逐相各向同性 TCH 第 j 个（0 = X 应变，1 = Y 尺寸）。"""
+    return lambda prm, cell, po: _ss_pair(prm, name)[j]
+
+
+def _s_ss(name: str, j: int):
+    def _fn(prm, cell, po, v):
+        from xinrefinement.core.refine import nonlinear as nl
+        b = nl.STRAIN_BOUNDS if j == 0 else nl.SIZE_BOUNDS
+        pair = list(_ss_pair(prm, name))
+        pair[j] = min(max(float(v), b[0]), b[1])
+        ss = dict(getattr(prm, "size_strain", None) or {})
+        ss[name] = (pair[0], pair[1])
+        return replace(prm, size_strain=ss), cell, po
+    return _fn
+
+
 def _aniso_coeff(prm, name: str, kind: str) -> list[float]:
     c = list((prm.aniso.get(name) or {}).get(kind) or [])
     return (c + [0.0] * 6)[:6]
@@ -292,6 +318,17 @@ def build_registry_from_config(cfg: nl.RefineConfig, prm: ProfileParams,
     if cfg.refine_size:
         add("global.micro.Y", "global", "micro", nl.SIZE_BOUNDS,
             _g_prm("Y"), _s_prm("Y"))
+    # v1.5 M8b：每相各向同性 TCH 尺寸/应变（MAUD ``Delft`` 口径）。
+    # 与全局 X/Y **并存不冲突**：forward 里 aniso > size_strain > 标量 X/Y，
+    # 故可「方石英用逐相宽包、其余相仍吃全局标量」。放在最后，保证既有
+    # 开关组合的向量前缀与边界逐位不变。
+    if getattr(cfg, "refine_size_strain", False) \
+            and getattr(prm, "size_strain", None):
+        for name in sorted(prm.size_strain):
+            add(f"phase[{name}].micro.X", "phase", "micro", nl.STRAIN_BOUNDS,
+                _g_ss(name, 0), _s_ss(name, 0))
+            add(f"phase[{name}].micro.Y", "phase", "micro", nl.SIZE_BOUNDS,
+                _g_ss(name, 1), _s_ss(name, 1))
 
     return ParameterRegistry(tuple(slots), n_phase=n_phase,
                              po_names=tuple(sorted(po_names or [])))

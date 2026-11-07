@@ -941,6 +941,12 @@ class MainWindow(QMainWindow):
             po_probe_min_gain=float(micro.get("po_probe_min_gain", 0.3)),
             po_probe_max_phases=int(micro.get("po_probe_max_phases", 2)),
             po_probe_max_iter=int(micro.get("po_probe_max_iter", 12)),
+            # v1.5 M8：试探命中相改用球谐织构（MAUD Harmonic 口径），
+            # 阶数沿用「织构模型」设置里的 harmonic:N（ewimv 时取 8）
+            po_probe_to_texture=bool(micro.get("po_probe_to_texture", False)),
+            po_probe_texture_degree=int(
+                str(micro.get("texture_model", "harmonic:8")).partition(":")[2]
+                or 8),
             tmin=tmin, tmax=tmax, max_iter=40)
         # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
         # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及

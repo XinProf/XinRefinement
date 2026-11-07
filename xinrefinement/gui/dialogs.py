@@ -590,6 +590,17 @@ class MicroDialog(_BaseDialog):
             "被跳过的相作为常量基参与变量投影，并在配方消息里列名")
         form.addRow("xyz 欠定策略", self.xyz_phase_select)
 
+        # v1.5 M8：试探命中相改用球谐织构（MAUD Harmonic 口径）
+        self.probe_tex = QCheckBox(
+            "PO 试探命中相改用球谐织构（MAUD Harmonic 口径）")
+        self.probe_tex.setChecked(bool(cur.get("po_probe_to_texture", False)))
+        self.probe_tex.setToolTip(
+            "开启后试探选中的相不再精修 March–Dollase r，而是按选中的纤维轴"
+            "播种球谐（Legendre）织构，阶数取上方「织构模型」设置；"
+            "MAUD 对高岭石/萤石/白云石正是逐相 Harmonic 8 阶。"
+            "MD 单轴 r 只能表达一维分布、且与标度强相关（样 7 萤石 r 撞上界 5.0）")
+        form.addRow(self.probe_tex)
+
         self.tmin = QDoubleSpinBox()
         self.tmin.setRange(0.0, 179.0)
         self.tmin.setDecimals(1)
@@ -624,6 +635,7 @@ class MicroDialog(_BaseDialog):
                 "refine_biso": bool(self.refine_biso.isChecked()),
                 "refine_xyz": bool(self.refine_xyz.isChecked()),
                 "xyz_phase_select": str(self.xyz_phase_select.currentData()),
+                "po_probe_to_texture": bool(self.probe_tex.isChecked()),
                 "tmin": float(self.tmin.value()),
                 "tmax": float(self.tmax.value()),
                 "time_budget_min": int(self.time_budget.value())}

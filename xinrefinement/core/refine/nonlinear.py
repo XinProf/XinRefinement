@@ -166,6 +166,14 @@ class RefineConfig:
     po_probe_max_phases: int = 2
     #: 每个候选的短精修迭代上限（只放 r 一个非线性参数）
     po_probe_max_iter: int = 12
+    #: v1.5 M8：试探选中的相改用**球谐织构**（而非 March–Dollase r）播种。
+    #: 依据：MAUD 对样 7 的高岭石/萤石/白云石统一用 Harmonic 8 阶逐相织构，
+    #: 而 MD 单轴 r 只能表达一维纤维分布（板状/柱状多轴分布不足），且 r 与
+    #: 标度强相关（实测样 7 萤石 r 撞上界 5.0，几乎只改了标度）。
+    #: 默认 False（MD 路径逐位不变）；开时需同时 refine_texture 才会精修系数。
+    po_probe_to_texture: bool = False
+    #: 球谐阶数（偶数；8 = MAUD ``_rita_harmonic_expansion_degree`` 实测口径）
+    po_probe_texture_degree: int = 8
     # ---- v1.4 任务 #17：原子坐标精修（配方 xyz 步，默认关） ----
     #: 开启后 xyz 步重读 CIF 未展开不对称单位，按 Wyckoff 位约束联动等价原子；
     #: 缺 CIF 源路径（如 parse_cif_string 构造的结构）自动跳过该相。
@@ -208,6 +216,19 @@ class RefineConfig:
     # ---- NCA 修改（T2.1）: TCH 尺寸/应变精修（默认关，保持 vendor 行为） ----
     refine_size: bool = False        # 精修 Y（Kλ/D，尺寸项）
     refine_strain: bool = False      # 精修 X（4ε，应变项）
+    # ---- v1.5 M8b（2026-11-07）: 逐相各向同性 TCH（MAUD ``Delft`` 口径） ----
+    #: 精修 ``ProfileParams.size_strain`` 里**已给出起点**的每一相的 (X, Y)。
+    #: 与 ``refine_size``/``refine_strain``（全谱唯一标量）不同，这是**按相**
+    #: 的 2 参各向同性展宽：MAUD 对样 7 的石英给 size 7586 Å/strain 4e-7
+    #: （≈无展宽）、对方石英给 size 27.2 Å/strain 0.0164（≈3.3° 宽包），
+    #: 相差 3 个量级，单谱标量无法同时表达。
+    #:
+    #: 相对 6 参 Popa LB 的价值不只是「更贴 MAUD」，而是**结构性约束**：
+    #: 6 参张量在单谱上常不可辨识，实测会出现某相某方向 FWHM 被撑到
+    #: 1.87° 而实测仅 0.24°（4.8 倍过宽）；只给 2 参就没有这种自由度。
+    #:
+    #: 默认关：不给起点即无槽位，既有 golden 逐位不变。
+    refine_size_strain: bool = False
     # ---- NCA 修改（T3.2）: 收敛点相关性矩阵（默认关，约 +2n 次残差评估） ----
     refine_corr: bool = False
     # ---- v1.5 M10（2026-11-07）: 峰宽一维探针，改善 LM 起点 ----

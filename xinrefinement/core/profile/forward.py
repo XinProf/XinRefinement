@@ -156,6 +156,20 @@ class ProfileParams:
     #: ``n`` 为该反射的笛卡尔单位法向。各向同性时 c 为对角常数，等价于
     #: 标量 X/Y。给出 aniso 的相**忽略标量 X/Y**（每峰按方向取值）。
     aniso: dict | None = None
+    # ---- v1.5 M8b：每相**各向同性** TCH 尺寸/应变（MAUD ``Delft`` 口径） ----
+    #: ``{phase_name: (X_deg, Y_deg)}``，X = 4ε（应变）、Y = Kλ/D（尺寸）。
+    #:
+    #: 为什么需要它：``X``/``Y`` 是**全谱唯一标量**，而实测多相样里各相
+    #: 微结构差好几个量级（样 7 的 MAUD 模型：石英 size 7586 Å、strain
+    #: 4e-7 ≈ 无展宽；方石英 size 27.2 Å、strain 0.0164 ≈ 极宽）。用标量
+    #: 无法同时表达，只能全开 6 参 Popa LB——而 6 参张量在单谱上常不可
+    #: 辨识，实测就出现某相某方向 FWHM 被撑到 1.87°（实测仅 0.24°）。
+    #: 逐相 2 参各向同性等于是**给展宽加结构性约束**，与 MAUD 的
+    #: ``Delft / Isotropic`` 同口径。
+    #:
+    #: 优先级：``aniso`` 命中该相 → 用逐峰方向值（忽略本字段）；
+    #: 否则命中本字段 → 用该相的 (X, Y)；都没有 → 用标量 ``X``/``Y``。
+    size_strain: dict | None = None
 
 
 def brindley_factor(mr: float) -> float:
@@ -661,6 +675,8 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
     fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
     tch_on = (prm.X != 0.0) or (prm.Y != 0.0)   # NCA 修改（T2.1）
     aniso = prm.aniso.get(struct.name) if prm.aniso else None
+    # v1.5 M8b：逐相各向同性 (X, Y)；与 aniso 互斥，aniso 优先
+    ss = (prm.size_strain or {}).get(struct.name)
     # v1.4 #18：每相 ΔB_iso 与全局 bfactor 同为 exp(−B/(2d²))，直接相加
     bf = prm.bfactor + float((prm.b_iso or {}).get(struct.name, 0.0))
     for peak in peaks:
@@ -671,6 +687,9 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
         if aniso is not None:
             n = peak[3] if len(peak) > 3 else (0.0, 0.0, 1.0)
             x_deg, y_deg = aniso_xy(aniso, n, prm.wavelength)
+        elif ss is not None:
+            # v1.5 M8b：该相用逐相各向同性 (X, Y)，覆盖全谱标量
+            x_deg, y_deg = float(ss[0]), float(ss[1])
         if x_deg != 0.0 or y_deg != 0.0:
             # NCA 修改（T2.1）: TCH 逐峰 FWHM 与 η（prm.eta 被忽略）
             fwhm, eta, _fl = split_fwhm(pos, prm.U, prm.V, max(prm.W, MIN_W),

@@ -159,6 +159,12 @@ class RefineStep:
                        refine_po=(self.key == "micro"),
                        refine_size=(self.key == "micro" and not aniso_on),
                        refine_strain=(self.key == "micro" and not aniso_on),
+                       # v1.5 M8b：逐相各向同性 TCH 与 aniso **不互斥**——
+                       # forward 里 aniso 只覆盖「自己命中的相」，其余相仍走
+                       # 逐相 (X, Y) 或全局标量。故这里不受 aniso_on 约束，
+                       # 由调用方在 prm.size_strain 里点名要哪个相。
+                       refine_size_strain=(self.key == "micro"
+                                           and cfg.refine_size_strain),
                        # v1.3 #14：织构只在 micro 步精修，且必须由调用方
                        # 显式配置（cfg.refine_texture）——配方不自动开。
                        # 其它步仍然**施加** T(χ)（prm.texture 一直在），
@@ -795,9 +801,24 @@ class RecipeRunner:
                           key=lambda r: -r["gain"])[:max(1, int(
                               src.po_probe_max_phases))]
         po_r = dict(existing)
+        tex_new = dict(prm0.texture or {})
+        # v1.5 M8：试探命中的相可以改用球谐织构播种（MAUD 口径——它对
+        # 板状/柱状相用 Harmonic 8 阶，而不是单轴 MD）。默认关，MD 路径
+        # 逐位不变；开时需要 refine_texture 才会真正精修系数。
+        to_tex = bool(getattr(src, "po_probe_to_texture", False))
+        deg = int(getattr(src, "po_probe_texture_degree", 8))
         for row in accepted:
-            po_r[row["phase"]] = (*tuple(row["axis"]), 1.0)
-        prm_final = replace(prm0, po_r=(po_r or None))
+            if to_tex:
+                from xinrefinement.core.profile.forward import (
+                    default_texture_coeffs)
+                tex_new[row["phase"]] = {
+                    "axis": tuple(int(v) for v in row["axis"]),
+                    "model": "harmonic", "degree": deg,
+                    "coeffs": default_texture_coeffs(deg)}
+            else:
+                po_r[row["phase"]] = (*tuple(row["axis"]), 1.0)
+        prm_final = replace(prm0, po_r=(po_r or None),
+                            texture=(tex_new or None))
         msg = ("PO 试探："
                + ("时间护栏跳过" if skip_probe else
                   ("；".join(

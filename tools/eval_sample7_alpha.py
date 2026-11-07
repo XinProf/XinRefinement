@@ -37,20 +37,32 @@ OUT = B.OUT
 DIRS = sorted(p for p in ROOT.iterdir() if p.is_dir())
 D7 = DIRS[6]
 ALPHA = {"s4": DIRS[3] / "1-cristobalite-Entry_96-900-9688.cif",
-         "s6": DIRS[5] / "4-cristobalite-Entry_96-901-7339.cif"}
+         "s6": DIRS[5] / "4-cristobalite-Entry_96-901-7339.cif",
+         # 对照：不换相（仍是用户给的 β Fd-3m），用来把「换多型」的收益
+         # 与「本脚本与 combo_tex_aniso 的口径差（PO 试探同时开着）」分开
+         "beta": None}
 
 
 def main(argv: list[str]) -> int:
-    which = argv[1] if len(argv) > 1 else "s4"
+    which = "s4"
+    nbg_override = 0
+    rest = [a for a in argv[1:]]
+    if rest and not rest[0].startswith("--"):
+        which = rest.pop(0)
+    if "--nbg" in rest:
+        nbg_override = int(rest[rest.index("--nbg") + 1])
     pat, phases = B._load(7, D7, D7)
     from eval_cristobalite import _crist_index
 
     idx = _crist_index(phases)
     crist_name = phases[idx].name
-    alpha = parse_cif(ALPHA[which])
-    alpha.name = crist_name
-    phases = list(phases)
-    phases[idx] = alpha
+    if ALPHA[which] is None:            # beta 对照：原样使用用户 CIF
+        pass
+    else:
+        alpha = parse_cif(ALPHA[which])
+        alpha.name = crist_name
+        phases = list(phases)
+        phases[idx] = alpha
 
     # 与 combo_tex_aniso 完全同口径的输入构造（见 bench_v14._full_recipe）
     prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
@@ -71,7 +83,7 @@ def main(argv: list[str]) -> int:
                               for st in phases})
 
     tmin, tmax = 5.0, 120.0
-    nbg = max(6, int(round((tmax - tmin) / 6.0)))
+    nbg = nbg_override or max(6, int(round((tmax - tmin) / 6.0)))
     cfg = RefineConfig(refine_zero=True, refine_uvw=True, n_bg=nbg,
                        bg_mode="tent", tmin=tmin, tmax=tmax, max_iter=40,
                        po_probe=True, refine_biso=True, refine_xyz=True,
@@ -83,8 +95,9 @@ def main(argv: list[str]) -> int:
     if res is None:
         print("配方无结果")
         return 1
-    row = {"stage": "s7_alpha", "which": which,
-           "cif": str(ALPHA[which]), "rwp_pct": float(res.rwp),
+    row = {"stage": "s7_alpha", "which": which, "n_bg": nbg,
+           "cif": None if ALPHA[which] is None else str(ALPHA[which]),
+           "rwp_pct": float(res.rwp),
            "seconds": round(time.time() - t0, 1),
            "weights": [(p.name, None if p.weight_pct is None
                         else round(float(p.weight_pct), 2))
@@ -97,7 +110,8 @@ def main(argv: list[str]) -> int:
                       else round(r.rwp_after, 3), r.message[:90])
                      for r in recs]}
     rows = B._read_json("s7_alpha.json")
-    rows = [r for r in rows if r.get("which") != which] + [row]
+    rows = [r for r in rows if (r.get("which"), r.get("n_bg", 0))
+            != (which, nbg)] + [row]
     B._write_json("s7_alpha.json", rows)
     print(json.dumps({k: row[k] for k in
                       ("which", "rwp_pct", "biso_hit", "seconds")},
