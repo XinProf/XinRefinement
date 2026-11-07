@@ -443,6 +443,9 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
                         po_r=po_r, wavelength=base.wavelength,
                         asym=asym, bfactor=bfactor,
                         integrated=base.integrated,
+                        # v1.5 M5：重建时必须继承换基，否则整条精修链静默
+                        # 退回 tan 基（U/V/W 被当 tan 系数用，结果无意义）
+                        width_basis=getattr(base, "width_basis", "tan"),
                         microabs=microabs, texture=texture, aniso=aniso,
                         b_iso=b_iso,
                         X=X, Y=Y)   # NCA 修改（T2.1）

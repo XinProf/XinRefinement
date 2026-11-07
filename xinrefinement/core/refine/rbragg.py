@@ -64,7 +64,9 @@ def profile_fwhm(prm: ProfileParams):
     def fwhm(pos: float) -> float:
         if tch_on:
             fw, _eta, _fl = split_fwhm(pos, prm.U, prm.V, max(prm.W, 1e-4),
-                                        prm.X, prm.Y)
+                                        prm.X, prm.Y,
+                                        basis=getattr(prm, "width_basis", "tan"),
+                                        wavelength=prm.wavelength)
             return max(fw, 1e-4)
         t = math.tan(math.radians(pos) / 2.0)
         return float(math.sqrt(max(prm.U * t * t + prm.V * t + prm.W, 1e-8)))
@@ -80,7 +82,9 @@ def profile_eta(prm: ProfileParams):
 
     def eta(pos: float) -> float:
         if tch_on:
-            fg = fwhm_gaussian(pos, prm.U, prm.V, max(prm.W, 1e-4))
+            fg = fwhm_gaussian(pos, prm.U, prm.V, max(prm.W, 1e-4),
+                               basis=getattr(prm, "width_basis", "tan"),
+                               wavelength=prm.wavelength)
             from xinrefinement.core.profile.size_strain import fwhm_lorentz
             fl = fwhm_lorentz(pos, prm.X, prm.Y)
             return tch_eta(fg, fl)

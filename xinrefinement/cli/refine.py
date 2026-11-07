@@ -119,6 +119,10 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--refine-strain", action="store_true")
     r.add_argument("--peak-height", action="store_true",
                    help="峰高口径（默认积分强度口径；合成 bench 数据用此项）")
+    r.add_argument("--width-basis", choices=("tan", "d"), default="tan",
+                   help="v1.5 M5：Caglioti 的角依赖基。tan=U·tan²θ+V·tanθ+W"
+                        "（默认，v1.0 起行为）；d=U·x²+V·x+W，x=1/d=2sinθ/λ"
+                        "（高角饱和不发散，实验项）")
     r.add_argument("--lm-lambda", type=float, default=1e-3, metavar="L",
                    help="v1.5 M7：LM 初始阻尼 λ（默认 1e-3，与 v1.0 逐位一致）。"
                         "MAUD Marquardt LS 取 0.01——越大单步越保守，"
@@ -259,6 +263,7 @@ def _build_inputs(args) -> RefineInputs:
                              args.texture_degree)
     aniso, aniso_mode = _parse_aniso(args.aniso)
     prm = ProfileParams(
+        width_basis=args.width_basis,
         zero=args.zero,
         wavelength=args.wavelength,
         anode=None if args.anode == "none" else args.anode,

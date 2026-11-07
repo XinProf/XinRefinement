@@ -83,6 +83,77 @@ def caglioti_2theta(U: float, V: float, W: float):
     return f
 
 
+def caglioti_d(wavelength: float, U: float, V: float, W: float):
+    """Caglioti 的 **d 基**（1/d 基）写法：FWHM² = U·x² + V·x + W，x = 1/d = 2sinθ/λ。
+
+    v1.5 M5（P4）：为什么要这个基——tanθ 基在 2θ→180° 时 tanθ→∞，FWHM 无界
+    发散（§1.5 实测纯刚玉 U=0.188 时高角宽度涨到 ~0.85°，GSAS-II 全程只
+    0.11°）。而 1/d = 2sinθ/λ 在 2θ→180° 时**饱和于 2/λ**，物理上更合理：
+    「峰宽随倒空间尺度变化」本来就是尺寸/应变展宽的原始形式（Scherrer 的
+    1/cosθ 与应变 tanθ 都可由 1/d 与 cosθ 组合），且这正是 MAUD
+    `_riet_caglioti_d_dep` 一族参数化的动机。
+
+    小角极限下 x = 2sinθ/λ ≈ tanθ·(2cosθ/λ) → 与 tan 基在低角近似一致，
+    故 U/V/W 的初值可以从 tan 基的结果直接迁移（见 ``convert_width_basis``）。
+    """
+    k = 2.0 / wavelength
+
+    def f(pos: float) -> float:
+        t = math.radians(pos) / 2.0
+        x = k * math.sin(t)
+        return math.sqrt(max(U * x * x + V * x + W, 1e-6))
+    return f
+
+
+def width_function(prm, wavelength: float | None = None):
+    """按 ``prm.width_basis`` 返回 FWHM(2θ) 闭包（默认 tan 基，逐位不变）。"""
+    w = max(prm.W, MIN_W)
+    if getattr(prm, "width_basis", "tan") == "d":
+        return caglioti_d(wavelength or prm.wavelength, prm.U, prm.V, w)
+    return caglioti_2theta(prm.U, prm.V, w)
+
+
+def convert_width_basis(U: float, V: float, W: float, wavelength: float,
+                        tmin: float, tmax: float, frm: str = "tan",
+                        to: str = "d", n: int = 240) -> tuple[float, float, float]:
+    """把 (U,V,W) 从 ``frm`` 基换到 ``to`` 基：在 [tmin,tmax] 上最小二乘拟合 FWHM²。
+
+    两基对 U/V/W 的解释不同（单位不同），直接把 tan 基的数值当 d 基用是
+    错的。这里用等距采样做 3 参数线性最小二乘，得到**同一条 FWHM 曲线**在
+    目标基下的等价系数，用作换基后的精修起点（否则 LM 从错误起点出发，
+    任何结论都不可信）。
+
+    注意：这只是**起点迁移**，不是恒等变换——tan 基在窗口上限接近 180° 时
+    发散，二次的 1/d 基无法完全复制它，残差可达数十个百分点。这正是两基
+    的差别所在，别把它当 bug。
+    """
+    import numpy as np
+
+    xs = np.linspace(tmin, tmax, n)
+
+    def _basis(kind: str) -> np.ndarray:
+        if kind == "d":
+            return np.array([[_x2(x, wavelength) ** 2, _x2(x, wavelength), 1.0]
+                             for x in xs])
+        return np.array([[_t(x) ** 2, _t(x), 1.0] for x in xs])
+
+    if frm == "d":
+        f2_src = np.array([U * _x2(x, wavelength) ** 2 + V * _x2(x, wavelength) + W
+                           for x in xs])
+    else:
+        f2_src = np.array([U * _t(x) ** 2 + V * _t(x) + W for x in xs])
+    coef, *_ = np.linalg.lstsq(_basis(to), f2_src, rcond=None)
+    return float(coef[0]), float(coef[1]), float(coef[2])
+
+
+def _t(pos: float) -> float:
+    return math.tan(math.radians(pos) / 2.0)
+
+
+def _x2(pos: float, wavelength: float) -> float:
+    return 2.0 * math.sin(math.radians(pos) / 2.0) / wavelength
+
+
 @dataclass(frozen=True)
 class ProfileParams:
     """B 法非线性峰形参数集。
@@ -111,6 +182,12 @@ class ProfileParams:
     U: float = 0.0
     V: float = 0.0
     W: float = 0.02
+    # ---- v1.5 M5（P4）：Caglioti 的角依赖基 ----
+    #: ``"tan"``（默认，v1.0 起的历史行为，逐位不变）：FWHM² = U·tan²θ + V·tanθ + W
+    #: ``"d"``：FWHM² = U·x² + V·x + W，x = 1/d = 2sinθ/λ，高角饱和不发散。
+    #: 换基只改变 U/V/W 的**解释**，不增加自由度；起点须用
+    #: ``convert_width_basis`` 迁移，否则 LM 从错误起点出发。
+    width_basis: str = "tan"
     eta: float = 0.5
     anode: str | None = "Cu"
     ka_ratio: float = 0.5
@@ -672,7 +749,7 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
     ``prm.aniso`` 含该相时按每峰晶向取 (X, Y)（**忽略**标量 X/Y）；
     (X, Y) 均为 0 时退回 Caglioti + prm.eta，与未开各向异性的行为一致。
     """
-    fwhm_func = caglioti_2theta(prm.U, prm.V, max(prm.W, MIN_W))
+    fwhm_func = width_function(prm)   # v1.5 M5：tan 基（默认）/ d 基
     tch_on = (prm.X != 0.0) or (prm.Y != 0.0)   # NCA 修改（T2.1）
     aniso = prm.aniso.get(struct.name) if prm.aniso else None
     # v1.5 M8b：逐相各向同性 (X, Y)；与 aniso 互斥，aniso 优先
@@ -693,7 +770,9 @@ def _accumulate_peaks(prof: np.ndarray, grid: np.ndarray, peaks,
         if x_deg != 0.0 or y_deg != 0.0:
             # NCA 修改（T2.1）: TCH 逐峰 FWHM 与 η（prm.eta 被忽略）
             fwhm, eta, _fl = split_fwhm(pos, prm.U, prm.V, max(prm.W, MIN_W),
-                                        x_deg, y_deg)
+                                        x_deg, y_deg,
+                                        basis=getattr(prm, "width_basis", "tan"),
+                                        wavelength=prm.wavelength)
             fwhm = max(fwhm, MIN_W)
         else:
             fwhm = max(fwhm_func(pos), MIN_W)

@@ -29,7 +29,7 @@ import numpy as np
 
 from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
-from xinrefinement.core.profile.forward import ProfileParams, caglioti_2theta
+from xinrefinement.core.profile.forward import ProfileParams, width_function
 from xinrefinement.core.profile.shape import _pv_peak
 from xinrefinement.core.profile.struct import compute_peaks
 from xinrefinement.core.refine.linear import solve_linear_detail
@@ -62,7 +62,7 @@ def _peak_positions(struct: CifStructure, prm: ProfileParams,
 def _profile_matrix(grid: np.ndarray, positions: np.ndarray,
                     prm: ProfileParams) -> np.ndarray:
     """每列 = 单位积分面积的 pseudo-Voigt 峰（只在 ±8 FWHM 窗口内非零）。"""
-    fwhm_fn = caglioti_2theta(prm.U, prm.V, max(prm.W, 1e-4))
+    fwhm_fn = width_function(prm)   # v1.5 M5：尊重 prm.width_basis
     out = np.zeros((grid.size, positions.size), dtype=np.float64)
     for j, pos in enumerate(positions):
         fwhm = max(fwhm_fn(pos), 1e-4)

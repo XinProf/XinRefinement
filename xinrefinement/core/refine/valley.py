@@ -70,7 +70,8 @@ def valley_scan(pat: Pattern, structure: CifStructure, prm0: ProfileParams,
 
     返回 0.0 表示扫描不可用（无有效网格点），调用方回退常量初值。
     """
-    from xinrefinement.core.profile.forward import caglioti_2theta, compute_phase_profile
+    from xinrefinement.core.profile.forward import (
+        caglioti_2theta, compute_phase_profile, width_function)
     from xinrefinement.core.refine.linear import background_basis
     from xinrefinement.core.solve import _focus          # noqa: SLF001 —— 包内私有复用
 
@@ -83,7 +84,9 @@ def valley_scan(pat: Pattern, structure: CifStructure, prm0: ProfileParams,
     st_sc._variant = next(_SCAN_VARIANT)     # noqa: SLF001 —— 有意公开的盐值位
     pos_ref = 0.5 * (so.tmin + so.tmax)
     th_ref = math.radians(pos_ref / 2.0)
-    gtot0 = caglioti_2theta(prm0.U, prm0.V, prm0.W)(pos_ref)
+    gtot0 = (width_function(prm0)
+             if getattr(prm0, "width_basis", "tan") == "d"
+             else caglioti_2theta(prm0.U, prm0.V, prm0.W))(pos_ref)
     if gtot0 <= 0.0:
         return 0.0
     sig2 = 1.0 / np.maximum(yo, 1.0)
@@ -113,11 +116,14 @@ def valley_scan(pat: Pattern, structure: CifStructure, prm0: ProfileParams,
 
 def valley_init(prm0: ProfileParams, y_star: float, so: SolveOptions):
     """由谷底 Y* 构造联合精修初值：UVW 按谷方向缩放，Y/X 置谷底/常量。"""
-    from xinrefinement.core.profile.forward import caglioti_2theta
+    from xinrefinement.core.profile.forward import (
+        caglioti_2theta, width_function)
 
     pos_ref = 0.5 * (so.tmin + so.tmax)
     th_ref = math.radians(pos_ref / 2.0)
-    gtot0 = caglioti_2theta(prm0.U, prm0.V, prm0.W)(pos_ref)
+    gtot0 = (width_function(prm0)
+             if getattr(prm0, "width_basis", "tan") == "d"
+             else caglioti_2theta(prm0.U, prm0.V, prm0.W))(pos_ref)
     k = 1.0
     if gtot0 > 0.0:
         gl = y_star / math.cos(th_ref)

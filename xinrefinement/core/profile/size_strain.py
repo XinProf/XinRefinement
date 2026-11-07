@@ -43,8 +43,18 @@ def _bragg_terms(pos_deg: float) -> tuple[float, float]:
     return math.tan(th), math.cos(th)
 
 
-def fwhm_gaussian(pos_deg: float, U: float, V: float, W: float) -> float:
-    """Caglioti 高斯项 FWHM_G（度）。"""
+def fwhm_gaussian(pos_deg: float, U: float, V: float, W: float,
+                  basis: str = "tan", wavelength: float = 1.5406) -> float:
+    """Caglioti 高斯项 FWHM_G（度）。
+
+    ``basis="tan"``（默认，历史行为）：FWHM² = U·tan²θ + V·tanθ + W。
+    ``basis="d"``（v1.5 M5）：FWHM² = U·x² + V·x + W，x = 2sinθ/λ = 1/d，
+    高角饱和不发散。**必须与 ``forward.width_function`` 同口径**，否则开了
+    Popa LB 各向异性的相会静默退回 tan 基（宽度模型的换基就失效了）。
+    """
+    if basis == "d":
+        x = 2.0 * math.sin(math.radians(max(pos_deg, 1e-6)) / 2.0) / wavelength
+        return math.sqrt(max(U * x * x + V * x + W, MIN_FWHM * MIN_FWHM))
     t, _c = _bragg_terms(pos_deg)
     return math.sqrt(max(U * t * t + V * t + W, MIN_FWHM * MIN_FWHM))
 
@@ -82,9 +92,10 @@ def tch_eta(fg: float, fl: float) -> float:
 
 
 def split_fwhm(pos_deg: float, U: float, V: float, W: float,
-               X: float, Y: float) -> tuple[float, float, float]:
+               X: float, Y: float, basis: str = "tan",
+               wavelength: float = 1.5406) -> tuple[float, float, float]:
     """一次算齐 (总 FWHM, η, FWHM_L) —— 前向模型逐峰调用。"""
-    fg = fwhm_gaussian(pos_deg, U, V, W)
+    fg = fwhm_gaussian(pos_deg, U, V, W, basis=basis, wavelength=wavelength)
     fl = fwhm_lorentz(pos_deg, X, Y)
     return tch_combine(fg, fl), tch_eta(fg, fl), fl
 
