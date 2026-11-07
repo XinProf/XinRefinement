@@ -91,7 +91,8 @@ Popa LB 各向异性（M4）是最大的单项收益，但它只存在于基准�
 - **验证**：`tests/test_lm_params.py` 11 项（默认逐位不变 / λ 只影响路径
   不影响极小 / λ 越大单步越保守 / 步长不改雅可比精度 / `_run_lm` 透传 /
   `RefineConfig` 默认 = 历史 / config 真到 `_optimize` / CLI 标志与映射）；
-  **golden 8 档逐位对拍**（见下条绊线）；全量回归 459 项 EXIT=0。
+  **golden 8 档逐位对拍**（见下条绊线）；全量回归 **460 项：456 passed /
+  4 skipped，EXIT=0**（4 个 skip 全是 XinMatch 相关，理由已改为带出真实异常）。
 
 ### 结论（负）：M6 逐原子 B_iso + `equalTo` 无增量，不做引擎改造
 
