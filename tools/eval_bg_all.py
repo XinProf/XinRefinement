@@ -115,6 +115,12 @@ def _qpa(res) -> list[dict]:
 
 
 def _report() -> int:
+    """打印全样表。
+
+    列按**实际存在的 spacing** 生成（历史 6.0/2.5 + 后补的 4.0 中间档），
+    稀疏/加密的相对量都以 6.0° 为参照——它是出厂自适应档，也是
+    `combo_tex_aniso` 基准的复现点。
+    """
     rows = list(_all_rows().values())
     if not rows:
         print("尚无结果")
@@ -122,24 +128,50 @@ def _report() -> int:
     by: dict[int, dict[float, dict]] = {}
     for r in rows:
         by.setdefault(r["i"], {})[float(r["spacing"])] = r
-    print(f"{'样':>2} {'MAUD':>6} {'6.0°':>7} {'2.5°':>7} {'Δ':>7} "
-          f"{'gap6':>6} {'gap2.5':>7}  方石英vol% 6→2.5")
+    spaces = sorted({sp for d in by.values() for sp in d})
+    # 6.0° 打头（出厂自适应档 = 基准复现点），其余按由疏到密排列
+    spaces = ([6.0] if 6.0 in spaces else []) + [s for s in spaces if s != 6.0]
+    head = f"{'样':>2} {'MAUD':>6}"
+    for sp in spaces:
+        head += f" {f'{sp:g}°':>7} {'Δ':>7}"
+    head += f" {'gap@密':>7}  {'max|Δvol%|':>16}"
+    print(head)
     for i in sorted(by):
-        a, b = by[i].get(6.0), by[i].get(2.5)
-        if not a or not b or a.get("rwp_pct") is None or b.get("rwp_pct") is None:
-            print(f"{i:>2} 未完成")
+        d = by[i]
+        base = d.get(6.0)
+        if base is None or base.get("rwp_pct") is None:
+            print(f"{i:>2} 缺 6.0° 基准档")
             continue
-        ca = next((q["vol_pct"] for q in a.get("qpa", []) if "8234" in q["name"]), None)
-        cb = next((q["vol_pct"] for q in b.get("qpa", []) if "8234" in q["name"]), None)
-
-        def _gap(v):
-            return f"{v - MAUD[i]:+.2f}" if i in MAUD else "—"
-        print(f"{i:>2} {MAUD.get(i, 0):6.2f} {a['rwp_pct']:7.3f} "
-              f"{b['rwp_pct']:7.3f} {b['rwp_pct'] - a['rwp_pct']:+7.3f} "
-              f"{_gap(a['rwp_pct']):>6} {_gap(b['rwp_pct']):>7}  "
-              f"{ca} → {cb}")
+        line = f"{i:>2} {MAUD.get(i, 0):6.2f}"
+        for sp in spaces:
+            r = d.get(sp)
+            if r is None or r.get("rwp_pct") is None:
+                line += f" {'—':>7} {'':>7}"
+                continue
+            line += f" {r['rwp_pct']:7.3f} {r['rwp_pct'] - base['rwp_pct']:+7.3f}"
+        # 相对 MAUD 的差距只在最密档给一列：逐列给会把表撑到读不下去
+        densest = [d[sp] for sp in spaces if d.get(sp)
+                   and d[sp].get("rwp_pct") is not None][-1]
+        gap = (f"{densest['rwp_pct'] - MAUD[i]:+.2f}"
+               if i in MAUD else "—")
+        # QPA 漂移用「全相最大 |Δvol%|」而不是盯某一相：背景加密最怕的是
+        # 把重叠峰强度吸进本底，任何相的分数都可能动，只看方石英会漏。
+        qa = {q["name"]: q["vol_pct"] for q in base.get("qpa", [])}
+        worst, who, worst_sp = 0.0, "—", None
+        for sp in spaces:
+            r = d.get(sp)
+            if r is None or sp == 6.0:
+                continue
+            qb = {q["name"]: q["vol_pct"] for q in r.get("qpa", [])}
+            for name in set(qa) & set(qb):
+                delta = abs(qb[name] - qa[name])
+                if delta > worst:
+                    worst, who, worst_sp = delta, name.split()[-1], sp
+        tag = f"{worst:5.2f} @{worst_sp:g}° ({who})" if worst_sp else "—"
+        print(line + f" {gap:>7}  {tag:>16}")
     if by:
-        print("\n（gap 为相对 MAUD 的差值，负数 = 反超）")
+        print("\n（Δ 为相对 6.0° 出厂档的 Rwp 变化，负数 = 改善；"
+              "max|Δvol%| 为任一相 QPA 相对 6.0° 的最大漂移）")
     return 0
 
 

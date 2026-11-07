@@ -861,8 +861,14 @@ class MainWindow(QMainWindow):
 
     def open_step_settings(self, step: str, title: str) -> None:
         names = [s.name for s in self._phases]
-        got = open_settings(step, title, names,
-                            self._settings.get(step), self)
+        cur = self._settings.get(step)
+        if step == "bg":
+            # v1.5 M8d：弹窗首次打开时要把「自适应节点数」灌进去。否则
+            # 会显示代码级兜底 3（cheb 时代遗留），用户点「确定」就把
+            # 19 节点默默降成 3——背景灵活性骤降而界面上看不出来。
+            cur = dict(cur or {})
+            cur.setdefault("n_bg", adaptive_n_bg(*self._refine_window()))
+        got = open_settings(step, title, names, cur, self)
         if got is not None:
             self._settings[step] = got
             self.statusBar().showMessage(f"已更新「{title}」设置")
@@ -906,6 +912,20 @@ class MainWindow(QMainWindow):
         """帮助→关于：家族版式（版权/许可继承 XinMatch）。"""
         AboutDialog(self).exec()
 
+    def _refine_window(self) -> tuple[float, float]:
+        """当前精修窗口（micro 齿轮优先，其次 bg 齿轮，兜底 5–90°）。
+
+        v1.5 M8d：背景节点数的自适应值、弹窗初值、`_make_inputs` 三处
+        必须用同一个窗口口径，否则界面上显示的节点数与实跑的不一致。
+        """
+        bg = self._settings.get("bg", {}) or {}
+        micro = self._settings.get("micro", {}) or {}
+        tmin = float(micro.get("tmin", bg.get("tmin", 5.0)))
+        tmax = float(micro.get("tmax", bg.get("tmax", 90.0)))
+        if tmax <= tmin:
+            return 5.0, 90.0
+        return tmin, tmax
+
     def _make_inputs(self) -> RefineInputs | None:
         """按当前齿轮设置构造精修输入（同步与后台线程共用）。"""
         if self._pattern is None or not self._phases:
@@ -917,10 +937,7 @@ class MainWindow(QMainWindow):
         # v1.2.0 P1（实样对拍 §11.2 实测 −4 点均值）：真实数据出厂默认
         # tent，节点数随精修窗口自适应 ≈1 节点/6°；齿轮弹窗显式设置优先。
         # v1.4 #19：窗口可在 micro 齿轮里放开到谱图高角（背景节点数随之自适应）。
-        tmin = float(micro.get("tmin", bg.get("tmin", 5.0)))
-        tmax = float(micro.get("tmax", bg.get("tmax", 90.0)))
-        if tmax <= tmin:
-            tmin, tmax = 5.0, 90.0
+        tmin, tmax = self._refine_window()
         bg_points = tuple((float(x), float(v))
                           for x, v in (bg.get("bg_points") or ()))
         cfg = RefineConfig(

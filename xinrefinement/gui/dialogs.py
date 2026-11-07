@@ -75,8 +75,15 @@ class BackgroundDialog(_BaseDialog):
                                    "manual": 3}.get(cur.get("bg_mode", "cheb"),
                                                     0))
         self.n_terms = QSpinBox()
-        self.n_terms.setRange(1, 30)
+        # v1.5 M8d：上限从 30 放到 60。tent 节点走线性层解析求解，
+        # **加节点不增加残差评估次数**（几乎免费），而 5–120° 每 2.5°
+        # 一节点需要 46 个（实测 5/6 样 Rwp −0.35…−1.07，见立项书
+        # §1.9）；旧上限 30 等于把这条路堵死（30 节点 ≈ 每 3.8°）。
+        self.n_terms.setRange(1, 60)
         self.n_terms.setValue(int(cur.get("n_bg", 3)))
+        self.n_terms.setToolTip(
+            "tent/interp 的节点数（≈ 1 节点 / 6° 是出厂自适应值，"
+            "背景起伏明显或荧光本底重时可试 1.5–2 倍）")
         form.addRow("背景函数", self.mode)
         form.addRow("阶数 / 节点数", self.n_terms)
         # v1.3：定权模式（MAUD getWeight + theoreticalWeights）
