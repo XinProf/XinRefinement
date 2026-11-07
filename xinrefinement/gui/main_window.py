@@ -974,8 +974,13 @@ class MainWindow(QMainWindow):
         inputs = self._make_inputs()
         if inputs is None:
             return
+        # v1.5 M9b：全链墙钟预算（micro 齿轮「精修时间预算」，分钟；
+        # 0 = 不限）。防 GUI 单次精修 >1 h（样 4 实测 44.5 min 压线）。
+        micro = self._settings.get("micro", {}) or {}
+        budget_min = int(micro.get("time_budget_min", 45))
         worker = RefineWorker(inputs, steps=DEFAULT_STEPS,
-                              single_step=single_step)
+                              single_step=single_step,
+                              time_budget_s=max(0, budget_min) * 60.0)
         self._worker = worker
         worker.step_started.connect(self._on_step_started)
         worker.step_finished.connect(self._on_step_finished)

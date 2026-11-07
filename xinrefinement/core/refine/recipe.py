@@ -37,6 +37,7 @@ cell 步 status 显示 ``done`` 但 Rwp 前后**逐位相同**，等于假装执
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -52,6 +53,17 @@ from xinrefinement.core.refine.solve import RefineInputs, SolveResult, solve
 #: 跑十几分钟仍不收敛。坐标精修一般 8–12 次即到平台，这里给 xyz 步
 #: 单独封顶，避免一条配方链被站点引擎拖死（主 solve 的迭代预算不变）。
 XYZ_SITE_MAX_ITER = 12
+
+# ---- v1.5 M9b（2026-11-07）性能护栏：全链墙钟预算 ----
+#: core / CLI 默认不限时（逐位零回归）；GUI 出厂默认 45 分钟。
+#: 依据：ShiJK 7 样全自动实测最慢样 4 = 44.5 min（5 相 xyz 40 参降级），
+#: 老引擎不封顶时病态样可能 >1 h（GUI 忙窗期间无法取消到步内）。
+DEFAULT_TIME_BUDGET_S = 0.0
+GUI_TIME_BUDGET_S = 2700.0
+#: xyz 步之后还要跑 micro / B，给它们留的余量（秒）。
+_LATER_STEPS_RESERVE_S = 180.0
+#: 连跑时剩余预算低于该值的可选步（xyz/micro/B）直接跳过（秒）。
+_MIN_STEP_REMAINING_S = 60.0
 
 
 def _extra_micro_freedom(cfg: RefineConfig) -> bool:
@@ -234,9 +246,19 @@ class RecipeRunner:
     """把配方步骤映射到真实精修调用，带 Rwp 监控与快照回退。"""
 
     def __init__(self, steps: tuple[RefineStep, ...] = DEFAULT_STEPS,
-                 rwp_tol: float = 1e-3) -> None:
+                 rwp_tol: float = 1e-3,
+                 time_budget_s: float = DEFAULT_TIME_BUDGET_S) -> None:
         self.state = RecipeState(steps=steps)
         self.rwp_tol = rwp_tol
+        #: v1.5 M9b：全链墙钟预算（秒）；<=0 表示不限时（core/CLI 默认）。
+        self.time_budget_s = float(time_budget_s)
+        #: 连跑开始时的截止时刻（``time.monotonic()`` 基准；不限时为 None）。
+        self._deadline: float | None = None
+        #: 单次残差评估实测耗时（秒）——由首个慢步的对照 solve 实测并缓存，
+        #: 供 xyz/micro 步自适应降迭代。None = 未测量（不限时路径永不测量）。
+        self._per_eval_s: float | None = None
+        #: M9b 护栏动作记录（诊断/测试用）：形如 "xyz: max_iter 12→4"。
+        self.time_report: list[str] = []
         #: 当前相列表。cell 步精修后会把新晶胞回写到这里，后续步骤
         #: （profile/micro）必须看到改过的晶胞，否则整条链又退化成
         #: 「晶胞精修对最终结果无贡献」。
@@ -245,6 +267,37 @@ class RecipeRunner:
         self.po_probe_report: list[dict] = []
         #: v1.4 #17：最近一次 xyz 步的站点精修明细（诊断/测试用）
         self.xyz_report: dict = {}
+
+    # ---- v1.5 M9b：墙钟护栏原语 --------------------------------------
+
+    def _start_clock(self) -> None:
+        """连跑入口调用：按预算生成截止时刻（不限时为 None，护栏全静默）。"""
+        self._deadline = (time.monotonic() + self.time_budget_s
+                          if self.time_budget_s > 0 else None)
+
+    def _remaining(self) -> float | None:
+        """剩余预算（秒）；不限时返回 None。"""
+        if self._deadline is None:
+            return None
+        return self._deadline - time.monotonic()
+
+    def _measure_per_eval(self, inputs: RefineInputs,
+                          phases: list[CifStructure], prm: ProfileParams,
+                          cfg: RefineConfig) -> float | None:
+        """用 ``max_iter=1`` 的探针 solve 实测单次残差评估耗时（秒）。
+
+        ``solve`` 的 history 每次残差评估记一条，探针总耗时 ÷ 评估数即
+        单次评估成本。探针失败（异常/0 评估）返回 None，护栏静默退出——
+        时间护栏只降速，绝不因自身故障破坏精修。
+        """
+        try:
+            t0 = time.monotonic()
+            probe = solve(replace(inputs, phases=phases, profile=prm,
+                                  config=replace(cfg, max_iter=1)))
+            n_eval = max(1, len(getattr(probe, "history", ()) or ()))
+            return max((time.monotonic() - t0) / n_eval, 1e-6)
+        except Exception:                                      # noqa: BLE001
+            return None
 
     @property
     def records(self) -> list[StepRecord]:
@@ -259,6 +312,9 @@ class RecipeRunner:
         """清空运行状态与相列表（同一 runner 复用于下一次精修时调用）。"""
         self.state = RecipeState(steps=self.state.steps)
         self._phases = None
+        self._deadline = None
+        self._per_eval_s = None
+        self.time_report = []
         self.po_probe_report = []
         self.xyz_report = {}
 
@@ -404,10 +460,14 @@ class RecipeRunner:
         # 单步执行（prev=None）时先解一次作为对照，否则"没有改善就回退"
         # 会因缺少基准 Rwp 把任何结果都判成回退。
         fallback = prev
+        fb_elapsed = fb_evals = None
         if prev is None:
+            _t0 = time.monotonic()
             fallback = solve(replace(inputs,
                                      config=replace(cfg, refine_xyz=False),
                                      phases=phases, profile=prm0))
+            fb_elapsed = time.monotonic() - _t0
+            fb_evals = max(1, len(getattr(fallback, "history", ()) or ()))
         before = float(fallback.rwp) if fallback is not None else None
 
         def _rec(status: str, msg: str, after=None,
@@ -502,8 +562,44 @@ class RecipeRunner:
         clip = replace(pat, two_theta=pat.two_theta[mask],
                        intensity=pat.intensity[mask])
         backend = "lm" if src.backend in ("", "lm") else "scipy"
-        site_cfg = replace(src, max_iter=min(int(src.max_iter),
-                                             XYZ_SITE_MAX_ITER))
+        # v1.5 M9b 性能护栏：站点引擎数值雅可比每次迭代要 ~2(n_free+1) 次
+        # 全谱评估（中心差分估计），样 4（40 参降级）实测整步 44 min。
+        # 先拿到单次评估实测耗时（优先用上面对照 solve 的计时，其次探针），
+        # 再把迭代上限压到剩余预算内；预算连 1 次迭代都不够时整步跳过。
+        site_iters = XYZ_SITE_MAX_ITER
+        time_note = ""
+        remaining = self._remaining()
+        if remaining is not None:
+            per_eval = self._per_eval_s
+            if per_eval is None and fb_elapsed is not None:
+                per_eval = fb_elapsed / fb_evals
+            if per_eval is None:
+                per_eval = self._measure_per_eval(
+                    inputs, phases, prm0, replace(cfg, refine_xyz=False))
+            if per_eval is not None:
+                self._per_eval_s = per_eval
+                budget_s = remaining - _LATER_STEPS_RESERVE_S
+                n_eval_iter = 2 * (n_free + 1)
+                allowed = int(budget_s / (n_eval_iter * per_eval))
+                if allowed < 1:
+                    self.time_report.append(
+                        f"xyz: skipped(单迭代约 {n_eval_iter * per_eval:.0f} s"
+                        f" > 剩余 {budget_s:.0f} s)")
+                    return _rec(
+                        "skipped",
+                        f"时间护栏：站点精修单次迭代约需 "
+                        f"{n_eval_iter * per_eval:.1f} s（{n_free} 个自由系数"
+                        f"×数值雅可比），剩余预算 {budget_s:.0f} s 不足，"
+                        "已跳过（Rwp 保持上一步）",
+                        before, fallback)
+                site_iters = min(XYZ_SITE_MAX_ITER, allowed)
+                if site_iters < XYZ_SITE_MAX_ITER:
+                    time_note = (f"；时间护栏：站点迭代上限 "
+                                 f"{XYZ_SITE_MAX_ITER}→{site_iters}"
+                                 f"（剩余预算 {budget_s:.0f} s）")
+                    self.time_report.append(
+                        f"xyz: max_iter {XYZ_SITE_MAX_ITER}→{site_iters}")
+        site_cfg = replace(src, max_iter=min(int(src.max_iter), site_iters))
         try:
             sr = refine_sites(models, clip, prm0, site_cfg, backend=backend,
                               free_kinds=("xyz",), fixed_structures=fixed)
@@ -536,17 +632,19 @@ class RecipeRunner:
             self.xyz_report = {"params": tuple(float(v) for v in sr.params),
                                "rwp": float(sr.rwp), "success": bool(sr.success),
                                "n_free": n_free,
+                               "site_max_iter": site_iters,
                                "phases": [m.name for m in models],
                                "dropped_phases": tuple(dropped),
                                "accepted": False}
             return _rec("done",
                         f"原子坐标精修未改善 Rwp（{res.rwp:.3f} ≥ "
-                        f"{before:.3f}），已回退原结构",
+                        f"{before:.3f}），已回退原结构{time_note}",
                         before, fallback)
         drift = max((abs(float(v)) for v in sr.params), default=0.0)
         self.xyz_report = {"params": tuple(float(v) for v in sr.params),
                            "rwp": float(sr.rwp), "success": bool(sr.success),
-                           "n_free": n_free, "phases": [m.name for m in models],
+                           "n_free": n_free, "site_max_iter": site_iters,
+                           "phases": [m.name for m in models],
                            "dropped_phases": tuple(dropped),
                            "accepted": True}
         msg = (f"原子坐标：{len(models)} 相 / {n_free} 个自由系数，"
@@ -557,6 +655,7 @@ class RecipeRunner:
             shown = "、".join(dropped[:2]) + ("…" if len(dropped) > 2 else "")
             msg += (f"；欠定降级（{strategy}）：跳过 {len(dropped)} 相"
                     f"（{shown}）")
+        msg += time_note
         self._phases = new_phases
         self.state.push_snapshot(res.params)
         rec = StepRecord(step.key, step.title, "done", before, res.rwp, msg,
@@ -598,14 +697,64 @@ class RecipeRunner:
             refine_aniso=False, refine_microabs=False, refine_po=True,
             po_probe=False, max_iter=int(src.po_probe_max_iter))
         base_cfg = replace(probe_cfg, refine_po=False)
+        # v1.5 M9b：对照 solve 顺手计时——history 每次残差评估一条，
+        # elapsed/len(history) 即单次评估实测耗时（护栏的时间基准）。
+        base_elapsed = base_evals = None
         try:
-            base_rwp = float(solve(RefineInputs(
-                inputs.pattern, phases, prm0, base_cfg)).rwp)
+            _t0 = time.monotonic()
+            _base_res = solve(RefineInputs(
+                inputs.pattern, phases, prm0, base_cfg))
+            base_elapsed = time.monotonic() - _t0
+            base_evals = max(1, len(getattr(_base_res, "history", ()) or ()))
+            base_rwp = float(_base_res.rwp)
         except Exception:                                          # noqa: BLE001
             base_rwp = float(prev.rwp) if prev is not None else float("inf")
 
+        # v1.5 M9b：PO 试探与正式步的墙钟护栏。
+        # 试探每候选 ≤ (max_iter+1)×2 次评估（单参数 LM 中心差分）；
+        # 正式步按对照 solve 的评估数估 n_nl，每迭代 ~2(n+1) 次。
+        time_note = ""
+        skip_probe = False
+        remaining = self._remaining()
+        if remaining is not None:
+            per_eval = self._per_eval_s
+            if per_eval is None and base_elapsed is not None:
+                per_eval = base_elapsed / base_evals
+                self._per_eval_s = per_eval
+            if per_eval is not None:
+                n_est = max(1, base_evals - 1)
+                n_cand = sum(len(src.po_probe_axes) for st in phases
+                             if (st.name not in existing
+                                 and st.name not in tex_names
+                                 and st.name not in DEFAULT_PO_HKL))
+                probe_cost = (n_cand * (int(src.po_probe_max_iter) + 1) * 2
+                              * per_eval)
+                if probe_cost > remaining - _MIN_STEP_REMAINING_S:
+                    skip_probe = True
+                    time_note = (f"；时间护栏：PO 试探预计 {probe_cost:.0f} s"
+                                 f" 超剩余预算，已跳过试探")
+                    self.time_report.append(
+                        f"micro: po_probe skipped(预计 {probe_cost:.0f} s)")
+                allowed = int((remaining - _MIN_STEP_REMAINING_S)
+                              / max(2 * (n_est + 1) * per_eval, 1e-9))
+                if allowed < 1:
+                    self.time_report.append(
+                        "micro: skipped(剩余预算不足 1 次迭代)")
+                    rec = StepRecord(
+                        step.key, step.title, "skipped",
+                        None if prev is None else prev.rwp,
+                        None if prev is None else prev.rwp,
+                        "时间护栏：剩余预算不足 1 次迭代，已跳过")
+                    self.state.records.append(rec)
+                    return prev, rec
+                if allowed < int(cfg.max_iter):
+                    cfg = replace(cfg, max_iter=allowed)
+                    time_note += (f"；时间护栏：micro 迭代上限→{allowed}"
+                                  f"（剩余预算 {remaining:.0f} s）")
+                    self.time_report.append(f"micro: max_iter→{allowed}")
+
         report: list[dict] = []
-        for st in phases:
+        for st in ([] if skip_probe else phases):
             # DEFAULT_PO_HKL 覆盖的相由 nonlinear._ensure_po_r 自动补已知
             # 惯习面（锐钛 (001) / 金红石 (110)）；若让试探覆盖它，实测会把
             # 更准的默认轴换成噪声轴（合成对照 Rwp 5.4235 → 5.4265）。
@@ -649,10 +798,13 @@ class RecipeRunner:
         for row in accepted:
             po_r[row["phase"]] = (*tuple(row["axis"]), 1.0)
         prm_final = replace(prm0, po_r=(po_r or None))
-        msg = ("PO 试探：" + ("；".join(
-            f"{r['phase'][:18]}({''.join(str(v) for v in r['axis'])}) "
-            f"−{r['gain']:.2f}pt" for r in accepted)
-            if accepted else "无相达到增益阈值，未启用 PO"))
+        msg = ("PO 试探："
+               + ("时间护栏跳过" if skip_probe else
+                  ("；".join(
+                      f"{r['phase'][:18]}({''.join(str(v) for v in r['axis'])}) "
+                      f"−{r['gain']:.2f}pt" for r in accepted)
+                   if accepted else "无相达到增益阈值，未启用 PO")))
+        msg += time_note
 
         inp = replace(inputs, config=cfg, phases=phases, profile=prm_final)
         try:
@@ -704,9 +856,17 @@ class RecipeRunner:
     def run_all(self, inputs: RefineInputs,
                 steps: tuple[RefineStep, ...] | None = None,
                 cancel_cb=None) -> tuple[SolveResult | None, list[StepRecord]]:
-        """顺序连跑：每步以上一步参数为初值，收敛（ΔRwp<tol）可提前停。"""
+        """顺序连跑：每步以上一步参数为初值，收敛（ΔRwp<tol）可提前停。
+
+        v1.5 M9b：设置过 ``time_budget_s`` 时启用墙钟护栏——剩余预算不足
+        的可选步（xyz/micro/B）直接按 ``skipped`` 记录并继续（不中断链），
+        慢步内部再按实测单次评估耗时自适应降迭代（见 ``_run_xyz``）。
+        """
         todo = steps if steps is not None else self.state.steps
         result: SolveResult | None = None
+        self._start_clock()
+        self._per_eval_s = None
+        self.time_report = []
         self.state.current = 0
         self._phases = list(inputs.phases)
         self.po_probe_report = []
@@ -715,6 +875,19 @@ class RecipeRunner:
             if cancel_cb is not None and cancel_cb():
                 break
             before = result.rwp if result is not None else None
+            remaining = self._remaining()
+            if (remaining is not None and before is not None
+                    and step.key in ("xyz", "micro", "B")
+                    and remaining < _MIN_STEP_REMAINING_S):
+                rec = StepRecord(step.key, step.title, "skipped", before,
+                                 before,
+                                 f"时间护栏：剩余预算仅 {remaining:.0f} s "
+                                 f"（< {_MIN_STEP_REMAINING_S:.0f} s），"
+                                 "跳过可选步")
+                self.time_report.append(f"{step.key}: skipped(预算耗尽)")
+                self.state.records.append(rec)
+                self.state.current = i + 1
+                continue
             result, rec = self.run_step(step, inputs, result)
             self.state.current = i + 1
             if (rec.status == "done" and before is not None

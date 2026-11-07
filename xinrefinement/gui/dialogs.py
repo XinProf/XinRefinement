@@ -601,6 +601,16 @@ class MicroDialog(_BaseDialog):
         self.tmax.setToolTip("放开到谱图全范围可纳入高角弱峰；背景节点数按窗口自适应")
         form.addRow("精修窗口 2θ 下限 (°)", self.tmin)
         form.addRow("精修窗口 2θ 上限 (°)", self.tmax)
+
+        # v1.5 M9b：全链墙钟预算（性能护栏，防 GUI 单次精修 >1 h）
+        self.time_budget = QSpinBox()
+        self.time_budget.setRange(0, 720)
+        self.time_budget.setValue(int(cur.get("time_budget_min", 45)))
+        self.time_budget.setToolTip(
+            "全链墙钟预算（分钟），0 = 不限。超预算时慢步（原子坐标/微结构）"
+            "按实测单次评估耗时自适应降迭代，剩余预算不足的可选步直接跳过，"
+            "保证一键精修总时长可控（样 4 实测 44.5 min，出厂默认 45 min）")
+        form.addRow("精修时间预算 (分钟，0=不限)", self.time_budget)
         self._root.addLayout(form)
         self._add_buttons()
 
@@ -615,7 +625,8 @@ class MicroDialog(_BaseDialog):
                 "refine_xyz": bool(self.refine_xyz.isChecked()),
                 "xyz_phase_select": str(self.xyz_phase_select.currentData()),
                 "tmin": float(self.tmin.value()),
-                "tmax": float(self.tmax.value())}
+                "tmax": float(self.tmax.value()),
+                "time_budget_min": int(self.time_budget.value())}
 
 
 def open_settings(step: str, title: str, phase_names: list[str],

@@ -16,6 +16,7 @@ from PySide6.QtCore import QThread, Signal
 
 from xinrefinement.core.refine.recipe import (
     DEFAULT_STEPS,
+    GUI_TIME_BUDGET_S,
     RecipeRunner,
     RefineStep,
 )
@@ -32,13 +33,19 @@ class RefineWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, inputs: RefineInputs, steps=None,
-                 single_step: str | None = None, parent=None) -> None:
+                 single_step: str | None = None, parent=None,
+                 time_budget_s: float | None = None) -> None:
         super().__init__(parent)
         self._inputs = inputs
         self._steps = tuple(steps) if steps is not None else DEFAULT_STEPS
         self._single = single_step
         self._cancel = False
-        self._runner = RecipeRunner(self._steps)
+        # v1.5 M9b：GUI 全链墙钟预算。None = 出厂默认 45 min（micro 齿轮
+        # 可改，0 = 不限）；连跑超预算时慢步自适应降迭代、可选步跳过，
+        # 防 GUI 出现一次精修 >1 h（样 4 实测 44.5 min 已压线）。
+        if time_budget_s is None:
+            time_budget_s = GUI_TIME_BUDGET_S
+        self._runner = RecipeRunner(self._steps, time_budget_s=time_budget_s)
 
     def cancel(self) -> None:
         """请求取消（下一步边界检查；当前步内的 LM 由 cancel_cb 逐次评估检查）。"""

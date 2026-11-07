@@ -122,6 +122,10 @@ def _add_refine_parser(sub) -> None:
     r.add_argument("--recipe", action="store_true",
                    help="按标准导航配方分步精修（P3.3 RecipeRunner），"
                         "输出每步 Rwp；省略则单次整体精修")
+    r.add_argument("--time-budget-min", type=float, default=0.0, metavar="MIN",
+                   help="v1.5 M9b：配方连跑全链墙钟预算（分钟，默认 0 = 不限）。"
+                        "超预算时 xyz/micro 慢步按实测单次评估耗时自适应降迭代，"
+                        "剩余预算不足的可选步跳过（GUI 出厂默认 45）")
     r.add_argument("--report", metavar="DIR", default=None,
                    help="导出 HTML+PNG+JSON 报告目录（P4.1）")
     r.add_argument("--quant", action="store_true",
@@ -429,7 +433,9 @@ def _run(args) -> int:
     inputs = _build_inputs(args)
     recipe_rows: list[tuple[str, str, float | None, float | None]] = []
     if args.recipe:
-        runner = RecipeRunner()
+        runner = RecipeRunner(
+            time_budget_s=max(0.0, float(getattr(args, "time_budget_min", 0.0))
+                              * 60.0))
         res = None
         for step in runner.state.steps:
             res, rec = runner.run_step(step, inputs, res)
