@@ -35,6 +35,8 @@ from xinrefinement.core.palette import (  # noqa: E402
     apply_axis_style,
     phase_color,
 )
+from xinrefinement.core.profile.naming import (  # noqa: E402
+    DEFAULT_PHASE_LABEL_MODE, PHASE_LABEL_MODES)
 from xinrefinement.i18n import tr  # noqa: E402
 
 STYLE = DEFAULT_STYLE
@@ -121,7 +123,7 @@ def draw_fit(ax_main, ax_diff, two_theta, yobs, ycalc,
 
     # -- 每相一条标记条（MAUD 式：左标相名，棒高 ∝ 相内相对强度） ------ #
     if phase_sticks and tick_axes is not None and len(tick_axes) == len(phase_sticks):
-        for i, (name, entries, color_idx) in enumerate(phase_sticks):
+        for i, (name, entries, color_idx, label) in enumerate(phase_sticks):
             ax_t = tick_axes[i]
             pos, rel = normalize_sticks(entries)
             if pos.size:
@@ -135,7 +137,7 @@ def draw_fit(ax_main, ax_diff, two_theta, yobs, ycalc,
                 ax_t.spines[sp].set_visible(False)
             ax_t.spines["bottom"].set_color(STYLE.grid)
             ax_t.grid(False)
-            ax_t.text(-0.012, 0.5, name, transform=ax_t.transAxes,
+            ax_t.text(-0.012, 0.5, label, transform=ax_t.transAxes,
                       ha="right", va="center", color=phase_color(color_idx),
                       fontsize=7.5, clip_on=False)
 
@@ -155,6 +157,8 @@ class PatternCanvas(FigureCanvasQTAgg):
     axisHint = Signal(str)
     #: v1.3：背景锚点列表变化 ``[(2θ, 强度), ...]``（主窗口写入 settings）
     bgPointsChanged = Signal(list)
+    #: v1.6：请求切换物相显示口径（formula / label / file），主窗口统一改
+    phaseLabelMode = Signal(str)
 
     def __init__(self, parent=None) -> None:
         # GridSpec 双轴与 tight_layout 不兼容（会产生 UserWarning）；
@@ -169,7 +173,7 @@ class PatternCanvas(FigureCanvasQTAgg):
         self._yobs: np.ndarray | None = None
         self._ycalc: np.ndarray | None = None
         self._background: np.ndarray | None = None
-        self._phase_sticks: list[tuple[str, list]] = []
+        self._phase_sticks: list[tuple[str, list, str]] = []
         self._visible: set[str] = set()
         #: 轴模式与换算波长（谱图 meta 可覆盖）
         self.x_mode: str = "2theta"
@@ -181,6 +185,8 @@ class PatternCanvas(FigureCanvasQTAgg):
         #: v1.3：背景点选模式与锚点（2θ 坐标存储，d 模式下自动换算）
         self.pick_mode: bool = False
         self.bg_picks: list[tuple[float, float]] = []
+        #: v1.6：物相显示口径（主窗口写入；右键菜单切换时发信号）
+        self.label_mode: str = DEFAULT_PHASE_LABEL_MODE
         self._show_empty()
         self.mpl_connect("button_press_event", self._on_button_press)
         self.mpl_connect("motion_notify_event", self._on_motion)
@@ -192,12 +198,33 @@ class PatternCanvas(FigureCanvasQTAgg):
 
     @property
     def phase_names(self) -> list[str]:
-        return [n for n, _ in self._phase_sticks]
+        return [s[0] for s in self._phase_sticks]
 
-    def set_phase_sticks(self, sticks: list[tuple[str, list]]) -> None:
-        """登记每相的布拉格峰（(2θ,) 或 (2θ, I) 对，由 core 前向模型给出）。"""
-        self._phase_sticks = list(sticks)
-        self._visible = {n for n, _ in self._phase_sticks}
+    def set_phase_sticks(self, sticks) -> None:
+        """登记每相的布拉格峰（(2θ,) 或 (2θ, I) 对，由 core 前向模型给出）。
+
+        v1.6：元素可为 ``(key, entries)`` 或 ``(key, entries, label)``。
+        ``key`` 是稳定标识（``CifStructure.name``，显隐开关与配色都按它），
+        ``label`` 是展示名（化学式 / 物相名称）。分开放是因为界面上不再
+        显示 CIF 文件名，但内部还得靠它定位相。
+        """
+        norm: list[tuple[str, list, str]] = []
+        for item in sticks:
+            key = str(item[0])
+            entries = list(item[1])
+            label = str(item[2]) if len(item) >= 3 and item[2] else key
+            norm.append((key, entries, label))
+        self._phase_sticks = norm
+        self._visible = {s[0] for s in norm}
+
+    def set_phase_labels(self, labels: dict[str, str]) -> None:
+        """只换展示名（``{key: label}``），不动峰位与显隐状态。"""
+        if not labels:
+            return
+        self._phase_sticks = [
+            (k, e, str(labels.get(k, lab))) for k, e, lab in self._phase_sticks]
+        if self._yobs is not None:
+            self._redraw()
 
     def set_phase_visible(self, name: str, visible: bool) -> None:
         """相开关：即时重绘，不重新精修（参数改动即时预览的第一步）。"""
@@ -402,6 +429,9 @@ class PatternCanvas(FigureCanvasQTAgg):
                 return
         axis = self._hit_axis(event)
         if axis is None:
+            # v1.6：在物相标记条上右键 → 切换显示口径（化学式/名称/文件名）
+            if event.button == 3 and self._hit_stick_axis(event):
+                self._popup_sticks_menu(getattr(event, "guiEvent", None))
             return
         if event.button == 1:
             if axis == "x":
@@ -411,6 +441,33 @@ class PatternCanvas(FigureCanvasQTAgg):
             return
         if event.button == 3:
             self._popup_axis_menu(axis, event)
+
+    def _hit_stick_axis(self, event) -> bool:
+        """右键是否落在某条物相标记条上（v1.6）。"""
+        try:
+            return event.inaxes is not None and event.inaxes in self.ax_ticks
+        except Exception:
+            return False
+
+    def _popup_sticks_menu(self, gui=None) -> None:
+        """标记条右键菜单：切换物相显示口径（化学式 / 物相名称 / 文件名）。
+
+        故意做成**全局**设置而不是「改这一条」：用户不会想给 7 个相
+        分别设一个显示方式。
+        """
+        menu = QMenu(self)
+        menu.setTitle(tr("disp.mode"))
+        current = getattr(self, "label_mode", DEFAULT_PHASE_LABEL_MODE)
+        for mode in PHASE_LABEL_MODES:
+            act = menu.addAction(tr(f"disp.{mode}"))
+            act.setCheckable(True)
+            act.setChecked(mode == current)
+            act.triggered.connect(
+                lambda _c=False, m=mode: self.phaseLabelMode.emit(m))
+        if gui is not None and hasattr(gui, "globalPos"):
+            menu.exec(gui.globalPos())
+        else:
+            menu.exec(self.mapToGlobal(self.rect().center()))
 
     def _on_motion(self, event) -> None:
         """悬停到轴区时发状态栏提示并换手型光标（提示可点）。"""
@@ -463,12 +520,12 @@ class PatternCanvas(FigureCanvasQTAgg):
             menu.exec(self.mapToGlobal(self.rect().center()))
 
     # -- 绘制 ---------------------------------------------------------- #
-    def _visible_sticks(self) -> list[tuple[str, list, int]]:
-        """按相开关过滤后的标记条 ``(name, peaks, 原始相下标)``。
+    def _visible_sticks(self) -> list[tuple[str, list, int, str]]:
+        """按相开关过滤后的标记条 ``(key, peaks, 原始相下标, 展示名)``。
 
         保留原始下标是为了显隐切换时颜色不漂移。"""
-        return [(n, e, i) for i, (n, e) in enumerate(self._phase_sticks)
-                if n in self._visible]
+        return [(k, e, i, lab) for i, (k, e, lab) in enumerate(self._phase_sticks)
+                if k in self._visible]
 
     def _reset_axes(self) -> None:
         self.figure.clear()
@@ -561,9 +618,9 @@ class PatternCanvas(FigureCanvasQTAgg):
         if self.x_mode != "d":
             return sticks
         out = []
-        for name, entries, idx in sticks:
+        for key, entries, idx, label in sticks:
             if entries is None or len(entries) == 0:
-                out.append((name, entries, idx))
+                out.append((key, entries, idx, label))
                 continue
             arr = np.asarray(entries, dtype=float)
             if arr.ndim == 1:
@@ -571,5 +628,5 @@ class PatternCanvas(FigureCanvasQTAgg):
             else:
                 d = two_theta_to_d(arr[:, 0], self.wavelength)
                 new = np.column_stack([d, arr[:, 1]]).tolist()
-            out.append((name, new, idx))
+            out.append((key, new, idx, label))
         return out

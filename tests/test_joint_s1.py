@@ -96,11 +96,15 @@ def qapp():
 
 
 def test_s1_api_path_reproduces_golden_rwp(tmp_path, xm_api):
-    """导入后的谱图 + CIF 走公开 API，Rwp 复现 P0 黄金值（3.409617）。
+    """导入后的谱图 + CIF 走公开 API，Rwp 复现当前黄金值（3.407416）。
 
     这是 S1 的"数值保真"证据：``.xinm`` 的 CSV ``%.10g`` 往返与 CIF 打包
     没有引入任何可测偏差（黄金值为 CLI/API 口径，见 test_solve）。
-    """
+
+    注：本用例在 2026-11-07 之前**恒被 skip**（缺 `gemmi` → fixture 跳过），
+    因此 M11（`17525bb` 窗口边界峰外扩 + 结构因子向量化）把数值从
+    ``3.409617019598457`` 改到 ``3.4074156640940005`` 后没人发现。现在与
+    ``tests/golden/method_b_roundtrip.json`` 的 50/50 档严格同值。"""
     from xinrefinement import api as api_mod
     from xinrefinement.core.io.xinm_import import extract_cifs, read_xinm
 
@@ -113,7 +117,7 @@ def test_s1_api_path_reproduces_golden_rwp(tmp_path, xm_api):
             fh.write(f"{x:.10g} {y:.10g}\n")
     res = api_mod.refine(api_mod.RefineRequest(
         pattern=xy, cifs=tuple(cifs.values()), peak_height=True))
-    assert res.rwp == pytest.approx(3.409617019598457, rel=1e-12)
+    assert res.rwp == pytest.approx(3.4074156640940005, rel=1e-12)
     assert {p["name"] for p in res.phases} == {"7206075", "9001681"}
     assert all(40.0 < p["weight_pct"] < 60.0 for p in res.phases)
 

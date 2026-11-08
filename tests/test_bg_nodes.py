@@ -74,7 +74,7 @@ def test_dialog_seeded_with_adaptive_default(win, monkeypatch):
     win._settings["micro"] = {"tmin": 5.0, "tmax": 120.0}
     seen: dict = {}
 
-    def fake_open(step, title, names, current=None, parent=None):
+    def fake_open(step, title, names, current=None, parent=None, **kw):
         seen["n_bg"] = None if current is None else current.get("n_bg")
         return None
 
@@ -89,7 +89,7 @@ def test_explicit_nodes_not_overridden(win, monkeypatch):
     win._settings["bg"] = {"n_bg": 46, "bg_mode": "tent"}
     seen: dict = {}
 
-    def fake_open(step, title, names, current=None, parent=None):
+    def fake_open(step, title, names, current=None, parent=None, **kw):
         seen["n_bg"] = current.get("n_bg")
         return None
 
@@ -102,7 +102,7 @@ def test_other_steps_untouched(win, monkeypatch):
     """只有 bg 步做初值灌入，别的步保持 None（走各自弹窗默认）。"""
     seen: dict = {}
 
-    def fake_open(step, title, names, current=None, parent=None):
+    def fake_open(step, title, names, current=None, parent=None, **kw):
         seen[step] = current
         return None
 

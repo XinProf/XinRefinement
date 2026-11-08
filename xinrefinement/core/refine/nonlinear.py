@@ -135,6 +135,11 @@ class RefineConfig:
     #: solve() 会为缺相补 0 起点；与全局 bfactor 叠加，共用 exp(−B/2d²)。
     refine_biso: bool = False
     refine_cell: bool = False        # 每相晶胞 a,c 缩放 (T4.7)
+    #: v1.6：晶胞步的**逐相自由分量**覆盖 ``{相名: ("a","c",...)}``。
+    #: ``None``（默认）= 按晶系全放开，与 v1.5 逐位一致；空元组 = 该相
+    #: 跳过晶胞精修。来自 GUI「晶胞参数」弹窗的勾选——v1.5 及以前那排
+    #: 复选框**从未传给引擎**，勾了等于没勾。
+    cell_axes: dict | None = None
     #: v1.3 #16：优化器插拔——"lm"（自研，默认）| "trf" | "dogbox" |
     #: 历史别名 "scipy"（= trf）。见 core.refine.optimizers.OPTIMIZERS。
     backend: str = "lm"

@@ -174,6 +174,10 @@ class CifStructure:
         # 与教科书配方 LiNi0.8Co0.1Mn0.1O2 不同，手填会直接算错摩尔质量）。
         self.formula = None       # _chemical_formula_sum 原样（COD 风格，带空格）
         self.z_declared = None    # _cell_formula_units_Z（CIF 自述值，仅作交叉校验）
+        #: v1.6：物相名称（CIF `_chemical_name_mineral`，缺失时回落
+        #: `_chemical_name_common` / `_chemical_name_systematic`）。
+        #: GUI 的「物相名称」显示模式用它；界面上不再默认暴露 CIF 文件名。
+        self.name_mineral = None
         #: v1.4 #17：CIF 源路径。原子坐标精修需要重读**未展开**的不对称
         #: 单位与 symop（parse_cif 已把等价位置展开，无法反推 Wyckoff 位）。
         #: parse_cif_string / 手工构造的结构为 None，此时 xyz 步应跳过。
@@ -479,6 +483,15 @@ def _parse_cif_lines(lines: list[str], name: str) -> CifStructure:
     st.sg_number = sg_info.get("number")
     # NCA 修改（T5.3）：化学式 + 自述 Z（QPA 定量用）
     st.formula = _scan_single_tag(lines, "_chemical_formula_sum")
+    # v1.6：物相名称。矿物种名最贴近用户习惯（Quartz / Anatase / Rutile），
+    # 没有时依次退到俗名、系统名；三者皆缺则留 None，由 naming.phase_label
+    # 回落到化学式。
+    for tag in ("_chemical_name_mineral", "_chemical_name_common",
+                "_chemical_name_systematic"):
+        val = _scan_single_tag(lines, tag)
+        if val:
+            st.name_mineral = val.strip().strip("'\"")
+            break
     z_decl = _to_float(_scan_single_tag(lines, "_cell_formula_units_Z"))
     st.z_declared = int(z_decl) if z_decl else None
     return st

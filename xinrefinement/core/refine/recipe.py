@@ -423,7 +423,8 @@ class RecipeRunner:
             # 用 base.pattern（已按 [tmin, tmax] 裁过）而不是 inputs.pattern：
             # 晶胞引擎内部不做裁剪，传入未裁谱会让窗口外零计算谱污染残差。
             cr = refine_cell_full(list(phases), base.pattern, base.params,
-                                  cfg, backend=cfg.backend)
+                                  cfg, backend=cfg.backend,
+                                  axes_override=getattr(cfg, "cell_axes", None))
         except Exception as exc:
             rec = StepRecord(step.key, step.title, "failed",
                              None if prev is None else prev.rwp, base.rwp,
@@ -858,12 +859,19 @@ class RecipeRunner:
                               new: list[CifStructure],
                               cfg: RefineConfig) -> str:
         """给结果区一句可读的晶胞变化摘要（最多列 3 个相）。"""
-        from xinrefinement.core.refine.cell import crystal_system_of, free_axes
+        from xinrefinement.core.refine.cell import (
+            crystal_system_of, free_axes, resolve_axes)
 
+        # v1.6：自由度个数要按**用户勾选**算，不能按晶系全放开算，
+        # 否则「只修 a」也会报成「2 参」。
+        axes_map = getattr(cfg, "cell_axes", None) or {}
         parts: list[str] = []
         for a, b in zip(old, new):
             try:
-                ndof = len(free_axes(crystal_system_of(b)))
+                system = crystal_system_of(b)
+                requested = axes_map.get(b.name)
+                ndof = (len(free_axes(system)) if requested is None
+                        else len(resolve_axes(system, requested)))
             except Exception:
                 ndof = 0
             dev = max((abs(y - x) / abs(x) * 100.0

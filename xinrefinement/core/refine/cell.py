@@ -118,22 +118,27 @@ def free_axes(system: str) -> tuple[str, ...]:
         raise ValueError(f"未知晶系: {system!r}") from exc
 
 
-def _expand_scales(system: str, values) -> dict[str, float]:
+def _expand_scales(system: str, values,
+                   axes: tuple[str, ...] | None = None) -> dict[str, float]:
     """把自由分量向量展开成 6 个缩放因子（非自由轴跟随/固定）。
 
     - 立方：a=b=c 同缩放；
     - 四方/六方/三方：b 跟随 a；
     - 角度：仅单斜 β / 三斜 α,β,γ 参与，其余固定 1.0。
+
+    ``axes``（v1.6）：用户勾选的自由分量子集。``None`` = 按晶系全放开
+    （历史行为，逐位不变）。给了子集时**只**放开其中列出的轴，其余保持
+    1.0；晶系的跟随关系仍然生效（四方只勾 a 时 b 跟着 a）。
     """
     v = np.asarray(values, dtype=np.float64).ravel()
-    axes = free_axes(system)
+    axes = tuple(axes) if axes is not None else free_axes(system)
     if v.size != len(axes):
         raise ValueError(f"{system} 需 {len(axes)} 个缩放因子，收到 {v.size}")
     d = dict(zip(axes, (float(x) for x in v)))
     if system == "cubic":
-        d = {"a": d["a"], "b": d["a"], "c": d["a"]}
+        d = {"a": d.get("a", 1.0), "b": d.get("a", 1.0), "c": d.get("a", 1.0)}
     elif system in ("tetragonal", "hexagonal", "trigonal"):
-        d["b"] = d["a"]
+        d["b"] = d.get("a", 1.0)
     return {
         "a": float(d.get("a", 1.0)), "b": float(d.get("b", 1.0)),
         "c": float(d.get("c", 1.0)),
@@ -141,6 +146,20 @@ def _expand_scales(system: str, values) -> dict[str, float]:
         "beta": float(d.get("beta", 1.0)),
         "gamma": float(d.get("gamma", 1.0)),
     }
+
+
+def resolve_axes(system: str, requested=None) -> tuple[str, ...]:
+    """把用户请求的自由分量收敛到该晶系**允许**的集合（v1.6）。
+
+    - ``requested is None`` → 该晶系全部自由分量（历史行为）；
+    - 显式空序列 → 空（该相不参与晶胞精修）；
+    - 非法轴（如立方给 ``b``、四方给 ``alpha``）静默丢弃 —— 那些轴在
+      该晶系里不是自由度，放进来只会制造零空间。
+    """
+    allowed = free_axes(system)
+    if requested is None:
+        return allowed
+    return tuple(ax for ax in allowed if ax in set(requested))
 
 
 #: 重建 ``CifStructure`` 时必须原样搬运的元数据。
@@ -166,13 +185,16 @@ def structure_with_cell(struct: CifStructure, cell) -> CifStructure:
 
 
 def apply_cell_scales(struct: CifStructure, system: str,
-                      values) -> CifStructure:
+                      values, axes: tuple[str, ...] | None = None
+                      ) -> CifStructure:
     """按晶系约束把缩放因子施加到晶胞，返回新 ``CifStructure``。
 
     原子**分数坐标不变**（晶胞参数变化不改变分数坐标），与 P0 的
     ``_scaled`` 同一口径。缩放全 1.0 时原样返回（避免无谓拷贝）。
+
+    ``axes``（v1.6）：与 :func:`_expand_scales` 同一套自由分量子集。
     """
-    s = _expand_scales(system, values)
+    s = _expand_scales(system, values, axes)
     if all(abs(v - 1.0) < 1e-12 for v in s.values()):
         return struct
     a, b, c, al, be, ga = struct.cell
@@ -193,18 +215,27 @@ class CellRefineResult:
     success: bool
     history: tuple[float, ...]
     iters: int
+    #: v1.6：每相**实际**参与精修的自由分量（受晶系约束与用户勾选共同
+    #: 限制）。GUI 的晶胞结果表用它说明「这一相修了哪几个参数」。
+    axes: tuple[tuple[str, ...], ...] = ()
 
 
 def refine_cell_full(phases: list[CifStructure], pat: Pattern,
                      prm0: ProfileParams, cfg,
                      backend: str = "lm",
-                     true_scales: list | None = None) -> CellRefineResult:
+                     true_scales: list | None = None,
+                     axes_override: dict[str, tuple[str, ...]] | None = None,
+                     ) -> CellRefineResult:
     """独立全晶胞精修（变量投影 + LM/scipy-trf，与 P0 引擎同构）。
 
     ``cfg`` 只需提供 ``tmin/tmax/n_bg/bg_mode/sigma/max_iter``；晶胞参数
     是本引擎**唯一**的非线性自由度，峰形参数保持 ``prm0`` 固定。
 
     参数向量 = 各相自由晶胞缩放因子顺序拼接，边界 ±1%。
+
+    ``axes_override``（v1.6）：``{相名: 要精修的轴}``，来自 GUI 晶胞弹窗
+    的勾选。``None`` = 按晶系全放开（历史行为，逐位不变）；显式空序列 =
+    该相跳过。非法轴（立方给 ``b`` 之类）由 :func:`resolve_axes` 丢弃。
     """
     from xinrefinement.core.refine.nonlinear import RefineConfig, effective_sigma
 
@@ -222,6 +253,12 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
                else np.asarray(sigma, dtype=np.float64))
 
     systems = tuple(crystal_system_of(s) for s in phases)
+    # v1.6：每相实际自由分量 = 晶系允许 ∩ 用户勾选
+    over = axes_override or {}
+    axes_list = tuple(
+        resolve_axes(systems[i], (over.get(phases[i].name)
+                                  if phases[i].name in over else None))
+        for i in range(len(phases)))
 
     # v1.2.0：interp 与 solve() 同口径 —— 提取一次固定锚点（两层可加语义
     # 由 solve_linear_detail 的 interp 分支实现：固定层 + Chebyshev）
@@ -232,7 +269,7 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
             pat.two_theta, pat.intensity, n_bg,
             getattr(cfg, "bg_interp_iters", 10))
 
-    dims = tuple(len(free_axes(s)) for s in systems)
+    dims = tuple(len(a) for a in axes_list)
     offsets = np.cumsum((0,) + dims).tolist()
 
     tt, yo = pat.two_theta, pat.intensity
@@ -243,7 +280,7 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
         key = (i, *[round(float(v), 9) for v in vals])
         hit = cache.get(key)
         if hit is None:
-            hit = apply_cell_scales(phases[i], systems[i], vals)
+            hit = apply_cell_scales(phases[i], systems[i], vals, axes_list[i])
             cache[key] = hit
         return hit
 
@@ -278,7 +315,8 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
     scales = tuple(tuple(float(v) for v in best_x[offsets[i]:offsets[i + 1]])
                    for i in range(len(phases)))
     cells = tuple(tuple(float(v) for v in
-                        apply_cell_scales(phases[i], systems[i], scales[i]).cell)
+                        apply_cell_scales(phases[i], systems[i],
+                                          scales[i], axes_list[i]).cell)
                   for i in range(len(phases)))
     # 末次评估保证 rwp 对应最终解
     residual_fn(best_x)
@@ -287,4 +325,4 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
         cells_true=(None if true_scales is None
                     else tuple(tuple(float(v) for v in t) for t in true_scales)),
         rwp=float(history[-1]), success=bool(success),
-        history=tuple(history), iters=len(history))
+        history=tuple(history), iters=len(history), axes=axes_list)

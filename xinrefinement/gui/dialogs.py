@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -29,6 +31,28 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from xinrefinement.i18n import tr
+
+#: 次要文字色（与主窗口一致的灰）
+_MUTED = "#6b6b6b"
+
+
+def _phase_title(struct, fallback: str) -> str:
+    """物相分组框标题：``SiO2 · Quartz``（v1.6，不再用 CIF 文件名）。
+
+    对话框里的分组标题是用户最常扫的标签，CIF 编号（``1Entry_96-500-0036``）
+    对它没有任何意义。拿不到结构时退回传进来的名字（离屏测试会走这条）。
+    """
+    if struct is None:
+        return str(fallback)
+    from xinrefinement.core.profile.naming import phase_label
+
+    formula = phase_label(struct, "formula")
+    label = phase_label(struct, "label")
+    if label and label != formula:
+        return f"{formula} · {label}"
+    return formula or str(fallback)
 
 #: 导航步骤 → (标题, 组名)
 STEPS: tuple[tuple[str, str, str], ...] = (
@@ -134,38 +158,162 @@ class BackgroundDialog(_BaseDialog):
 
 
 class CellDialog(_BaseDialog):
-    """晶胞参数修正：按导入 CIF 列出**多个物相分别设置**（草图重点）。"""
+    """晶胞参数修正：按导入 CIF 列出**多个物相分别设置**。
 
-    AXES = ("a", "b", "c", "α", "β", "γ")
+    v1.6 重做：原版每相一列竖排 6 个复选框，四个相就要滚 24 行；且非
+    ``a``/``c`` 的框全部 ``setEnabled(False)`` 加一句「全 6 参数由 P1.2
+    开放」——那句话已经过期（``refine_cell_full`` 早就按晶系放开全参数），
+    勾选也从来没传给引擎。现在改成：
+
+    - **网格铺开**：每相一个分组框、内部 3×2，两列并排；
+    - **按晶系定自由轴**：非自由轴（立方给 ``b``）置灰并说明原因，
+      避免用户勾了却没效果；
+    - **真正生效**：``settings()`` 的键是 ASCII（``alpha``…），主窗口按
+      ``resolve_axes`` 收敛后传 ``refine_cell_full(axes_override=...)``。
+    """
+
+    #: (内部键, 显示名)
+    AXES = (("a", "a"), ("b", "b"), ("c", "c"),
+            ("alpha", "α"), ("beta", "β"), ("gamma", "γ"))
 
     def __init__(self, phase_names: list[str], current: dict | None = None,
-                 parent=None) -> None:
+                 parent=None, structs=None) -> None:
         super().__init__("晶胞参数（多物相）", parent)
+        from xinrefinement.core.refine.cell import (
+            crystal_system_of, free_axes)
+
+        self.setMinimumWidth(600)
         cur = current or {}
+        by_name = {getattr(s, "name", ""): s for s in (structs or ())}
         self._boxes: dict[tuple[str, str], QCheckBox] = {}
-        if not phase_names:
+        # 设置字典的键必须是**内部相名**（CifStructure.name）：主窗口的
+        # _cell_axes_for / 引擎的 axes_override 都按它查。显示名只进标题。
+        if structs:
+            self._names = [getattr(s, "name", str(s)) for s in structs]
+            shown = [getattr(s, "name", str(s)) for s in structs]
+        else:
+            self._names = list(phase_names)
+            shown = list(phase_names)
+        if not self._names:
             self._root.addWidget(QLabel("尚未导入 CIF；请先导入物相。"))
-        for name in phase_names:
-            grp = QGroupBox(name)
-            lay = QVBoxLayout(grp)
-            lay.addWidget(QLabel("勾选要精修的晶胞分量（当前引擎支持 a / c 缩放，"
-                                "全 6 参数由 P1.2 开放）"))
-            for ax in self.AXES:
-                cb = QCheckBox(ax)
-                cb.setChecked(bool(cur.get(name, {}).get(ax, ax in ("a", "c"))))
-                if ax not in ("a", "c"):
-                    cb.setEnabled(False)
-                    cb.setToolTip("P1.2 全晶胞精修开放")
-                self._boxes[(name, ax)] = cb
-                lay.addWidget(cb)
-            self._root.addWidget(grp)
+            self._add_buttons()
+            return
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for k, name in enumerate(self._names):
+            st = by_name.get(name)
+            display = shown[k] if k < len(shown) else name
+            allowed: tuple[str, ...] | None = None
+            system = ""
+            if st is not None:
+                try:
+                    system = crystal_system_of(st)
+                    allowed = free_axes(system)
+                except Exception:
+                    allowed = None
+            grp = QGroupBox(_phase_title(st, display))
+            gl = QGridLayout(grp)
+            hint = (f"晶系 {system}：本引擎放开 {'、'.join(allowed)}"
+                    if allowed else "晶系未知，按 a / c 处理")
+            lbl = QLabel(hint)
+            lbl.setStyleSheet(f"color: {_MUTED}; font-size: 11px;")
+            gl.addWidget(lbl, 0, 0, 1, 3)
+            default_axes = allowed or ("a", "c")
+            for j, (key, disp) in enumerate(self.AXES):
+                cb = QCheckBox(disp)
+                ok = allowed is None or key in allowed
+                cb.setEnabled(ok)
+                cb.setChecked(bool((cur.get(name) or {}).get(
+                    key, key in default_axes)))
+                if not ok:
+                    cb.setToolTip("该晶系下此分量不是自由度（由晶系约束固定，"
+                                  "或跟随 a）")
+                else:
+                    cb.setToolTip("勾选 = 本次精修放开该分量")
+                gl.addWidget(cb, 1 + j // 3, j % 3)
+                self._boxes[(name, key)] = cb
+            grid.addWidget(grp, k // 2, k % 2)
+        self._root.addLayout(grid)
+
+        note = QLabel("勾选只决定「精修哪些分量」；未勾选的分量保持当前值。"
+                      "立方晶系三者同步，只能精修 a。")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {_MUTED};")
+        self._root.addWidget(note)
         self._add_buttons()
 
     def settings(self) -> dict:
-        return {name: {ax: self._boxes[(name, ax)].isChecked()
-                       for ax in self.AXES
-                       if (name, ax) in self._boxes}
-                for name in {n for n, _ in self._boxes}}
+        return {name: {key: self._boxes[(name, key)].isChecked()
+                       for key, _disp in self.AXES
+                       if (name, key) in self._boxes}
+                for name in self._names}
+
+
+class StepDescribeDialog(_BaseDialog):
+    """导航步骤说明（v1.6）：点 ▶ 先告诉用户「这一步修什么」。
+
+    用户的原话是「弹出一个窗口，显示正常精修什么项目，同时与左下的跑码
+    窗口对应」。所以这里只做三件事：列出本步的参数清单与当前值、给出
+    该步的注意事项、把同样的内容交给主窗口写入日志。
+
+    ``rows``: ``[(参数名, 当前值), ...]``；取不到当前值的项传 ``"—"``，
+    不做假数据填充。
+    """
+
+    def __init__(self, title: str, note: str, rows, parent=None) -> None:
+        super().__init__(tr("stepdesc.title").format(title=title), parent)
+        self.setWindowTitle(tr("stepdesc.title").format(title=title))
+        self.setMinimumWidth(440)
+
+        head = QLabel(tr("stepdesc.params"))
+        head.setStyleSheet("font-weight: 500;")
+        self._root.addWidget(head)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels([tr("result.metric"),
+                                              tr("result.value")])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        rows = list(rows or ())
+        if not rows:
+            rows = [(tr("stepdesc.none"), "")]
+        self.table.setRowCount(len(rows))
+        for r, (name, value) in enumerate(rows):
+            self.table.setItem(r, 0, QTableWidgetItem(str(name)))
+            self.table.setItem(r, 1, QTableWidgetItem(str(value)))
+        self.table.setFixedHeight(min(240, 30 + 24 * len(rows)))
+        self._root.addWidget(self.table)
+
+        if note:
+            note_head = QLabel(tr("stepdesc.note"))
+            note_head.setStyleSheet("font-weight: 500;")
+            self._root.addWidget(note_head)
+            lbl = QLabel(note)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {_MUTED};")
+            self._root.addWidget(lbl)
+
+        hint = QLabel(tr("stepdesc.hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {_MUTED};")
+        self._root.addWidget(hint)
+        # 按钮文案改成「开始精修」，避免用户以为是改参数的确定键
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText(tr("stepdesc.start"))
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        self._root.addWidget(box)
+
+    def describe_lines(self) -> list[str]:
+        """把窗口内容摊成日志行（与弹窗逐条对应）。"""
+        out: list[str] = []
+        for r in range(self.table.rowCount()):
+            name = self.table.item(r, 0).text() if self.table.item(r, 0) else ""
+            val = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
+            out.append(f"  {name}: {val}".rstrip(": "))
+        return out
 
 
 class GenericDialog(_BaseDialog):
@@ -233,7 +381,10 @@ class PhaseEditDialog(_BaseDialog):
         cur = current or {}
         self._structs = list(phase_structs)
         self._anode = (anode or "Cu").strip() or "Cu"
-        self.setMinimumWidth(430)
+        # v1.6：单列竖排在 4 个相时就要滚屏（每相 6 个分组框）。改两列
+        # 网格后宽度换高度，再把整页放进滚动区兜住极端情况。
+        self.setMinimumWidth(880)
+        self.setMinimumHeight(560)
 
         if not self._structs:
             self._root.addWidget(QLabel("尚未导入 CIF；请先导入物相。"))
@@ -244,12 +395,16 @@ class PhaseEditDialog(_BaseDialog):
         top.addWidget(QLabel("物相"))
         self.combo = QComboBox()
         for st in self._structs:
-            self.combo.addItem(st.name)
+            # 显示名（化学式 · 物相名称），不再暴露 CIF 编号
+            self.combo.addItem(_phase_title(st, st.name))
         top.addWidget(self.combo, 1)
         self._root.addLayout(top)
 
         self._stack = QStackedWidget()
-        self._root.addWidget(self._stack)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self._stack)
+        self._root.addWidget(self._scroll)
 
         self._cell_boxes: dict[str, list[QDoubleSpinBox]] = {}
         self._po_enable: dict[str, QCheckBox] = {}
@@ -267,7 +422,11 @@ class PhaseEditDialog(_BaseDialog):
 
         for st in self._structs:
             page = QWidget()
-            pv = QVBoxLayout(page)
+            pv = QGridLayout(page)
+            pv.setHorizontalSpacing(10)
+            pv.setVerticalSpacing(8)
+            pv.setColumnStretch(0, 1)
+            pv.setColumnStretch(1, 1)
             pv.setContentsMargins(0, 0, 0, 0)
             saved = cur.get(st.name, {})
 
@@ -291,7 +450,7 @@ class PhaseEditDialog(_BaseDialog):
                 boxes.append(sb)
                 cf.addRow(ax, sb)
             self._cell_boxes[st.name] = boxes
-            pv.addWidget(grp_cell)
+            pv.addWidget(grp_cell, 0, 0)
 
             # -- 择优取向（March–Dollase） ------------------------------ #
             grp_po = QGroupBox("择优取向 (March–Dollase)")
@@ -324,7 +483,7 @@ class PhaseEditDialog(_BaseDialog):
             self._po_enable[st.name] = en
             self._po_hkl[st.name] = hkl_boxes
             self._po_r[st.name] = r_sb
-            pv.addWidget(grp_po)
+            pv.addWidget(grp_po, 0, 1)
 
             # -- 微吸收（Brindley，v1.2.0） ------------------------------ #
             grp_ma = QGroupBox("微吸收校正 (Brindley)")
@@ -376,7 +535,7 @@ class PhaseEditDialog(_BaseDialog):
             mf.addRow(ma_auto)
             self._ma_enable[st.name] = ma_en
             self._ma_value[st.name] = ma_sb
-            pv.addWidget(grp_ma)
+            pv.addWidget(grp_ma, 1, 0)
 
             # -- 织构（EWIMV 离散 ODF，v1.3 任务 #14） ------------------- #
             grp_tx = QGroupBox("织构 (EWIMV 离散 ODF)")
@@ -413,7 +572,7 @@ class PhaseEditDialog(_BaseDialog):
             en.setEnabled(not tx_en.isChecked())
             self._tx_enable[st.name] = tx_en
             self._tx_hkl[st.name] = tx_boxes
-            pv.addWidget(grp_tx)
+            pv.addWidget(grp_tx, 1, 1)
 
             # -- 各向异性尺寸/应变（Popa LB，v1.3 任务 #15） -------------- #
             grp_an = QGroupBox("各向异性尺寸 / 应变 (Popa LB)")
@@ -437,7 +596,7 @@ class PhaseEditDialog(_BaseDialog):
             an_mode.setEnabled(an_en.isChecked())
             self._an_enable[st.name] = an_en
             self._an_mode[st.name] = an_mode
-            pv.addWidget(grp_an)
+            pv.addWidget(grp_an, 2, 0)
 
             # -- 对称性（空间群 / 点群 / 劳厄群） ----------------------- #
             grp_sym = QGroupBox("对称性")
@@ -460,7 +619,7 @@ class PhaseEditDialog(_BaseDialog):
             self._sg_edit[st.name] = sg
             self._pg_edit[st.name] = pg
             self._laue_edit[st.name] = laue
-            pv.addWidget(grp_sym)
+            pv.addWidget(grp_sym, 2, 1)
 
             self._stack.addWidget(page)
 
@@ -650,12 +809,17 @@ class MicroDialog(_BaseDialog):
 
 def open_settings(step: str, title: str, phase_names: list[str],
                   current: dict | None = None,
-                  parent: QWidget | None = None) -> dict | None:
-    """按步骤打开对应齿轮弹窗；返回设置字典或 None（取消）。"""
+                  parent: QWidget | None = None,
+                  phase_structs=None) -> dict | None:
+    """按步骤打开对应齿轮弹窗；返回设置字典或 None（取消）。
+
+    ``phase_structs``（v1.6）：晶胞弹窗需要结构本身才能判断晶系与自由轴。
+    传 ``None`` 时退化成老的「按名字 + 默认 a/c」，离屏测试仍可用。
+    """
     if step == "bg":
         dlg = BackgroundDialog(current, parent)
     elif step == "cell":
-        dlg = CellDialog(phase_names, current, parent)
+        dlg = CellDialog(phase_names, current, parent, structs=phase_structs)
     elif step == "micro":
         dlg = MicroDialog(current, parent)
     else:

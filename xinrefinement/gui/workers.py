@@ -28,6 +28,10 @@ class RefineWorker(QThread):
 
     step_started = Signal(str, str)
     step_finished = Signal(str, str, object, str)
+    #: v1.6：(step_key, params, phases) —— 每步结束时的参数快照。
+    #: 左下的「跑码窗口」靠它打印「参数: 旧值 → 新值」；没有这份数据，
+    #: 界面上只能看到 Rwp 在跳，看不到具体哪个参数动了。
+    step_snapshot = Signal(str, object, object)
     progress = Signal(str, object)
     finished_ok = Signal(object)
     failed = Signal(str)
@@ -75,6 +79,13 @@ class RefineWorker(QThread):
                 self.progress.emit(f"正在执行「{step.title}」…", None)
                 result, rec = self._runner.run_step(
                     step, self._inputs, result)
+                # 参数快照：配方里 cell 步会把新晶胞回写 runner.phases，
+                # 所以两样都要传（只传 params 看不到晶胞变化）。
+                # 先发快照再发 finished：日志里参数行应排在本步收尾行之前。
+                self.step_snapshot.emit(
+                    rec.key,
+                    getattr(result, "params", None),
+                    tuple(self._runner.phases or ()))
                 self.step_finished.emit(
                     rec.key, rec.status, rec.rwp_after, rec.message)
                 self.progress.emit(

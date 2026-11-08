@@ -83,13 +83,16 @@ def test_phase_toggle_redraws_without_refine(win, qapp):
     win.run_refine()
     rwp_before = win._result.rwp
     item = win.phase_list.item(0)
+    # v1.6：列表文案改成「化学式 · 物相名称」，画布显隐仍按内部相名
+    key = item.data(Qt.UserRole)
+    assert key and key != item.text()
     item.setCheckState(Qt.Unchecked)
     qapp.processEvents()
-    assert item.text() not in win.canvas._visible
+    assert key not in win.canvas._visible
     assert win._result.rwp == rwp_before
     item.setCheckState(Qt.Checked)
     qapp.processEvents()
-    assert item.text() in win.canvas._visible
+    assert key in win.canvas._visible
 
 
 def test_step_settings_dialogs(win, qapp):
@@ -104,8 +107,9 @@ def test_step_settings_dialogs(win, qapp):
     s = cell.settings()
     assert set(s) == {"anatase", "rutile"}
     assert s["anatase"]["a"] is True and s["rutile"]["c"] is True
-    # b/α/β/γ 在 P1.2 前禁用，settings 中仍保留键但不参与精修
-    assert "α" in s["anatase"]
+    # v1.6：键统一为 ASCII（alpha…），未勾选的分量仅为 False，不再「禁用」
+    assert set(s["anatase"]) == {"a", "b", "c", "alpha", "beta", "gamma"}
+    assert s["anatase"]["b"] is False and s["anatase"]["beta"] is False
 
     gen = GenericDialog("profile", "峰形参数", {}, win)
     assert "U" in gen.settings()
@@ -194,12 +198,15 @@ def test_cancel_stops_recipe(win, qapp):
 
 
 def test_p35_result_tabs_and_diagnostics(win, qapp):
-    """P3.5：结果区三页（摘要/收敛曲线/相关性），摘要含 DW 与含量 e.s.d.。"""
+    """P3.5：结果区五页（摘要/定量/晶胞/收敛/相关性），摘要含 DW 与 e.s.d.。"""
     win._load_pattern_path(PATTERN)
     win._load_cif_paths([CIF_A, CIF_R])
     win.run_refine()
     qapp.processEvents()
-    assert win.result_tabs.count() == 3
+    # v1.6 新增「物相定量」「晶胞与微结构」两页
+    assert win.result_tabs.count() == 5
+    assert win.quant_table.rowCount() == len(win._phases) + 1
+    assert win.cell_table.rowCount() == len(win._phases)
     labels = [win.result_table.item(r, 0).text()
               for r in range(win.result_table.rowCount())]
     assert any("Durbin-Watson" in s for s in labels)
@@ -211,11 +218,18 @@ def test_p35_result_tabs_and_diagnostics(win, qapp):
 def test_p35_retranslate_tab_titles(win, qapp):
     win.switch_language("en")
     qapp.processEvents()
-    assert win.result_tabs.tabText(0) == "Summary"
-    assert win.result_tabs.tabText(1) == "Convergence"
+    # v1.6：标签页数量变了，按控件定位而非写死下标
+    assert win.result_tabs.tabText(win.result_tabs.indexOf(win.result_table)) \
+        == "Summary"
+    assert win.result_tabs.tabText(win.result_tabs.indexOf(win.conv_canvas)) \
+        == "Convergence"
+    assert win.result_tabs.tabText(win.result_tabs.indexOf(win.quant_table)) \
+        == "Phase quantities"
     assert win.result_table.horizontalHeaderItem(0).text() == "Metric"
     win.switch_language("zh")
     qapp.processEvents()
+    assert win.result_tabs.tabText(win.result_tabs.indexOf(win.quant_table)) \
+        == "物相定量"
 
 
 def test_p41_report_export_via_core(win, qapp, tmp_path):
@@ -387,12 +401,13 @@ def test_axis_x_d_mode_conversion(win, qapp):
     x0, x1 = c.ax_main.get_xlim()
     assert x0 > x1            # d 随 2θ 递减 → 轴反向
     assert "d (Å)" in c.ax_main.get_xlabel()
-    # 标记条峰位同样换算到 d
+    # 标记条峰位同样换算到 d（v1.6 元组带展示名，共 4 项）
     names = c.phase_names
-    sticks = dict((n, e) for n, e in c._phase_sticks)
+    sticks = {k: (e, lab) for k, e, lab in c._phase_sticks}
     entry = sticks[names[0]][0]
     pos2t = entry[0][0] if isinstance(entry[0], (list, tuple)) else entry[0]
-    conv = c._sticks_in_units([(names[0], sticks[names[0]], 0)])[0][1][0]
+    conv = c._sticks_in_units(
+        [(names[0], sticks[names[0]][0], 0, sticks[names[0]][1])])[0][1][0]
     pos_d = conv[0] if isinstance(conv, (list, tuple)) else conv
     assert abs(float(pos_d) - float(two_theta_to_d(pos2t, c.wavelength))) < 1e-9
     c.set_x_mode("2theta")

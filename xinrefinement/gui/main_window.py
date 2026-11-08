@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -50,6 +51,12 @@ from xinrefinement import build_variant
 from xinrefinement.core.patterns import load_pattern
 from xinrefinement.core.profile.cif import parse_cif
 from xinrefinement.core.profile.forward import ProfileParams
+from xinrefinement.core.profile.naming import (
+    DEFAULT_PHASE_LABEL_MODE,
+    PHASE_LABEL_MODES,
+    label_map,
+    phase_label,
+)
 from xinrefinement.core.profile.struct import compute_peaks
 from xinrefinement.core.refine.linear import adaptive_n_bg, background_basis
 from xinrefinement.core.refine.nonlinear import RefineConfig
@@ -74,6 +81,12 @@ def _aniso_from_edits(edits: dict, wavelength: float = 1.5406) -> dict:
             continue
         out[name] = aniso_default(wavelength)
     return out
+
+
+def _width_basis_text(p) -> str:
+    """Caglioti 宽度基的中文说明（v1.5 M5 的旋钮，默认 tanθ）。"""
+    basis = getattr(p, "width_basis", "tan") if p is not None else "tan"
+    return "tanθ（默认）" if basis != "d" else "1/d（实验旋钮）"
 
 
 def _texture_from_edits(edits: dict, model: str = "harmonic:10") -> dict:
@@ -104,7 +117,12 @@ def _texture_from_edits(edits: dict, model: str = "harmonic:10") -> dict:
                           "grid": list(tx.get("grid") or default_texture_grid())})
         out[name] = entry
     return out
-from xinrefinement.gui.dialogs import STEPS, PhaseEditDialog, open_settings
+from xinrefinement.gui.dialogs import (
+    STEPS,
+    PhaseEditDialog,
+    StepDescribeDialog,
+    open_settings,
+)
 from xinrefinement.gui.project import load_project, save_project
 from xinrefinement.gui.workers import RefineWorker
 from xinrefinement.i18n import (
@@ -145,6 +163,14 @@ class MainWindow(QMainWindow):
         self._aniso_mode: str = "size"
         #: 物相编辑对话框的全部设置（晶胞/择优取向/对称性元数据）
         self._phase_edits: dict[str, dict] = {}
+        #: v1.6：物相显示口径（formula 化学式 / label 物相名称 / file 文件名）
+        self._disp_mode: str = DEFAULT_PHASE_LABEL_MODE
+        #: v1.6：每步开始精修前的参数快照，用于日志里打印「参数 → 参数」
+        self._param_snapshot: dict | None = None
+        #: v1.6：本步开始前的 Rwp（跑码收尾行的 "before"）
+        self._rwp_before_step: float | None = None
+        #: v1.6：说明弹窗已写过「开始」行时置位，避免 _on_step_started 重复
+        self._skip_begin_log: bool = False
         self._menu_actions: dict[str, QAction] = {}
         self._menus: dict[str, object] = {}
         self._toolbar_buttons: dict[str, QPushButton] = {}
@@ -222,6 +248,18 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _c=False, l=lang: self.switch_language(l))
             lang_menu.addAction(act)
             self._lang_actions[lang] = act
+        # 设置 → 物相显示（v1.6：化学式 / 物相名称 / CIF 文件名）
+        disp_menu = self._menus["menu.setting"].addMenu(tr("disp.mode"))
+        self._menus["disp.mode"] = disp_menu
+        self._disp_actions: dict[str, QAction] = {}
+        for mode in PHASE_LABEL_MODES:
+            act = QAction(tr(f"disp.{mode}"), self)
+            act.setCheckable(True)
+            act.setChecked(mode == self._disp_mode)
+            act.triggered.connect(
+                lambda _c=False, m=mode: self.set_display_mode(m))
+            disp_menu.addAction(act)
+            self._disp_actions[mode] = act
 
     def _build_toolbar(self) -> None:
         from xinrefinement.gui.button_icons import toolbar_icon
@@ -269,23 +307,39 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(split)
 
-        # 左：物相列表 + 参数树占位
+        # 左：物相列表 + 精修日志（跑码窗口）
         left = QWidget()
         lv = QVBoxLayout(left)
         lbl_phases = QLabel(tr("panel.phases"))
         self._labels["panel.phases"] = lbl_phases
         lv.addWidget(lbl_phases)
         self.phase_list = QListWidget()
+        self.phase_list.setToolTip("双击可编辑该物相的晶胞 / 择优取向 / 对称性")
         self.phase_list.itemChanged.connect(self._on_phase_toggled)
         self.phase_list.itemDoubleClicked.connect(
             lambda _item: self.open_phase_editor())
-        lv.addWidget(self.phase_list)
-        lbl_tree = QLabel(tr("panel.param_tree"))
-        self._labels["panel.param_tree"] = lbl_tree
-        lv.addWidget(lbl_tree)
-        self.param_tree = QListWidget()
-        self.param_tree.addItems(["全局：零点 / 背景 / 峰形", "结构：晶胞 / 坐标 / B"])
-        lv.addWidget(self.param_tree)
+        lv.addWidget(self.phase_list, 1)
+
+        # v1.6：左下面板改为 MAUD 式「跑码窗口」。原来这里是一个写死的
+        # 两行占位列表（"全局：零点 / 背景 / 峰形"），没有任何信息量；
+        # 用户在精修时看不到参数在动。现在逐步追加参数级变化。
+        log_head = QHBoxLayout()
+        lbl_log = QLabel(tr("panel.log"))
+        self._labels["panel.log"] = lbl_log
+        log_head.addWidget(lbl_log, 1)
+        self.btn_clear_log = QPushButton(tr("log.clear"))
+        self.btn_clear_log.setFixedWidth(84)
+        self.btn_clear_log.clicked.connect(self.clear_log)
+        log_head.addWidget(self.btn_clear_log)
+        lv.addLayout(log_head)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.log_view.setMaximumBlockCount(4000)   # 长链不无限涨内存
+        self.log_view.setStyleSheet(
+            "font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px;")
+        self.log_view.setPlaceholderText(tr("log.empty"))
+        lv.addWidget(self.log_view, 2)
         split.addWidget(left)
 
         # 中：交互图谱
@@ -300,6 +354,8 @@ class MainWindow(QMainWindow):
         self.canvas.axisHint.connect(self.statusBar().showMessage)
         # v1.3：画布背景锚点 → 设置回写（manual 模式，下次精修生效）
         self.canvas.bgPointsChanged.connect(self._on_bg_picks_changed)
+        # v1.6：标记条右键 → 切换物相显示口径
+        self.canvas.phaseLabelMode.connect(self.set_display_mode)
         cv.addWidget(self._nav_toolbar)
         split.addWidget(center)
 
@@ -315,7 +371,7 @@ class MainWindow(QMainWindow):
             hl = QHBoxLayout(row)
             hl.setContentsMargins(0, 0, 0, 0)
             run = QPushButton(f"▶ {tr(f'step.{step}')}")
-            run.clicked.connect(lambda _c=False, s=step: self.run_step(s))
+            run.clicked.connect(lambda _c=False, s=step: self.describe_step(s))
             gear = QPushButton("⚙")
             gear.setFixedWidth(32)
             gear.clicked.connect(lambda _c=False, s=step, t=title:
@@ -349,6 +405,18 @@ class MainWindow(QMainWindow):
         self.result_table.setHorizontalHeaderLabels(["指标", "值"])
         self.result_table.horizontalHeader().setStretchLastSection(True)
         self.result_tabs.addTab(self.result_table, tr("result.tab.summary"))
+
+        # v1.6：物相定量单独一页。用户明确要求「用化学式或物相名称显示，
+        # 而不是导入的 CIF 文件名」——所以这里的首列走 _disp()。
+        self.quant_table = QTableWidget(0, 5)
+        self.quant_table.horizontalHeader().setStretchLastSection(True)
+        self.result_tabs.addTab(self.quant_table, tr("result.tab.quant"))
+
+        # v1.6：晶胞与微结构一页（a b c α β γ / V / 晶粒尺寸 / 应变）
+        self.cell_table = QTableWidget(0, 11)
+        self.cell_table.horizontalHeader().setStretchLastSection(True)
+        self.result_tabs.addTab(self.cell_table, tr("result.tab.cell"))
+
         # P3.5：收敛曲线
         self.conv_canvas = FigureCanvasQTAgg(Figure(figsize=(3.2, 1.8),
                                                     layout="constrained"))
@@ -425,13 +493,21 @@ class MainWindow(QMainWindow):
             btn.setText(f"{mark} {tr(f'step.{step}')}".strip())
         self.btn_run_all.setText(tr("panel.run_all"))
         self.btn_cancel.setText(tr("panel.cancel"))
+        if hasattr(self, "btn_clear_log"):
+            self.btn_clear_log.setText(tr("log.clear"))
         for lang, act in self._lang_actions.items():
             act.setChecked(lang == get_language())
         self.result_table.setHorizontalHeaderLabels(
             [tr("result.metric"), tr("result.value")])
-        self.result_tabs.setTabText(0, tr("result.tab.summary"))
-        self.result_tabs.setTabText(1, tr("result.tab.convergence"))
-        self.result_tabs.setTabText(2, tr("result.tab.correlation"))
+        # v1.6：标签页数量随版本增长，用 indexOf 定位，别写死索引
+        for widget, key in ((self.result_table, "result.tab.summary"),
+                            (self.quant_table, "result.tab.quant"),
+                            (self.cell_table, "result.tab.cell"),
+                            (self.conv_canvas, "result.tab.convergence"),
+                            (self.corr_table, "result.tab.correlation")):
+            idx = self.result_tabs.indexOf(widget)
+            if idx >= 0:
+                self.result_tabs.setTabText(idx, tr(key))
         self.corr_table.setHorizontalHeaderLabels(
             [tr("result.metric"), tr("result.value")])
 
@@ -727,10 +803,11 @@ class MainWindow(QMainWindow):
         esd_pct = ((full.get("esd") or {}).get("weight_esd_pct")) or []
         for i, p in enumerate(phases):
             wt = p.get("weight_pct")
-            rows.append((f"{tr('result.phase_weight')} · {p.get('name', '')} (%)",
+            disp = self._disp(p.get("name", ""))    # v1.6：显示名
+            rows.append((f"{tr('result.phase_weight')} · {disp} (%)",
                          "—" if wt is None else f"{float(wt):.3f}"))
             if i < len(esd_pct) and esd_pct[i] is not None:
-                rows.append((f"e.s.d. · {p.get('name', '')} (pp)",
+                rows.append((f"e.s.d. · {disp} (pp)",
                              f"{float(esd_pct[i]):.4f}"))
         self.result_table.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
@@ -777,7 +854,10 @@ class MainWindow(QMainWindow):
         self._phase_aniso.clear()
         self._aniso_mode = "size"
         self._phase_edits.clear()
+        self._param_snapshot = None
+        self._rwp_before_step = None
         self.phase_list.clear()
+        self.log_view.clear()
         self.canvas.clear()
         self.result_table.setRowCount(0)
         self.statusBar().showMessage("已新建工程")
@@ -829,7 +909,15 @@ class MainWindow(QMainWindow):
                 continue
             self._phases.append(st)
             self._cif_paths.append(str(Path(p).resolve()))
-            item = QListWidgetItem(st.name)
+            item = QListWidgetItem(self._phase_item_text(st))
+            # v1.6：界面显示名与内部键分离。画布显隐、QPA、结果表都用
+            # CifStructure.name 作键，不能再靠 item.text() 反查。
+            item.setData(Qt.UserRole, st.name)
+            item.setToolTip(
+                f"CIF: {st.name}\n"
+                f"化学式: {phase_label(st, 'formula')}\n"
+                f"物相名称: {phase_label(st, 'label')}\n"
+                f"文件: {Path(p).resolve()}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
             self.phase_list.addItem(item)
@@ -837,6 +925,76 @@ class MainWindow(QMainWindow):
         self._refresh_sticks()
         self.statusBar().showMessage(f"已导入 {len(self._phases)} 个物相")
         return added
+
+    def _phase_item_text(self, st) -> str:
+        """物相列表的一行文案（v1.6）。
+
+        默认口径下是 ``SiO2 · Quartz``：化学式在前（用户要求「默认优选
+        化学式」），物相名称跟随；两者相同时只显示一个。切到「CIF 文件名」
+        口径时才把文件名摆在前面，但仍然带上化学式，避免列表变成一串
+        无法辨认的编号。
+        """
+        primary = phase_label(st, self._disp_mode)
+        secondary = (phase_label(st, "label") if self._disp_mode == "formula"
+                     else phase_label(st, "formula"))
+        if not secondary or secondary == primary:
+            return primary
+        return f"{primary} · {secondary}"
+
+    def _disp_labels(self) -> dict[str, str]:
+        """当前显示口径下的 ``{相名: 展示名}``（结果表/标记条共用）。"""
+        return label_map(self._phases, self._disp_mode)
+
+    def _disp(self, name: str) -> str:
+        """单个相名的展示文案（找不到结构时原样返回）。"""
+        st = next((s for s in self._phases if s.name == name), None)
+        return phase_label(st, self._disp_mode) if st is not None else name
+
+    def _disp_unique(self) -> dict[str, str]:
+        """``{相名: 展示名}``，重名时补足区分信息。
+
+        锐钛矿 / 金红石 / 板钛矿的化学式都是 ``TiO2``——按化学式口径显示
+        就会出现两行完全一样的「TiO2」，日志里 ``TiO2.a`` 也会重复，看不出
+        是哪一相在动。这类同质多型恰恰是 XRD 定量最常见的场景，所以重名
+        必须补物相名称（再不行补内部相名）。
+        """
+        base = self._disp_labels()
+        counts: dict[str, int] = {}
+        for val in base.values():
+            counts[val] = counts.get(val, 0) + 1
+        out: dict[str, str] = {}
+        for st in self._phases:
+            lab = base.get(st.name, st.name)
+            if counts.get(lab, 0) > 1:
+                detailed = self._phase_item_text(st)
+                lab = detailed if detailed != lab else f"{lab} ({st.name})"
+            out[st.name] = lab
+        return out
+
+    def set_display_mode(self, mode: str) -> None:
+        """切换物相显示口径（化学式 / 物相名称 / CIF 文件名）。"""
+        if mode not in PHASE_LABEL_MODES:
+            return
+        self._disp_mode = mode
+        self.canvas.label_mode = mode
+        # 物相列表：保持勾选状态重建文案
+        for row in range(self.phase_list.count()):
+            item = self.phase_list.item(row)
+            key = item.data(Qt.UserRole)
+            st = next((s for s in self._phases if s.name == key), None)
+            if st is not None:
+                old = item.checkState()
+                item.setText(self._phase_item_text(st))
+                item.setCheckState(old)
+        self._refresh_sticks()
+        if self._result is not None:
+            self._fill_quant_tab(self._result)
+            self._fill_cell_tab(self._result)
+            self._fill_results(self._result)
+        self.statusBar().showMessage(
+            f"物相显示：{tr('disp.' + mode)}")
+        for m, act in getattr(self, "_disp_actions", {}).items():
+            act.setChecked(m == mode)
 
     def _refresh_sticks(self) -> None:
         """按每相结构算布拉格峰棒（含相对强度与择优取向权重）。"""
@@ -847,28 +1005,108 @@ class MainWindow(QMainWindow):
             try:
                 po = self._phase_po.get(st.name)
                 peaks, _skipped = compute_peaks(st, 1.5406, 5.0, 90.0, po=po)
-                # (2θ, |F|²·LP)：画布按相内最大值归一化成相对强度棒
+                # (2θ, |F|²·LP)：画布按相内最大值归一化成相对强度棒。
+                # v1.6：第三元素是展示名（化学式/物相名称），内部键仍是
+                # st.name —— 画布显隐与配色靠键，标签靠展示名。
                 sticks.append((st.name,
-                               [(float(p[0]), float(p[1])) for p in peaks]))
+                               [(float(p[0]), float(p[1])) for p in peaks],
+                               phase_label(st, self._disp_mode)))
             except Exception:
-                sticks.append((st.name, []))
+                sticks.append((st.name, [], phase_label(st, self._disp_mode)))
         self.canvas.set_phase_sticks(sticks)
         self.canvas.refresh()
 
     def _on_phase_toggled(self, item: QListWidgetItem) -> None:
-        self.canvas.set_phase_visible(item.text(),
+        key = item.data(Qt.UserRole) or item.text()
+        self.canvas.set_phase_visible(str(key),
                                       item.checkState() == Qt.Checked)
 
+    # -- 跑码窗口（v1.6，MAUD 式滚动日志） ------------------------------ #
+    def log_line(self, text: str = "") -> None:
+        """向跑码窗口追加一行（自动滚到底）。"""
+        self.log_view.appendPlainText(text)
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def clear_log(self) -> None:
+        self.log_view.clear()
+
+    def _state_of(self, params, phases) -> dict[str, float]:
+        """把「当前参数集合」摊平成 ``{名字: 数值}``，用于打印前后差异。
+
+        只收**数值型**参数。晶胞按相展开成 ``SiO2.a`` 这类键，这样日志
+        里能直接看出是哪个相的哪根轴在动。
+        """
+        out: dict[str, float] = {}
+        if params is not None:
+            for key in ("zero", "U", "V", "W", "eta", "asym", "bfactor",
+                        "X", "Y"):
+                val = getattr(params, key, None)
+                if isinstance(val, (int, float)):
+                    out[key] = float(val)
+        labels = self._disp_unique()      # 重名相（多型）自动区分
+        for st in (phases or ()):
+            key = str(getattr(st, "name", ""))
+            name = labels.get(key, key)
+            cell = getattr(st, "cell", None) or ()
+            for k, ax in enumerate(("a", "b", "c", "α", "β", "γ")):
+                if k < len(cell):
+                    out[f"{name}.{ax}"] = float(cell[k])
+        return out
+
+    def _log_diff(self, before: dict[str, float],
+                  after: dict[str, float]) -> int:
+        """打印两帧参数差异，返回变化条数。
+
+        阈值取相对 1e-9：低于浮点噪声的「变化」不打印，否则连跑时日志会
+        被一堆 1e-17 的抖动淹没，真正动了参数反而看不见。
+        """
+        if not before or not after:
+            return 0
+        n = 0
+        for key, new in after.items():
+            old = before.get(key)
+            if old is None:
+                continue
+            if abs(new - old) <= 1e-9 * max(1.0, abs(old), abs(new)):
+                continue
+            self.log_line(tr("log.param").format(
+                name=key, before=f"{old:.6g}", after=f"{new:.6g}"))
+            n += 1
+        return n
+
+    def _on_step_snapshot(self, key: str, params, phases) -> None:
+        """每步结束：打印参数变化（左下的「跑码」主体）。
+
+        第一次快照没有「上一帧」可比，此时打出**当前值清单**——否则日志里
+        只剩一行 Rwp，用户看不出这一轮实际在精修什么（这正是要求「滚动
+        显示正在精修的具体参数」的场景）。
+        """
+        current = self._state_of(params, phases)
+        if not self._param_snapshot:
+            self.log_line(tr("log.initial"))
+            for name, val in current.items():
+                self.log_line(tr("log.param_init").format(
+                    name=name, value=f"{val:.6g}"))
+        else:
+            self._log_diff(self._param_snapshot, current)
+        self._param_snapshot = current
+
     def open_step_settings(self, step: str, title: str) -> None:
-        names = [s.name for s in self._phases]
         cur = self._settings.get(step)
+        # v1.6：物相显示名（化学式/名称）取代 CIF 文件名；晶胞弹窗还要
+        # 结构本身才能按晶系决定哪些分量可精修。
+        labels = self._disp_labels()
+        names = [labels.get(s.name, s.name) for s in self._phases]
+        keys = [s.name for s in self._phases]
         if step == "bg":
             # v1.5 M8d：弹窗首次打开时要把「自适应节点数」灌进去。否则
             # 会显示代码级兜底 3（cheb 时代遗留），用户点「确定」就把
             # 19 节点默默降成 3——背景灵活性骤降而界面上看不出来。
             cur = dict(cur or {})
             cur.setdefault("n_bg", adaptive_n_bg(*self._refine_window()))
-        got = open_settings(step, title, names, cur, self)
+        got = open_settings(step, title, names, cur, self,
+                            phase_structs=self._phases)
         if got is not None:
             self._settings[step] = got
             self.statusBar().showMessage(f"已更新「{title}」设置")
@@ -973,7 +1211,10 @@ class MainWindow(QMainWindow):
             po_probe_texture_degree=int(
                 str(micro.get("texture_model", "harmonic:8")).partition(":")[2]
                 or 8),
-            tmin=tmin, tmax=tmax, max_iter=40)
+            tmin=tmin, tmax=tmax, max_iter=40,
+            # v1.6：晶胞步的逐相自由分量（来自晶胞弹窗的勾选）。
+            # None = 按晶系全放开，与 v1.5 行为逐位一致。
+            cell_axes=self._cell_axes_map())
         # integrated=True 是 Rietveld 标度 S 的标准口径（Hill–Howard 定量也
         # 依赖它）：峰高口径下峰宽随 2θ 变化会直接扭曲相对强度。v1.1.0 及
         # 以前这里给 False（v0.1.0 旧口径，仅供对照），实样对拍实测同配置
@@ -994,6 +1235,116 @@ class MainWindow(QMainWindow):
             return
         self._start_worker(single_step=step)
 
+    # -- 步骤说明（v1.6） ---------------------------------------------- #
+    #: 显示用轴名 → 内部键（CellDialog 的勾选键统一用 ASCII）
+    _AX_KEY = {"a": "a", "b": "b", "c": "c",
+               "α": "alpha", "β": "beta", "γ": "gamma"}
+
+    def _cell_axes_for(self, name: str) -> tuple[str, ...]:
+        """该相**实际会精修**的晶胞分量（晶系约束 ∩ 弹窗勾选）。
+
+        v1.5 及以前 CellDialog 的勾选是装饰性的：引擎按晶系全放，界面
+        却写死「只支持 a / c」。这里给出唯一口径，说明弹窗、精修引擎、
+        结果表三处共用。
+        """
+        st = next((s for s in self._phases if s.name == name), None)
+        if st is None:
+            return ()
+        from xinrefinement.core.refine.cell import crystal_system_of, resolve_axes
+
+        cur = (self._settings.get("cell") or {}).get(name)
+        requested = None
+        if isinstance(cur, dict):
+            requested = tuple(self._AX_KEY.get(k, k) for k, on in cur.items() if on)
+        return resolve_axes(crystal_system_of(st), requested)
+
+    def _cell_axes_map(self) -> dict[str, tuple[str, ...]] | None:
+        """``RefineConfig.cell_axes``：每相实际精修的晶胞分量。
+
+        未在弹窗里设置过时返回 ``None``（引擎按晶系全放开，v1.5 行为
+        逐位不变）。设置过就逐相给出，**全部空集**也照传——那代表用户
+        明确不想修晶胞，不该被默默改回全放。
+        """
+        cur = self._settings.get("cell")
+        if not cur or not self._phases:
+            return None
+        return {st.name: self._cell_axes_for(st.name) for st in self._phases}
+
+    def _fmt_num(self, val, digits: int = 5) -> str:
+        if val is None:
+            return "—"
+        try:
+            return f"{float(val):.{digits}g}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _step_rows(self, step: str) -> list[tuple[str, str]]:
+        """「该步精修什么 + 当前值」清单（说明弹窗与日志共用）。"""
+        p = None if self._result is None else self._result.params
+        labels = self._disp_unique()
+        rows: list[tuple[str, str]] = []
+        if step == "zero":
+            rows.append(("零点 zero (°)", self._fmt_num(None if p is None else p.zero, 6)))
+        elif step == "bg":
+            bg = self._settings.get("bg") or {}
+            rows.append(("背景模式", str(bg.get("bg_mode", "tent"))))
+            from xinrefinement.core.refine.linear import adaptive_n_bg
+            n_bg = bg.get("n_bg")
+            if not isinstance(n_bg, int):
+                n_bg = adaptive_n_bg(*self._refine_window())
+            rows.append(("背景节点数", str(n_bg)))
+            rows.append(("峰形基底", _width_basis_text(p)))
+        elif step == "scale":
+            if self._result is None:
+                rows.append(("每相标度因子 S_p", "线性层解析求解，恒参与"))
+            else:
+                for ph in self._result.phases:
+                    rows.append((f"{labels.get(ph.name, ph.name)} S",
+                                 self._fmt_num(ph.scale)))
+        elif step == "cell":
+            if not self._phases:
+                rows.append(("晶胞参数", "尚未导入物相"))
+            for st in self._phases:
+                axes = self._cell_axes_for(st.name)
+                text = "、".join(axes) if axes else "不参与（未勾选）"
+                rows.append((f"{labels.get(st.name, st.name)}", text))
+        elif step == "profile":
+            for k in ("U", "V", "W", "eta", "asym"):
+                rows.append((k, self._fmt_num(None if p is None else getattr(p, k, None), 6)))
+            rows.append(("宽度基", _width_basis_text(p)))
+        elif step == "xyz":
+            rows.append(("原子分数坐标", "Wyckoff 位约束下的自由方向"))
+            rows.append(("超预算策略", str((self._settings.get("micro") or {}).get(
+                "xyz_phase_select", "largest"))))
+        elif step == "micro":
+            rows.append(("TCH X（微观应变）", self._fmt_num(None if p is None else p.X, 6)))
+            rows.append(("TCH Y（晶粒尺寸）", self._fmt_num(None if p is None else p.Y, 6)))
+            micro = self._settings.get("micro") or {}
+            rows.append(("Popa LB 各向异性", "自动" if micro.get("aniso_auto") else "关"))
+            rows.append(("织构模型", str(micro.get("texture_model", "harmonic:10"))))
+        elif step == "B":
+            rows.append(("每相 ΔB_iso", "逐相整体平移，见结果表"))
+            rows.append(("上界", "6 Å²（顶到即为过拟合信号）"))
+        return rows
+
+    def describe_step(self, step: str) -> None:
+        """点 ▶ 先弹说明窗；确认后把同样的内容写进跑码窗口再启动。"""
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, "正在精修", "请等待当前精修结束或点「停止」")
+            return
+        title = next((s[1] for s in STEPS if s[0] == step), step)
+        note = next((s.note for s in DEFAULT_STEPS if s.key == step), "")
+        dlg = StepDescribeDialog(title, note, self._step_rows(step), self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        # 与弹窗逐条对应地写日志（用户要求「与左下的跑码窗口对应」）
+        self.log_line(tr("log.step_begin").format(title=title))
+        self.log_line(f"{tr('stepdesc.params')}:")
+        for line in dlg.describe_lines():
+            self.log_line(f"  {line.strip()}")
+        self._skip_begin_log = True     # 起始行已写过，别重复
+        self._start_worker(single_step=step)
+
     def run_recipe_all(self) -> None:
         """一键连跑标准配方（后台线程）。"""
         if self._worker is not None and self._worker.isRunning():
@@ -1009,6 +1360,9 @@ class MainWindow(QMainWindow):
         inputs = self._make_inputs()
         if inputs is None:
             return
+        # 新一轮开始：上一轮遗留的参数快照不能当基准，否则首步只会打差异
+        # 而没有初值清单（连跑时各步之间仍按差异打印）。
+        self._param_snapshot = None
         # v1.5 M9b：全链墙钟预算（micro 齿轮「精修时间预算」，分钟；
         # 0 = 不限）。防 GUI 单次精修 >1 h（样 4 实测 44.5 min 压线）。
         micro = self._settings.get("micro", {}) or {}
@@ -1019,6 +1373,7 @@ class MainWindow(QMainWindow):
         self._worker = worker
         worker.step_started.connect(self._on_step_started)
         worker.step_finished.connect(self._on_step_finished)
+        worker.step_snapshot.connect(self._on_step_snapshot)
         worker.progress.connect(self._on_progress)
         worker.finished_ok.connect(self._on_worker_ok)
         worker.failed.connect(self._on_worker_failed)
@@ -1037,15 +1392,31 @@ class MainWindow(QMainWindow):
     def _on_step_started(self, key: str, title: str) -> None:
         self._step_status[key] = "running"
         self.statusBar().showMessage(f"执行中：{title}")
+        title_zh = next((s[1] for s in STEPS if s[0] == key), title)
+        # 本步开始前的 Rwp（连跑时 result 逐步刷新）
+        self._rwp_before_step = (None if self._result is None
+                                 else float(self._result.rwp))
+        if self._skip_begin_log:
+            self._skip_begin_log = False    # 说明弹窗已写过起始行
+        else:
+            self.log_line(tr("log.step_begin").format(title=title_zh))
 
     def _on_step_finished(self, key, status, rwp, message) -> None:
         self._step_status[key] = status
         btn = self._step_buttons.get(key)
+        title = next((s[1] for s in STEPS if s[0] == key), key)
         if btn is not None:
             mark = {"done": "✓", "skipped": "–", "failed": "!"}.get(status, "")
-            title = next((s[1] for s in STEPS if s[0] == key), key)
             btn.setText(f"{mark} {title}" if not btn.text().startswith(mark)
                         else btn.text())
+        # 跑码窗口的收尾行：Rwp 前后对照
+        before = self._rwp_before_step
+        self.log_line(tr("log.step_done").format(
+            title=title, status=status,
+            before="—" if before is None else f"{float(before):.4f}",
+            after="—" if rwp is None else f"{float(rwp):.4f}"))
+        if message:
+            self.log_line(f"  {message}")
 
     def _on_progress(self, msg: str, pct) -> None:
         self.lbl_progress.setText(msg)
@@ -1210,16 +1581,126 @@ class MainWindow(QMainWindow):
             esd = None
         for i, p in enumerate(res.phases):
             wt = "—" if p.weight_pct is None else f"{p.weight_pct:.3f}"
-            rows.append((f"{tr('result.phase_weight')} · {p.name} (%)", wt))
+            disp = self._disp_unique().get(p.name, p.name)   # v1.6：显示名
+            rows.append((f"{tr('result.phase_weight')} · {disp} (%)", wt))
             if weight_esd:
-                rows.append((f"e.s.d. · {p.name} (pp)",
+                rows.append((f"e.s.d. · {disp} (pp)",
                              f"{weight_esd[i]:.4f}"))
         self.result_table.setRowCount(len(rows))
         for r, (k, v) in enumerate(rows):
             self.result_table.setItem(r, 0, QTableWidgetItem(k))
             self.result_table.setItem(r, 1, QTableWidgetItem(v))
+        self._fill_quant_tab(res, weight_esd)
+        self._fill_cell_tab(res)
         self._draw_convergence(res)
         self._draw_correlation(esd)
+
+    def _fill_quant_tab(self, res, weight_esd=None) -> None:
+        """物相定量页（v1.6）：显示名 / wt% / e.s.d. / Z / 晶胞体积。
+
+        首列走 ``_disp()``，默认给化学式 —— 用户明确要求「不是 CIF 文件名」。
+        末行给合计：QPA 的 wt% 理论上归一到 100，合计行是最快的一致性检查。
+        """
+        headers = [tr("quant.phase"), tr("quant.wt"), tr("quant.esd"),
+                   tr("quant.z"), tr("quant.volume")]
+        self.quant_table.setColumnCount(len(headers))
+        self.quant_table.setHorizontalHeaderLabels(headers)
+        phases = list(getattr(res, "phases", ()) or ())
+        labels = self._disp_unique()       # 多型同化学式时带物相名区分
+        total = 0.0
+        quantifiable = True
+        self.quant_table.setRowCount(len(phases) + 1)
+        for i, ph in enumerate(phases):
+            wt = None if ph.weight_pct is None else float(ph.weight_pct)
+            if wt is None:
+                quantifiable = False
+            else:
+                total += wt
+            esd = "—"
+            if weight_esd is not None and i < len(weight_esd):
+                esd = f"{weight_esd[i]:.4f}"
+            cells = [labels.get(ph.name, ph.name),
+                     "—" if wt is None else f"{wt:.3f}",
+                     esd,
+                     "—" if ph.z is None else str(int(ph.z)),
+                     f"{float(ph.volume):.3f}"]
+            for c, text in enumerate(cells):
+                self.quant_table.setItem(i, c, QTableWidgetItem(text))
+        row = len(phases)
+        total_text = f"{total:.3f}" if quantifiable else "—"
+        for c, text in enumerate([tr("quant.total"), total_text, "", "", ""]):
+            self.quant_table.setItem(row, c, QTableWidgetItem(text))
+
+    def _aniso_mean(self, coeffs) -> float:
+        """各向异性系数的「平均主值」（Cholesky 矩阵奇异值均值）。
+
+        界面要给一个数（晶粒尺寸 / 应变），各向异性模型本身是张量。
+        取奇异值均值等价于「体积平均」，与各向同性标量同量纲可比；
+        真正的各向异性比在 ``aniso_ratios`` 里，属诊断信息。
+        """
+        import numpy as np
+
+        c = list(coeffs or ())
+        if len(c) < 6:
+            c = c + [0.0] * (6 - len(c))
+        mat = np.array([[c[0], 0.0, 0.0],
+                        [c[1], c[2], 0.0],
+                        [c[3], c[4], c[5]]], dtype=np.float64)
+        sv = np.linalg.svd(mat, compute_uv=False)
+        return float(np.mean(sv))
+
+    def _size_strain_of(self, res, name: str) -> tuple[float, float, bool]:
+        """该相的 (晶粒尺寸 Å, 微观应变 ε, 是否各向异性)。
+
+        优先各向异性系数（micro 步开 Popa LB 后标量 X/Y 就不再精修了，
+        只读 X/Y 会一直显示初值）；没有各向异性配置时退回 TCH 标量项。
+        """
+        from xinrefinement.core.profile.size_strain import (
+            size_from_y, strain_from_x)
+
+        p = getattr(res, "params", None)
+        if p is None:
+            return float("inf"), 0.0, False
+        wl = float(getattr(p, "wavelength", 1.5406) or 1.5406)
+        aniso = (getattr(p, "aniso", None) or {}).get(name)
+        if aniso:
+            inv_d = self._aniso_mean(aniso.get("size"))
+            eps = self._aniso_mean(aniso.get("strain"))
+            size = (1.0 / inv_d) if inv_d > 1e-12 else float("inf")
+            return size, eps, True
+        return size_from_y(float(getattr(p, "Y", 0.0) or 0.0), wl), \
+            strain_from_x(float(getattr(p, "X", 0.0) or 0.0)), False
+
+    def _fill_cell_tab(self, res) -> None:
+        """晶胞与微结构页（v1.6）：a b c α β γ / V / D / ε / 精修分量。"""
+        headers = [tr("quant.phase"), tr("cell.axes"),
+                   tr("cell.a"), tr("cell.b"), tr("cell.c"),
+                   tr("cell.alpha"), tr("cell.beta"), tr("cell.gamma"),
+                   tr("cell.volume"), tr("cell.size"), tr("cell.strain")]
+        self.cell_table.setColumnCount(len(headers))
+        self.cell_table.setHorizontalHeaderLabels(headers)
+        phases = list(getattr(res, "phases", ()) or ())
+        labels = self._disp_unique()
+        self.cell_table.setRowCount(len(phases))
+        for i, ph in enumerate(phases):
+            cell = list(ph.cell or []) + [float("nan")] * 6
+            size, eps, aniso = self._size_strain_of(res, ph.name)
+            axes = "、".join(self._cell_axes_for(ph.name)) or tr("cell.none")
+            size_text = "—" if (not size or size == float("inf")
+                                or size <= 0) else f"{size:.1f}"
+            if aniso:
+                size_text = f"{size_text} *"
+            cells = [labels.get(ph.name, ph.name), axes,
+                     f"{cell[0]:.5f}", f"{cell[1]:.5f}", f"{cell[2]:.5f}",
+                     f"{cell[3]:.4f}", f"{cell[4]:.4f}", f"{cell[5]:.4f}",
+                     f"{float(ph.volume):.3f}",
+                     size_text, f"{eps:.3e}"]
+            for c, text in enumerate(cells):
+                self.cell_table.setItem(i, c, QTableWidgetItem(text))
+        # 各向异性标记的说明（放在最后一行之外的 tooltip 里更干净，
+        # 这里直接挂到表头，避免多出一个空行）
+        self.cell_table.horizontalHeaderItem(9).setToolTip(tr("cell.aniso"))
+        self.cell_table.resizeColumnsToContents()
 
     def _draw_convergence(self, res) -> None:
         """收敛曲线（Rwp 历史）。"""
