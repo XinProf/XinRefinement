@@ -34,8 +34,13 @@ _RADIUS = 9.0
 _BG_ALPHA = 34        # 底衬透明度（约 13%）
 
 
-def _render_colored_icon(svg_path: str, hex_color: str) -> QPixmap | None:
-    """SVG → 彩色圆角底衬图标位图；失败返回 None。"""
+def _render_colored_icon(svg_path: str, hex_color: str,
+                         chip: int = _CHIP) -> QPixmap | None:
+    """SVG → 彩色圆角底衬图标位图；失败返回 None。
+
+    ``chip`` 是底衬边长（逻辑像素）。v1.6.1 起主窗口传 30：工具条挪到谱图
+    上方后行高变紧，缩一号更协调。
+    """
     try:
         from PySide6.QtSvg import QSvgRenderer
     except ImportError:
@@ -45,46 +50,49 @@ def _render_colored_icon(svg_path: str, hex_color: str) -> QPixmap | None:
         return None
 
     color = QColor(hex_color)
+    inner = int(round(chip * _ICON_INNER / _CHIP))
+    off = (chip - inner) / 2.0
+    radius = _RADIUS * chip / _CHIP
 
     # 1) 底衬：同色系浅色圆角矩形
-    chip = QImage(_CHIP, _CHIP, QImage.Format.Format_ARGB32_Premultiplied)
-    chip.fill(Qt.GlobalColor.transparent)
-    p = QPainter(chip)
+    img_chip = QImage(chip, chip, QImage.Format.Format_ARGB32_Premultiplied)
+    img_chip.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img_chip)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     bg = QColor(color)
     bg.setAlpha(_BG_ALPHA)
     p.setBrush(QBrush(bg))
     p.setPen(Qt.PenStyle.NoPen)
-    p.drawRoundedRect(QRectF(1.5, 1.5, _CHIP - 3.0, _CHIP - 3.0),
-                      _RADIUS, _RADIUS)
+    p.drawRoundedRect(QRectF(1.5, 1.5, chip - 3.0, chip - 3.0),
+                      radius, radius)
 
     # 2) 图标：SVG 以 alpha 为掩膜，整体染成目标色后叠加在底衬上
-    img = QImage(_ICON_INNER, _ICON_INNER,
-                 QImage.Format.Format_ARGB32_Premultiplied)
+    img = QImage(inner, inner, QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(Qt.GlobalColor.transparent)
     p2 = QPainter(img)
-    renderer.render(p2, QRectF(0, 0, _ICON_INNER, _ICON_INNER))
+    renderer.render(p2, QRectF(0, 0, inner, inner))
     p2.end()
-    tinted = QImage(_ICON_INNER, _ICON_INNER,
-                    QImage.Format.Format_ARGB32_Premultiplied)
+    tinted = QImage(inner, inner, QImage.Format.Format_ARGB32_Premultiplied)
     tinted.fill(color)
     p3 = QPainter(tinted)
     p3.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
     p3.drawImage(0, 0, img)
     p3.end()
-    off = (_CHIP - _ICON_INNER) / 2.0
     p.drawImage(QPointF(off, off), tinted)
     p.end()
-    return QPixmap.fromImage(chip)
+    return QPixmap.fromImage(img_chip)
 
 
-def colorize_nav_toolbar(toolbar) -> int:
-    """给 NavigationToolbar2QT 的各动作换上彩色图标；返回成功数。"""
+def colorize_nav_toolbar(toolbar, chip: int = _CHIP) -> int:
+    """给 NavigationToolbar2QT 的各动作换上彩色图标；返回成功数。
+
+    ``chip`` 为图标底衬边长；v1.6.1 主窗口用 30（原 36）缩一号。
+    """
     replaced = 0
     size = toolbar.iconSize()
-    want = QSize(_CHIP, _CHIP)
-    if size.width() < _CHIP - 4:
-        toolbar.setIconSize(QSize(_CHIP - 6, _CHIP - 6))  # 30px，略大于原默认
+    want = QSize(chip, chip)
+    if size.width() < want.width():
+        toolbar.setIconSize(QSize(chip - 6, chip - 6))  # 略小于底衬，留白协调
     for callback, (svg_name, hex_color) in TOOL_COLORS.items():
         act = getattr(toolbar, "_actions", {}).get(callback)
         if act is None:
@@ -93,7 +101,7 @@ def colorize_nav_toolbar(toolbar) -> int:
             svg_path = str(cbook._get_data_path("images", svg_name))
         except Exception:
             continue
-        pix = _render_colored_icon(svg_path, hex_color)
+        pix = _render_colored_icon(svg_path, hex_color, chip=chip)
         if pix is None:
             continue
         act.setIcon(QIcon(pix))

@@ -58,6 +58,13 @@ _BG_PICK_TOL = 0.15
 #: 背景锚点标记颜色（绿色，与谱线区分）
 _BG_PICK_COLOR = "#2e7d32"
 
+#: v1.6.1 谱图操作工具：``None`` = 无（默认的轴点击模式）
+PLOT_TOOLS = ("zoom_x", "zoom_y", "zoom_rect", "crosshair")
+#: 十字竖线与手动峰位标记的颜色（用户要求红色）
+_CURSOR_COLOR = "#d32f2f"
+#: 手动峰位标记与已有标记合并的容差（°）——右键落在附近视为「删除它」
+_PEAK_TOL = 0.25
+
 
 def d_to_two_theta(d, wavelength: float = DEFAULT_WAVELENGTH):
     """d(Å) → 2θ(°)：Bragg 定律逆变换（d 模式下点选取回 2θ）。"""
@@ -159,6 +166,10 @@ class PatternCanvas(FigureCanvasQTAgg):
     bgPointsChanged = Signal(list)
     #: v1.6：请求切换物相显示口径（formula / label / file），主窗口统一改
     phaseLabelMode = Signal(str)
+    #: v1.6.1：十字线读数（2θ/d 与强度），主窗口写进状态栏
+    cursorInfo = Signal(str)
+    #: v1.6.1：手动峰位列表变化 ``[2θ, ...]``（升序）
+    manualPeaksChanged = Signal(list)
 
     def __init__(self, parent=None) -> None:
         # GridSpec 双轴与 tight_layout 不兼容（会产生 UserWarning）；
@@ -187,8 +198,21 @@ class PatternCanvas(FigureCanvasQTAgg):
         self.bg_picks: list[tuple[float, float]] = []
         #: v1.6：物相显示口径（主窗口写入；右键菜单切换时发信号）
         self.label_mode: str = DEFAULT_PHASE_LABEL_MODE
+        #: v1.6.1：当前谱图操作工具（``None`` = 无，走原有的轴点击语义）
+        self.tool: str | None = None
+        #: v1.6.1：手动标注的峰位（2θ，升序）；不随视场缩放丢失
+        self.manual_peaks: list[float] = []
+        #: v1.6.1：框选过程中的橡皮筋（Rectangle patch）与起点（数据坐标）
+        self._band = None
+        self._band_start: tuple[float, float] | None = None
+        #: v1.6.1：十字竖线与读数文本（每次重绘重建，故不入 _manual 列表）
+        self._cursor_line = None
+        self._cursor_text = None
+        self._cursor_x: float | None = None
+        self._peak_artists: list = []
         self._show_empty()
         self.mpl_connect("button_press_event", self._on_button_press)
+        self.mpl_connect("button_release_event", self._on_button_release)
         self.mpl_connect("motion_notify_event", self._on_motion)
 
     # -- 状态 ---------------------------------------------------------- #
@@ -242,7 +266,250 @@ class PatternCanvas(FigureCanvasQTAgg):
         self._phase_sticks = []
         self._visible = set()
         self.bg_picks = []
+        # v1.6.1：手动峰位与十字线属于「当前这张谱」，换谱即清空
+        self.manual_peaks = []
+        self._band = None
+        self._band_start = None
+        self._cursor_line = None
+        self._cursor_text = None
+        self._cursor_x = None
         self._show_empty()
+
+    # -- 谱图操作（v1.6.1：复位 / 框选缩放 / 平移 / 步进缩放 / 十字线） -- #
+    def set_plot_tool(self, tool: str | None) -> None:
+        """切换谱图操作工具；``None`` = 交还原有的「点轴切换」语义。
+
+        与 matplotlib 自带平移/框选**互斥**：两套拖拽同时激活会抢鼠标事件
+        （一个拖出橡皮筋、另一个同时在平移），所以开工具前先关掉它们。
+        """
+        if tool is not None and tool not in PLOT_TOOLS:
+            return
+        if tool is not None:
+            self._cancel_nav_mode()
+        self.tool = tool
+        self._band = None
+        self._band_start = None
+        if tool == "crosshair":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.axisHint.emit(tr("plot.crosshair_hint"))
+        else:
+            self.unsetCursor()
+            self.axisHint.emit("")
+        if self._yobs is not None:
+            self._draw_overlays()
+            self.draw_idle()
+
+    def _cancel_nav_mode(self) -> None:
+        """关掉 NavToolbar 已激活的平移/框选（再点一次同一按钮）。"""
+        tb = self.nav_toolbar
+        if tb is None:
+            return
+        acts = getattr(tb, "_actions", {})
+        for key in ("pan", "zoom"):
+            act = acts.get(key)
+            if act is not None and act.isChecked():
+                try:
+                    getattr(tb, key)()
+                except Exception:
+                    act.setChecked(False)
+
+    def reset_view(self) -> None:
+        """原始谱图：恢复默认视场（横轴全量、纵轴按当前标度模式）。"""
+        if self._yobs is None:
+            return
+        self._cancel_nav_mode()
+        self._apply_axis_modes(self._x_values(self._two_theta))
+        self.draw_idle()
+
+    def _set_xlim(self, x0: float, x1: float) -> None:
+        """设横轴范围并保持方向（d 模式下轴是反向的）。"""
+        lo, hi = (x0, x1) if x0 <= x1 else (x1, x0)
+        if hi - lo <= 1e-12:
+            return
+        if self.ax_main.xaxis_inverted():
+            lo, hi = hi, lo
+        self.ax_main.set_xlim(lo, hi, auto=False)
+
+    def _set_ylim(self, y0: float, y1: float) -> None:
+        lo, hi = (y0, y1) if y0 <= y1 else (y1, y0)
+        if hi - lo <= 1e-12:
+            return
+        self.ax_main.set_ylim(lo, hi, auto=False)
+
+    def _scale_y_to_view(self) -> None:
+        """纵轴贴合当前横向视场内的数据（放大/平移后不出现空屏）。
+
+        直接沿用 ``_apply_axis_modes`` 的判据，只是把统计范围从全谱
+        收窄到 **当前视场**——这样「放大一个峰」得到的是这个峰自己的
+        量程，而不是仍被最高峰压成一条直线。
+        """
+        if self._yobs is None:
+            return
+        x0, x1 = sorted(self.ax_main.get_xlim())
+        xdata = self._x_values(self._two_theta)
+        mask = (xdata >= x0) & (xdata <= x1)
+        ys = [np.asarray(v, dtype=float)[mask] for v in
+              (self._yobs, self._ycalc, self._background)
+              if v is not None and np.asarray(v).size == xdata.size]
+        ys = [v for v in ys if v.size]
+        if not ys:
+            return
+        if self.y_mode == "log":
+            pos = np.concatenate([v[v > 0] for v in ys if np.any(v > 0)]) \
+                if any(np.any(v > 0) for v in ys) else np.array([1.0])
+            self._set_ylim(max(float(np.nanmin(pos)) * 0.8, 1e-3),
+                           float(np.nanmax(pos)) * 1.15)
+        else:
+            self._set_ylim(0.0, float(max(np.nanmax(v) for v in ys)) * 1.08)
+
+    def zoom_scale(self, factor: float) -> None:
+        """以视场中心为锚点整体缩放（``factor < 1`` 放大）。"""
+        if self._yobs is None or factor is None or factor <= 0:
+            return
+        x0, x1 = sorted(self.ax_main.get_xlim())
+        centre = 0.5 * (x0 + x1)
+        half = 0.5 * (x1 - x0) * float(factor)
+        self._set_xlim(centre - half, centre + half)
+        self._scale_y_to_view()
+        self.draw_idle()
+
+    def pan_x(self, frac: float) -> None:
+        """整体水平平移（``frac > 0`` 向右移，即视场往大角度走）。"""
+        if self._yobs is None:
+            return
+        x0, x1 = sorted(self.ax_main.get_xlim())
+        shift = (x1 - x0) * float(frac)
+        if self.ax_main.xaxis_inverted():
+            shift = -shift
+        self._set_xlim(x0 + shift, x1 + shift)
+        self._scale_y_to_view()
+        self.draw_idle()
+
+    # -- 十字竖线 + 手动峰位（v1.6.1） ---------------------------------- #
+    def toggle_manual_peak(self, two_theta: float) -> str:
+        """在 ``two_theta`` 处添加手动峰位；落在已有标记附近则删除它。
+
+        返回 ``"added"`` / ``"removed"``（状态栏提示用）。
+        """
+        tt = float(two_theta)
+        for i, p in enumerate(self.manual_peaks):
+            if abs(p - tt) <= _PEAK_TOL:
+                del self.manual_peaks[i]
+                action = "removed"
+                break
+        else:
+            self.manual_peaks.append(tt)
+            self.manual_peaks.sort()
+            action = "added"
+        self.manualPeaksChanged.emit(list(self.manual_peaks))
+        self._draw_overlays()
+        self.draw_idle()
+        return action
+
+    def _intensity_at(self, two_theta: float) -> float | None:
+        """该 2θ 处的实测强度（线性插值；越界返回 None）。"""
+        if self._yobs is None or self._two_theta is None:
+            return None
+        tt = np.asarray(self._two_theta, dtype=float)
+        if tt.size < 2 or not (tt.min() <= two_theta <= tt.max()):
+            return None
+        return float(np.interp(two_theta, tt, self._yobs))
+
+    def _update_cursor(self, two_theta: float) -> None:
+        """移动红色竖线并把「角度 + 强度」发给状态栏。"""
+        if self._yobs is None or two_theta is None:
+            return
+        xv = float(self._x_values(np.array([two_theta]))[0])
+        self._cursor_x = float(two_theta)
+        if self._cursor_line is None:
+            self._cursor_line = self.ax_main.axvline(
+                xv, color=_CURSOR_COLOR, lw=1.0, alpha=0.85, zorder=7)
+        else:
+            self._cursor_line.set_xdata([xv, xv])
+        inten = self._intensity_at(two_theta)
+        if self.x_mode == "d":
+            head = tr("plot.cursor_d").format(d=f"{xv:.4f}")
+        else:
+            head = tr("plot.cursor_x").format(x=f"{xv:.3f}")
+        text = head if inten is None else \
+            f"{head}  {tr('plot.cursor_y').format(y=f'{inten:.0f}')}"
+        if self._cursor_text is None:
+            self._cursor_text = self.ax_main.text(
+                0.995, 0.985, text, transform=self.ax_main.transAxes,
+                ha="right", va="top", fontsize=9, color=_CURSOR_COLOR,
+                zorder=8)
+        else:
+            self._cursor_text.set_text(text)
+        self.cursorInfo.emit(text.replace("  ", " · "))
+        self.draw_idle()
+
+    def _draw_overlays(self) -> None:
+        """（重）画十字线与手动峰位——每次 ``_redraw`` 之后都要重建。"""
+        for attr in ("_cursor_line", "_cursor_text"):
+            artist = getattr(self, attr, None)
+            if artist is not None:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        for artist in getattr(self, "_peak_artists", []) or []:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._peak_artists = []
+        if self._yobs is None:
+            return
+        for p in self.manual_peaks:
+            xv = float(self._x_values(np.array([p]))[0])
+            line = self.ax_main.axvline(
+                xv, color=_CURSOR_COLOR, lw=1.1, ls="--", alpha=0.55,
+                zorder=5)
+            label = self.ax_main.text(
+                xv, 0.03, f"{p:.2f}°", transform=self.ax_main.get_xaxis_transform(),
+                ha="center", va="bottom", rotation=90, fontsize=8,
+                color=_CURSOR_COLOR, alpha=0.9, zorder=5)
+            self._peak_artists.extend([line, label])
+        if self.tool == "crosshair" and self._cursor_x is not None:
+            self._update_cursor(self._cursor_x)
+
+    def _make_band(self, x: float, y: float):
+        from matplotlib.patches import Rectangle
+
+        if self._band is not None:
+            try:
+                self._band.remove()
+            except Exception:
+                pass
+        self._band = Rectangle((x, y), 0.0, 0.0, facecolor=_CURSOR_COLOR,
+                               alpha=0.12, edgecolor=_CURSOR_COLOR,
+                               lw=1.0, ls="--", zorder=6)
+        self.ax_main.add_patch(self._band)
+        return self._band
+
+    def _apply_band(self, x0, y0, x1, y1) -> None:
+        """按工具语义把框选范围变成新的视场。"""
+        span_x = abs(x1 - x0)
+        span_y = abs(y1 - y0)
+        cur_x = abs(self.ax_main.get_xlim()[1] - self.ax_main.get_xlim()[0])
+        cur_y = abs(self.ax_main.get_ylim()[1] - self.ax_main.get_ylim()[0])
+        if self.tool == "zoom_x":
+            if span_x <= cur_x * 0.02:
+                return
+            self._set_xlim(x0, x1)
+            self._scale_y_to_view()
+        elif self.tool == "zoom_y":
+            if span_y <= cur_y * 0.02:
+                return
+            self._set_ylim(y0, y1)
+        elif self.tool == "zoom_rect":
+            if span_x <= cur_x * 0.02 and span_y <= cur_y * 0.02:
+                return
+            if span_x > cur_x * 0.02:
+                self._set_xlim(x0, x1)
+            if span_y > cur_y * 0.02:
+                self._set_ylim(y0, y1)
 
     # -- 背景点选（v1.3，MAUD 手工背景点语义） -------------------------- #
     def set_pick_mode(self, on: bool) -> None:
@@ -417,6 +684,10 @@ class PatternCanvas(FigureCanvasQTAgg):
         """左键循环切换该轴模式；右键弹出可选切换菜单。"""
         if self._yobs is None or self._in_pan_or_zoom():
             return
+        # v1.6.1：谱图操作工具优先——框选缩放 / 十字线时不触发轴切换
+        if self.tool is not None and event.inaxes is self.ax_main:
+            self._tool_press(event)
+            return
         # v1.3：点选模式优先 —— 主轴内左键加/删锚点、右键清空
         if self.pick_mode and event.inaxes is self.ax_main:
             if event.button == 1:
@@ -449,6 +720,49 @@ class PatternCanvas(FigureCanvasQTAgg):
         except Exception:
             return False
 
+    def _tool_press(self, event) -> None:
+        """当前谱图操作工具下的按下动作（v1.6.1）。
+
+        - ``crosshair``：左键定位竖线，右键在该处**添加/删除**手动峰位；
+        - ``zoom_x`` / ``zoom_y`` / ``zoom_rect``：左键起拖，画橡皮筋。
+        """
+        if self.tool == "crosshair":
+            tt = self._event_two_theta(event)
+            if tt is None:
+                return
+            if event.button == 3:
+                action = self.toggle_manual_peak(tt)
+                self.axisHint.emit(
+                    tr(f"plot.peak_{action}").format(x=f"{tt:.3f}"))
+            elif event.button == 1:
+                self._update_cursor(tt)
+            return
+        if event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        self._band_start = (float(event.xdata), float(event.ydata))
+        self._make_band(*self._band_start)
+        self.draw_idle()
+
+    def _on_button_release(self, event) -> None:
+        """松开左键：收掉橡皮筋并按工具语义应用新视场（v1.6.1）。"""
+        if self._band_start is None:
+            return
+        x0, y0 = self._band_start
+        self._band_start = None
+        band, self._band = self._band, None
+        if band is not None:
+            try:
+                band.remove()
+            except Exception:
+                pass
+        if event.xdata is None or event.ydata is None:
+            self.draw_idle()
+            return
+        self._apply_band(x0, y0, float(event.xdata), float(event.ydata))
+        self.draw_idle()
+
     def _popup_sticks_menu(self, gui=None) -> None:
         """标记条右键菜单：切换物相显示口径（化学式 / 物相名称 / 文件名）。
 
@@ -472,6 +786,20 @@ class PatternCanvas(FigureCanvasQTAgg):
     def _on_motion(self, event) -> None:
         """悬停到轴区时发状态栏提示并换手型光标（提示可点）。"""
         if self._yobs is None:
+            return
+        # v1.6.1：框选拖拽中 → 只更新橡皮筋
+        if self._band is not None:
+            if event.inaxes is self.ax_main and event.xdata is not None:
+                x0, y0 = self._band_start
+                self._band.set_width(float(event.xdata) - x0)
+                self._band.set_height(float(event.ydata) - y0)
+                self.draw_idle()
+            return
+        # v1.6.1：十字线工具 → 跟随鼠标移动并报读数
+        if self.tool == "crosshair" and event.inaxes is self.ax_main:
+            tt = self._event_two_theta(event)
+            if tt is not None:
+                self._update_cursor(tt)
             return
         # v1.3：点选模式下主轴内用十字光标提示
         if self.pick_mode and getattr(event, "inaxes", None) is self.ax_main:
@@ -529,6 +857,10 @@ class PatternCanvas(FigureCanvasQTAgg):
 
     def _reset_axes(self) -> None:
         self.figure.clear()
+        # 画布一清空，之前挂上去的覆盖层（十字线/手动峰位）就都不存在了
+        self._cursor_line = None
+        self._cursor_text = None
+        self._peak_artists = []
         n_tick = len(self._visible_sticks())
         gs = self.figure.add_gridspec(
             2 + n_tick, 1,
@@ -611,6 +943,8 @@ class PatternCanvas(FigureCanvasQTAgg):
             self.ax_main.plot(px, py, linestyle="none", marker="v",
                               color=_BG_PICK_COLOR, markersize=6.5,
                               zorder=6, label=tr("canvas.bg_picks"))
+        # v1.6.1：手动峰位 + 十字线（``_redraw`` 会清轴，必须每次重建）
+        self._draw_overlays()
         self.draw_idle()
 
     def _sticks_in_units(self, sticks):

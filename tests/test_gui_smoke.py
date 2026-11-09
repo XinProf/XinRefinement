@@ -351,7 +351,8 @@ def test_nav_toolbar_colorized_icons(win):
         assert act is not None, callback
         pm = act.icon().pixmap(36, 36)
         assert not pm.isNull(), callback
-        assert pm.width() == 36
+        # v1.6.1：工具条挪到谱图上方并缩小一号（chip 36 → 30）
+        assert pm.width() == 30
     # 关键动作可点击状态与原生语义不变
     assert tb._actions["zoom"].isCheckable()
     assert tb._actions["pan"].isCheckable()

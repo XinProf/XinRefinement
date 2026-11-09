@@ -1,18 +1,100 @@
-"""「关于 XinRefinement」对话框（版式继承 XinMatch 家族规范）。
+"""「关于 XinRefinement」与「版权与许可」对话框（版式继承 XinMatch 家族规范）。
 
 小 Logo + 软件名 + 版本 + 定位/功能简介 + 联系方式 + 版权/许可。
 版权主体（PolyXRD Team）、联系方式（sshztx@outlook.com）与双许可
 （Academic / Commercial，见根目录 LICENSE / LICENSE-CN）**继承自
 XinMatch**，家族内保持一致。
+
+v1.6.1：用户要求「帮助页加上版权和许可」。除了 About 里那两行摘要，新增
+独立的 :class:`LicenseDialog`——可滚动查看许可**全文**（安装目录里的
+``LICENSE`` / ``LICENSE-CN``，打包时随 ``licenses/`` 一起分发）。
+许可正文只读磁盘、不在代码里复写一份，避免两处文本漂移。
 """
 from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import xinrefinement
 from xinrefinement.gui.assets import load_pixmap
+from xinrefinement.i18n import get_language, tr
 
 _ACCENT = "#0D285C"  # 家族品牌色（科技蓝调深）
+
+
+def license_path(lang: str | None = None) -> Path | None:
+    """定位许可全文文件（打包后 ``licenses/`` 下，源码树为仓库根）。"""
+    name = "LICENSE" if (lang or get_language()) == "en" else "LICENSE-CN"
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    # 源码 / onedir：包目录上两级即仓库根
+    roots.append(Path(__file__).resolve().parents[2])
+    roots.append(Path(sys.executable).resolve().parent)
+    for root in roots:
+        for candidate in (root / "licenses" / name, root / name):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def license_text(lang: str | None = None) -> str:
+    """许可全文；文件缺失时回落到一句说明（不编造条款）。"""
+    path = license_path(lang)
+    if path is None:
+        return tr("license.missing")
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return tr("license.missing")
+
+
+class LicenseDialog(QtWidgets.QDialog):
+    """版权与许可：摘要 + 可滚动全文。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("license.title"))
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(8)
+
+        head = QtWidgets.QLabel(tr("license.head"))
+        font = head.font()
+        font.setPointSizeF(font.pointSizeF() + 1.5)
+        font.setBold(True)
+        head.setFont(font)
+        head.setStyleSheet(f"color: {_ACCENT};")
+        layout.addWidget(head)
+
+        summary = QtWidgets.QLabel(tr("license.summary"))
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #555;")
+        layout.addWidget(summary)
+
+        self.view = QtWidgets.QTextBrowser()
+        self.view.setReadOnly(True)
+        self.view.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.WidgetWidth)
+        self.view.setStyleSheet(
+            "font-family: Consolas, 'Cascadia Mono', monospace; font-size: 11px;")
+        self.view.setPlainText(license_text())
+        self.view.setMinimumSize(560, 380)
+        layout.addWidget(self.view, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Close).setText("关闭")
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self.resize(620, 520)
 
 
 class AboutDialog(QtWidgets.QDialog):
@@ -140,8 +222,17 @@ class AboutDialog(QtWidgets.QDialog):
         )
         buttons.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("确定")
+        # v1.6.1：版权行旁边给一个直接看许可全文的入口
+        self.btn_license = buttons.addButton(
+            tr("license.view"),
+            QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        self.btn_license.clicked.connect(self._show_license)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         self.setMinimumWidth(420)
+
+    def _show_license(self) -> None:
+        """关于页 → 许可全文（模态叠模态，关闭后回到关于页）。"""
+        LicenseDialog(self).exec()

@@ -54,6 +54,10 @@ BUNDLE_NAME = (f"XinRefinement-{VERSION}" if BUILD_VARIANT == "release"
 datas = [
     (str(ROOT / "xinrefinement" / "data"), "xinrefinement/data"),
     (str(_VARIANT_MARKER), "."),
+    # v1.6.1：帮助→版权与许可要读全文。装上这两个文件，界面才不必在代码里
+    # 复写一份许可文本（两处文本必然漂移）。
+    (str(ROOT / "LICENSE"), "licenses"),
+    (str(ROOT / "LICENSE-CN"), "licenses"),
 ]
 # matplotlib / PySide6 的运行时数据由各自 hook 处理；此处补 mpl 字体等
 datas += collect_data_files("matplotlib", includes=["mpl-data/**"])

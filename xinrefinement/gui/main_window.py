@@ -62,7 +62,7 @@ from xinrefinement.core.refine.linear import adaptive_n_bg, background_basis
 from xinrefinement.core.refine.nonlinear import RefineConfig
 from xinrefinement.core.refine.recipe import DEFAULT_STEPS
 from xinrefinement.core.refine.solve import RefineInputs, solve
-from xinrefinement.gui.about import AboutDialog
+from xinrefinement.gui.about import AboutDialog, LicenseDialog
 from xinrefinement.gui.assets import app_icon
 from xinrefinement.gui.canvas import PatternCanvas
 
@@ -132,6 +132,18 @@ from xinrefinement.i18n import (
     set_language,
     tr,
 )
+
+#: v1.6.1：导航式精修八个步骤的齿轮颜色（品牌色系，与图标/相色同源）
+STEP_GEAR_COLORS: dict[str, str] = {
+    "zero": "#1f77b4",      # 蓝
+    "bg": "#ff7f0e",        # 橙
+    "scale": "#2ca02c",     # 绿
+    "cell": "#d62728",      # 红
+    "profile": "#9467bd",   # 紫
+    "xyz": "#8c564b",       # 棕
+    "B": "#e377c2",         # 粉
+    "micro": "#17becf",     # 青
+}
 
 
 class MainWindow(QMainWindow):
@@ -228,8 +240,13 @@ class MainWindow(QMainWindow):
             act.triggered.connect(slot)
             rm.addAction(act)
             self._menu_actions[key] = act
-        # 帮助 → 关于
+        # 帮助 → 版权与许可 / 关于
         hm = self._menus["menu.help"]
+        act_lic = QAction(tr("license.menu"), self)
+        act_lic.triggered.connect(self.show_license)
+        hm.addAction(act_lic)
+        self._menu_actions["license.menu"] = act_lic
+        hm.addSeparator()
         act = QAction(tr("menu.about"), self)
         act.triggered.connect(self.show_about)
         hm.addAction(act)
@@ -345,18 +362,27 @@ class MainWindow(QMainWindow):
         # 中：交互图谱
         center = QWidget()
         cv = QVBoxLayout(center)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(2)
         self.canvas = PatternCanvas()
-        cv.addWidget(self.canvas, 1)
         from xinrefinement.gui.toolbar_icons import colorize_nav_toolbar
         self._nav_toolbar = NavigationToolbar2QT(self.canvas, center)
-        colorize_nav_toolbar(self._nav_toolbar)   # 品牌彩色图标
+        # v1.6.1：图标缩小一号（chip 36 → 30），并移到**谱图上方**
+        colorize_nav_toolbar(self._nav_toolbar, chip=30)
         self.canvas.nav_toolbar = self._nav_toolbar  # 平移/缩放时让出轴点击
         self.canvas.axisHint.connect(self.statusBar().showMessage)
+        # v1.6.1：十字线读数同时给状态栏一份（工具条末尾也有一个即时读数）
+        self.canvas.cursorInfo.connect(self.statusBar().showMessage)
         # v1.3：画布背景锚点 → 设置回写（manual 模式，下次精修生效）
         self.canvas.bgPointsChanged.connect(self._on_bg_picks_changed)
         # v1.6：标记条右键 → 切换物相显示口径
         self.canvas.phaseLabelMode.connect(self.set_display_mode)
         cv.addWidget(self._nav_toolbar)
+        # v1.6.1：谱图操作行（复位/框选/平移/步进缩放/十字线）
+        from xinrefinement.gui.plot_tools import PlotToolBar
+        self.plot_toolbar = PlotToolBar(self.canvas, center)
+        cv.addWidget(self.plot_toolbar)
+        cv.addWidget(self.canvas, 1)
         split.addWidget(center)
 
         # 右：导航式精修面板 + 结果区
@@ -366,6 +392,7 @@ class MainWindow(QMainWindow):
         self._groups["panel.nav"] = nav
         nv = QVBoxLayout(nav)
         self._step_buttons: dict[str, QPushButton] = {}
+        self._gear_buttons: dict[str, QPushButton] = {}
         for step, title, _cat in STEPS:
             row = QWidget()
             hl = QHBoxLayout(row)
@@ -374,12 +401,19 @@ class MainWindow(QMainWindow):
             run.clicked.connect(lambda _c=False, s=step: self.describe_step(s))
             gear = QPushButton("⚙")
             gear.setFixedWidth(32)
+            # v1.6.1：八个齿轮各一色——长条列表里靠颜色定位比读文字快
+            color = STEP_GEAR_COLORS.get(step, "#5b6670")
+            gear.setStyleSheet(
+                f"QPushButton {{ color: {color}; font-weight: bold;"
+                f" font-size: 16px; }}")
+            gear.setToolTip(f"「{tr(f'step.{step}')}」参数设置")
             gear.clicked.connect(lambda _c=False, s=step, t=title:
                                  self.open_step_settings(s, t))
             hl.addWidget(run, 1)
             hl.addWidget(gear)
             nv.addWidget(row)
             self._step_buttons[step] = run
+            self._gear_buttons[step] = gear
         self.btn_run_all = QPushButton(tr("panel.run_all"))
         self.btn_run_all.setToolTip("按 8 步标准配方顺序精修，逐步回报 Rwp")
         self.btn_run_all.clicked.connect(self.run_recipe_all)
@@ -441,7 +475,7 @@ class MainWindow(QMainWindow):
 
     # -- 状态栏 -------------------------------------------------------- #
     def _build_statusbar(self) -> None:
-        """状态栏最右侧：注册状态（正式版）/「内部评估版本」（内部版）。"""
+        """状态栏：最右注册状态（正式版）/ 居中的「内部评估版本」（内部版）。"""
         bar = self.statusBar()
         if self._registration is not None:
             # stretch=1 让标签吃掉剩余空白，单位名始终贴住右端。
@@ -450,9 +484,15 @@ class MainWindow(QMainWindow):
             return
         label = QLabel(build_variant.INTERNAL_STATUS_TEXT)
         label.setObjectName("internalBuildLabel")
-        label.setAlignment(Qt.AlignmentFlag.AlignRight
-                           | Qt.AlignmentFlag.AlignVCenter)
+        # v1.6.1：按用户要求**居中**显示（原来贴右端），字号加大一号、红色加粗。
+        # 用 permanentWidget + stretch 而不是 addWidget：showMessage() 会临时
+        # 隐藏普通部件，标签会在每条状态提示时闪烁消失。
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setToolTip("内部评估版：未启用注册机制，仅供内部测试与评估使用。")
+        font = label.font()
+        font.setPointSizeF(max(font.pointSizeF(), 9.0) + 1.0)
+        font.setBold(True)
+        label.setFont(font)
         # 红色加粗（与 XinMatch 内部版一致）；挂在控件上的样式优先级高于
         # 全局 QSS，换主题不会掉色。
         label.setStyleSheet("color: #d32f2f; font-weight: bold; padding: 0 6px;")
@@ -510,6 +550,11 @@ class MainWindow(QMainWindow):
                 self.result_tabs.setTabText(idx, tr(key))
         self.corr_table.setHorizontalHeaderLabels(
             [tr("result.metric"), tr("result.value")])
+        # v1.6.1：齿轮 tooltip 与谱图操作行文案
+        for step, btn in getattr(self, "_gear_buttons", {}).items():
+            btn.setToolTip(f"「{tr(f'step.{step}')}」参数设置")
+        if hasattr(self, "plot_toolbar"):
+            self.plot_toolbar.retranslate()
 
     def switch_language(self, lang: str) -> None:
         set_language(lang)
@@ -1149,6 +1194,10 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         """帮助→关于：家族版式（版权/许可继承 XinMatch）。"""
         AboutDialog(self).exec()
+
+    def show_license(self) -> None:
+        """帮助→版权与许可：双许可摘要 + 全文（v1.6.1）。"""
+        LicenseDialog(self).exec()
 
     def _refine_window(self) -> tuple[float, float]:
         """当前精修窗口（micro 齿轮优先，其次 bg 齿轮，兜底 5–90°）。
