@@ -141,14 +141,27 @@ def test_project_roundtrip(win, qapp, tmp_path):
 
 
 def test_serialize_uses_relative_paths(win, tmp_path):
-    """工程文件内路径相对化（工程目录整体移动后仍可打开）。"""
+    """工程文件内路径相对化（工程目录整体移动后仍可打开）。
+
+    v1.6.2 修正断言口径：``_rel`` 用的是 ``relative_to``（**前缀**语义），
+    只有数据在工程目录子树内才写相对路径；不在子树里（含跨盘符）一律写
+    绝对路径。旧断言把它说成「同盘符 → 相对」，只在 pytest tmp 恰好在
+    另一个盘时碰巧成立——换成同盘 basetemp 就红，而序列化本身没问题。
+    """
     win._load_pattern_path(PATTERN)
     win._load_cif_paths([CIF_A])
-    raw = serialize(win.project_state(), tmp_path / "p.xrp")
+
+    # 1) 工程文件放在数据所在子树 → 相对路径，且能还原到原文件
+    raw = serialize(win.project_state(), PATTERN.parent / "p.xrp")
     assert raw["format"] == FORMAT
-    # 同盘符 -> 相对路径；跨盘符（pytest tmp 在 C:，项目在 D:）-> 绝对路径
-    same_drive = tmp_path.drive.upper() == PATTERN.drive.upper()
-    assert Path(raw["pattern"]).is_absolute() == (not same_drive)
+    rel = Path(raw["pattern"])
+    assert not rel.is_absolute()
+    assert (PATTERN.parent / rel).resolve() == PATTERN.resolve()
+
+    # 2) 工程文件不在该子树（tmp 目录，可能跨盘符）→ 绝对路径
+    raw2 = serialize(win.project_state(), tmp_path / "p.xrp")
+    assert Path(raw2["pattern"]).is_absolute()
+
     # 无论相对/绝对，load_project 都能还原到原始文件
     out = tmp_path / "p.xrp"
     save_project(win.project_state(), out, embed=False)

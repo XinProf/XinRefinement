@@ -237,7 +237,11 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
     的勾选。``None`` = 按晶系全放开（历史行为，逐位不变）；显式空序列 =
     该相跳过。非法轴（立方给 ``b`` 之类）由 :func:`resolve_axes` 丢弃。
     """
-    from xinrefinement.core.refine.nonlinear import RefineConfig, effective_sigma
+    from xinrefinement.core.refine.nonlinear import (
+        RefineConfig,
+        _check_cancel,
+        effective_sigma,
+    )
 
     if isinstance(cfg, RefineConfig):
         tmin, tmax = cfg.tmin, cfg.tmax
@@ -285,6 +289,10 @@ def refine_cell_full(phases: list[CifStructure], pat: Pattern,
         return hit
 
     def residual_fn(x: np.ndarray) -> np.ndarray:
+        # v1.6.2：取消检查（与 ``solve`` 主路径同一个钩子）。晶胞引擎是
+        # 独立残差闭包，不接这一句的话「停止」要等整个 cell 步跑完——
+        # 而 cell 步内部有 3 次 solve，是全链最慢的步之一。
+        _check_cancel(cfg)
         structs = [scaled(i, x[offsets[i]:offsets[i + 1]])
                    for i in range(len(phases))]
         rows = [compute_phase_profile(s, tt, prm0, tmin, tmax) for s in structs]

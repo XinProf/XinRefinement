@@ -1538,10 +1538,18 @@ class MainWindow(QMainWindow):
         self.lbl_progress.setText("已停止" if cancelled else msg)
 
     def _on_worker_done(self) -> None:
+        # v1.6.2：取消后不再停在「正在执行…」——那是用户点停止时最困惑的
+        # 一幕（按钮已置灰、进度条还写着某步在跑）。取消是步内生效的，
+        # 结果可能已经部分回填，所以这里只改文案与日志，不动结果区。
+        cancelled = self._worker is not None and self._worker.is_cancelled
         self.btn_run_all.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         for btn in self._step_buttons.values():
             btn.setEnabled(True)
+        if cancelled:
+            self.lbl_progress.setText("已停止")
+            self.statusBar().showMessage("已停止")
+            self.log_line(tr("log.cancelled"))
 
     def _background_curve(self, res):
         """背景系数 -> 背景曲线（失败时返回 None）。"""

@@ -306,7 +306,7 @@ def refine_sites(models: list[SiteModel], pat: Pattern, prm0: ProfileParams,
     只精修其余位点的相对占位。设 ``occ_anchor=False`` 可关闭（用于多相/
     含已知标度的场景，此时须自行处理简并）。
     """
-    from xinrefinement.core.refine.nonlinear import RefineConfig
+    from xinrefinement.core.refine.nonlinear import RefineConfig, _check_cancel
 
     if isinstance(cfg, RefineConfig):
         tmin, tmax = cfg.tmin, cfg.tmax
@@ -328,6 +328,9 @@ def refine_sites(models: list[SiteModel], pat: Pattern, prm0: ProfileParams,
                   for s in fixed_structures]
 
     def residual_fn(x: np.ndarray) -> np.ndarray:
+        # v1.6.2：与主 solve / 晶胞引擎同一取消钩子（xyz 步用数值雅可比，
+        # 每迭代 O(n_free) 次评估，不接这个就得等整步跑完才停）。
+        _check_cancel(cfg)
         structs = [m.to_structure(x[offsets[i]:offsets[i + 1]])
                    for i, m in enumerate(models)]
         rows = list(fixed_rows) + [

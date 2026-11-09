@@ -117,6 +117,7 @@ _ZH = {
     "log.initial": "  参数初值：",
     "log.param_init": "  {name}: {value}",
     "log.basis": "  精修分量: {axes}",
+    "log.cancelled": "=== 精修已由用户停止（当前步在残差评估处中断）===",
 }
 
 _EN = {
@@ -227,6 +228,7 @@ _EN = {
     "log.initial": "  Initial values:",
     "log.param_init": "  {name}: {value}",
     "log.basis": "  free axes: {axes}",
+    "log.cancelled": "=== Refinement stopped by user (interrupted at a residual evaluation) ===",
 }
 
 _JA = {
@@ -335,6 +337,7 @@ _JA = {
     "log.initial": "  初期値:",
     "log.param_init": "  {name}: {value}",
     "log.basis": "  精密化成分: {axes}",
+    "log.cancelled": "=== ユーザーが精密化を停止しました（残差評価の地点で中断）===",
 }
 
 TRANSLATIONS = {"zh": _ZH, "en": _EN, "ja": _JA}

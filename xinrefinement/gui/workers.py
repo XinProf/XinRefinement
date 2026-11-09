@@ -12,8 +12,11 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import QThread, Signal
 
+from xinrefinement.core.refine.nonlinear import RefineCancelled
 from xinrefinement.core.refine.recipe import (
     DEFAULT_STEPS,
     GUI_TIME_BUDGET_S,
@@ -52,8 +55,18 @@ class RefineWorker(QThread):
         self._runner = RecipeRunner(self._steps, time_budget_s=time_budget_s)
 
     def cancel(self) -> None:
-        """请求取消（下一步边界检查；当前步内的 LM 由 cancel_cb 逐次评估检查）。"""
+        """请求取消：**下一次残差评估**即生效（v1.6.2）。
+
+        回调通过 ``RefineConfig.cancel_cb`` 挂在配置上，引擎的
+        ``_check_cancel`` 在每次残差评估入口检查——所以停止延迟是一次
+        残差评估（实测量级 10 ms），而不是「等当前步跑完」。
+        步边界的检查仍然保留（没有挂上回调时的兜底）。
+        """
         self._cancel = True
+
+    def _cancel_requested(self) -> bool:
+        """给引擎的取消回调（属性/方法是两回事：属性求值成 bool 不可调用）。"""
+        return self._cancel
 
     @property
     def is_cancelled(self) -> bool:
@@ -71,14 +84,21 @@ class RefineWorker(QThread):
                 self.failed.emit(f"未找到步骤 {self._single!r}")
                 return
 
+            # v1.6.2：取消回调必须进配置，否则「停止」只在步边界生效，
+            # 用户点完要等当前步整步跑完（cell 步 3 次 solve、micro 步
+            # 试探 + 正式 + 重解、profile 步最多 4 次 LM 重启 → 分钟级）。
+            inputs = replace(
+                self._inputs,
+                config=replace(self._inputs.config,
+                               cancel_cb=self._cancel_requested))
+
             result: SolveResult | None = None
             for step in todo:
                 if self._cancel:
                     break
                 self.step_started.emit(step.key, step.title)
                 self.progress.emit(f"正在执行「{step.title}」…", None)
-                result, rec = self._runner.run_step(
-                    step, self._inputs, result)
+                result, rec = self._runner.run_step(step, inputs, result)
                 # 参数快照：配方里 cell 步会把新晶胞回写 runner.phases，
                 # 所以两样都要传（只传 params 看不到晶胞变化）。
                 # 先发快照再发 finished：日志里参数行应排在本步收尾行之前。
@@ -97,5 +117,12 @@ class RefineWorker(QThread):
                 self.finished_ok.emit(result)
             else:
                 self.failed.emit("精修被取消或未产生结果")
+        except RefineCancelled:
+            # 步内取消：把已经算出来的结果交回去（界面显示当前谱与 Rwp），
+            # 不当作错误——否则用户会在取消后收到一个「精修失败」告警框。
+            if result is not None:
+                self.finished_ok.emit(result)
+            else:
+                self.failed.emit("精修已停止（尚未产生结果）")
         except Exception as exc:  # 线程内异常必须转成信号，不能让 QThread 静默死
             self.failed.emit(str(exc))

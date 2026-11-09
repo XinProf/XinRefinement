@@ -45,7 +45,11 @@ from xinrefinement.core.dtypes import Pattern
 from xinrefinement.core.profile.cif import CifStructure
 from xinrefinement.core.profile.forward import ProfileParams
 from xinrefinement.core.refine.cell import refine_cell_full, structure_with_cell
-from xinrefinement.core.refine.nonlinear import DEFAULT_PO_HKL, RefineConfig
+from xinrefinement.core.refine.nonlinear import (
+    DEFAULT_PO_HKL,
+    RefineCancelled,
+    RefineConfig,
+)
 from xinrefinement.core.refine.solve import RefineInputs, SolveResult, solve
 
 #: v1.4 #17 性能护栏：站点 LM 用数值雅可比，每次迭代要 O(n_free) 次
@@ -64,6 +68,28 @@ GUI_TIME_BUDGET_S = 2700.0
 _LATER_STEPS_RESERVE_S = 180.0
 #: 连跑时剩余预算低于该值的可选步（xyz/micro/B）直接跳过（秒）。
 _MIN_STEP_REMAINING_S = 60.0
+
+
+def _reraise_if_cancelled(exc: BaseException) -> None:
+    """取消异常必须透传，不能被配方层的「失败即记录」兜底吞掉（v1.6.2）。
+
+    配方里每个引擎调用都包着 ``except Exception`` → ``StepRecord("failed")``，
+    这对真正的数值失败是对的（继续跑下一步），但对**用户主动取消**是错的：
+    吞掉之后会把「已停止」记成「某步失败」，用户还会看到一次假的告警。
+    """
+    if isinstance(exc, RefineCancelled):
+        raise exc
+
+
+def _with_cancel(cfg: RefineConfig, cancel_cb) -> RefineConfig:
+    """把取消回调挂到配置上（``None`` 时原样返回，逐位零影响）。
+
+    引擎的检查点在 ``_check_cancel``（每次残差评估入口），所以回调一旦
+    挂上，停止延迟从「跑完当前步」降到「一次残差评估」（实测量级 10 ms）。
+    """
+    if cancel_cb is None:
+        return cfg
+    return replace(cfg, cancel_cb=cancel_cb)
 
 
 def _extra_micro_freedom(cfg: RefineConfig) -> bool:
@@ -302,7 +328,8 @@ class RecipeRunner:
                                   config=replace(cfg, max_iter=1)))
             n_eval = max(1, len(getattr(probe, "history", ()) or ()))
             return max((time.monotonic() - t0) / n_eval, 1e-6)
-        except Exception:                                      # noqa: BLE001
+        except Exception as exc:                               # noqa: BLE001
+            _reraise_if_cancelled(exc)
             return None
 
     @property
@@ -360,6 +387,7 @@ class RecipeRunner:
         try:
             res = solve(inp)
         except Exception as exc:
+            _reraise_if_cancelled(exc)
             rec = StepRecord(step.key, step.title, "failed",
                              None if prev is None else prev.rwp, None,
                              str(exc))
@@ -426,6 +454,7 @@ class RecipeRunner:
                                   cfg, backend=cfg.backend,
                                   axes_override=getattr(cfg, "cell_axes", None))
         except Exception as exc:
+            _reraise_if_cancelled(exc)
             rec = StepRecord(step.key, step.title, "failed",
                              None if prev is None else prev.rwp, base.rwp,
                              f"晶胞精修失败：{exc}")
@@ -611,6 +640,7 @@ class RecipeRunner:
             sr = refine_sites(models, clip, prm0, site_cfg, backend=backend,
                               free_kinds=("xyz",), fixed_structures=fixed)
         except Exception as exc:                              # noqa: BLE001
+            _reraise_if_cancelled(exc)
             return _rec("failed", f"原子坐标精修失败：{exc}", None, prev)
 
         new_phases, mi, fi = [], 0, 0
@@ -633,6 +663,7 @@ class RecipeRunner:
             res = solve(replace(inputs, config=replace(cfg, refine_xyz=False),
                                 phases=new_phases, profile=prm0))
         except Exception as exc:                              # noqa: BLE001
+            _reraise_if_cancelled(exc)
             return _rec("failed", f"原子坐标精修后重解失败：{exc}", None, prev)
 
         if before is not None and res.rwp >= before - 1e-9:
@@ -714,7 +745,8 @@ class RecipeRunner:
             base_elapsed = time.monotonic() - _t0
             base_evals = max(1, len(getattr(_base_res, "history", ()) or ()))
             base_rwp = float(_base_res.rwp)
-        except Exception:                                          # noqa: BLE001
+        except Exception as exc:                                   # noqa: BLE001
+            _reraise_if_cancelled(exc)
             base_rwp = float(prev.rwp) if prev is not None else float("inf")
 
         # v1.5 M9b：PO 试探与正式步的墙钟护栏。
@@ -785,6 +817,7 @@ class RecipeRunner:
                                    "gain": gain, "r": r,
                                    "success": bool(res.success)})
                 except Exception as exc:                          # noqa: BLE001
+                    _reraise_if_cancelled(exc)
                     report.append({"phase": st.name, "axis": list(hkl),
                                    "rwp_pct": None, "gain": None,
                                    "error": f"{type(exc).__name__}: {exc}"})
@@ -832,6 +865,7 @@ class RecipeRunner:
         try:
             res = solve(inp)
         except Exception as exc:                                  # noqa: BLE001
+            _reraise_if_cancelled(exc)
             rec = StepRecord(step.key, step.title, "failed",
                              None if prev is None else prev.rwp, None,
                              f"{msg}；正式精修失败：{exc}")
@@ -892,6 +926,10 @@ class RecipeRunner:
         慢步内部再按实测单次评估耗时自适应降迭代（见 ``_run_xyz``）。
         """
         todo = steps if steps is not None else self.state.steps
+        # v1.6.2：取消回调不只用于「步边界」，还要交给引擎的残差检查点，
+        # 否则点停止要等当前步整步跑完（cell 步 3 次 solve、micro 步试探 +
+        # 正式 + 重解、profile 步最多 4 次 LM 重启）。
+        inputs = replace(inputs, config=_with_cancel(inputs.config, cancel_cb))
         result: SolveResult | None = None
         self._start_clock()
         self._per_eval_s = None
@@ -917,7 +955,12 @@ class RecipeRunner:
                 self.state.records.append(rec)
                 self.state.current = i + 1
                 continue
-            result, rec = self.run_step(step, inputs, result)
+            try:
+                result, rec = self.run_step(step, inputs, result)
+            except RefineCancelled:
+                # 步内取消：连跑语义是「停在已完成的最后一步」，把已有结果
+                # 交回去（CLI 打印部分结果、GUI 显示当前谱），不抛给调用方。
+                break
             self.state.current = i + 1
             if (rec.status == "done" and before is not None
                     and abs(before - result.rwp) < self.rwp_tol):
