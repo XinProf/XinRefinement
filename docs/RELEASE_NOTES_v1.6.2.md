@@ -10,11 +10,11 @@
 
 | 文件 | 大小 | SHA256 |
 |---|---|---|
-| `XinRefinement-1.6.2-setup.exe` | 75.9 MB | `613bf3c4c643550711164697ba0cf376a54b090f04b50784de713e7fa42c324e` |
+| `XinRefinement-1.6.2-setup.exe` | 75.9 MB | `135cb1e87cf47522c25ba903f28cee244d83d8043b760ba13f6f6ee214c93b2f` |
 
 > 正式版安装包（含注册机制，zh/en/ja 三语安装界面）。内部评估版便携包
 > （`XinRefinement-internal-1.6.2-portable.zip`，114.2 MB，
-> sha256 `a825bedadf03b2d8948b3d1692a779bea603cd3be65d7cbaee424cd3da03a9ac`）
+> sha256 `c51f786881c1ed8d965b27b31c9d406e2b51a648f6246a45a84f3f09e2abced1`）
 > 仅用于内部验收，不随本 Release 发布。
 
 ## 一句话看变化
@@ -103,6 +103,10 @@ for step in todo:
 - **一条流程约束**：`SOURCE_DATE_EPOCH` 取的是构建时的 HEAD 提交时间，所以
   **必须先提交、后构建**。若在提交前构建，产物里的 PE 时间戳会指向上一个
   commit——内容不受影响，但无法从产物反推源码版本，重建哈希也对不上。
+- **本资产的实际构建方式**：在 `06b115c`（tag `v1.6.2` 指向的 release commit）
+  之后构建，`SOURCE_DATE_EPOCH=1794219055` 固定为该 commit 的提交时间；
+  产物内 `XinRefinement.exe` = `2b2436de…`、`XinRefinementCLI.exe` =
+  `16c99cb3…`，两者均可由同源码逐字节重建。
 
 ## 已知限制
 
