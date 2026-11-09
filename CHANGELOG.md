@@ -1,5 +1,117 @@
 # 变更记录
 
+## v1.6.1（2026-11-09 发布）：谱图交互工具行与许可信息
+
+主题：**给谱图装上操作台**。v1.6.0 把信息讲清楚了，但谱图本身仍只有 matplotlib
+自带那排英文图标、还挤在谱图下方；想放大一段角度只能靠滚轮和拖拽，量一个峰位
+只能截图用尺子比。本版按逐条点名的六项做界面微调，**引擎与数值路径一行未动**
+（golden 未变），新增的谱图操作全部是画布层的视场变换与标注，不触碰精修数据。
+
+### 设计口径（先说清楚，避免误用）
+
+- **谱图操作只改「看的方式」，不改数据**：`zoom/pan` 只改 `xlim/ylim`，
+  `crosshair` 与手动峰位是标注层（artist），干净重绘后重建，不进结果表、
+  不进报告、不参与拟合
+- **mode 工具与 matplotlib 自带的 `pan`/`zoom` 互斥**：两套拖拽会抢同一个
+  鼠标事件（自带工具在 `toolmanager` 层先吃掉 motion），所以进 mode 前先
+  `_cancel_nav_mode()`；同一按钮再点一次即退出，交还轴点击的原语义
+- **垂直方向严格按功能分工**：`zoom_x` 只压横轴、`zoom_y` 只压纵轴、
+  `zoom_rect` 两个都压。`zoom_x`/`zoom_rect` 之后会调 `_scale_y_to_view()`
+  让纵轴贴合**当前视场**——否则放大一个弱峰仍被全谱最高峰压成一条平线，
+  看起来像「没放大」
+- **反向轴不写死方向**：d 模式（`2θ→d`）横轴是反的，`_set_xlim/_set_ylim`
+  内部按 `ax.xaxis_inverted()` 还原方向，直接赋 `(lo, hi)` 会把轴翻回来
+- **许可正文只存一份**：`LicenseDialog` 运行时从磁盘读 `licenses/LICENSE` /
+  `LICENSE-CN`，不在代码里再复写一遍正文——两份文本必然漂移，改一处忘另一处
+  是迟早的事
+
+### 新增：谱图操作行（9 键，`gui/plot_tools.py` + `gui/button_icons.py`）
+
+布局：中列自上而下 = matplotlib 导航条 → **谱图操作行** → 谱图画布。
+
+| # | 按钮 | 行为 |
+|---|---|---|
+| ① | `reset` 原始谱图 | 恢复初始 `xlim/ylim`（含 d 模式方向），清掉框选残留 |
+| ② | `zoom_x` 横向框选 | 拖出角度区间，**只改横轴**，纵轴随即贴合该区间 |
+| ③ | `zoom_y` 纵向框选 | 拖出强度区间，**只改纵轴** |
+| ④ | `zoom_rect` 矩形框选 | 拖出矩形，横纵都改 |
+| ⑤ | `pan_left` 左移 | `pan_x(-0.25)`，视场左移 1/4 宽 |
+| ⑥ | `pan_right` 右移 | `pan_x(+0.25)` |
+| ⑦ | `zoom_in` 放大 | `zoom_scale(0.8)`，以视场**中心**为锚 |
+| ⑧ | `zoom_out` 缩小 | `zoom_scale(1.25)`，同上 |
+| ⑨ | `crosshair` 十字线 | 红竖线跟手 + 右上角读数 `2θ = …° · I = …`；**右键**落点加/删手动峰位 |
+
+- `PatternCanvas.PLOT_TOOLS = ("zoom_x","zoom_y","zoom_rect","crosshair")`，
+  `tool=None` 时一切原样；框选在拖拽期间画红皮筋，松手即算并消失
+- **手动峰位**：`manual_peaks: list[float]`，落点在 `_PEAK_TOL=0.25°` 内视为
+  删除（再点一次即撤销），否则升序插入；显示为红色虚线 + 竖排角度标签，
+  `_peak_artists` 在每次 `_redraw()` 后由 `_draw_overlays()` 重建
+- **换谱即清**：`clear()` 清空手动峰位与十字线——留着上一个样品的峰位标注
+  比没有更误导
+- 图标全部用代码画（`button_icons.plot_icon(key)`，16/20/24/32/48 五档），
+  不引外部资源；分组之间插 `QFrame.VLine`，末位 `lbl_hint` 当十字线读数屏
+
+### 修正：导航条缩小一号并移到谱图上方
+
+- `NavigationToolbar2QT` 从谱图**下方**移到上方，chip 36 → **30**，
+  `iconSize` 24 → 20；配色仍走 `colorize_nav_toolbar(toolbar, chip=30)`
+- 顺序有意为之：上方是先「自带工具」（平移/缩放/存图），紧接着是本项目的
+  谱图操作行——两排都是「对图的操作」，放一起比隔着一个画布好找
+
+### 修正：状态栏「内部评估版本」居中、加粗、放大一号
+
+- `AlignRight` → `AlignCenter`；`font.setPointSizeF(max(pt, 9.0) + 1.0)` +
+  `setBold(True)`，颜色取警示红
+- 仍用 `addPermanentWidget(label, 1)` 而不是 `showMessage()`：后者会被任何
+  一次 `statusBar().showMessage("2θ = …")` 顶掉（十字线读数就在往那儿写），
+  常驻标签只有 permanent 区才活得下来
+
+### 修正：左下只写「精修日志」，去掉「（跑码）」
+
+- `panel.log` 中文由「精修日志（跑码）」改为「精修日志」；en/ja 同步为
+  `Refinement log` / `精密化ログ`。窗口本身的行为不变
+
+### 新增：帮助页的版权与许可
+
+- 帮助菜单新增 **「版权与许可…」**（在「关于…」之上，带分隔线），弹
+  `LicenseDialog`：许可摘要 + 只读全文（`QTextBrowser`，Consolas 11px）
+- `AboutDialog` 按钮区同步加「查看许可全文」，两个入口同一份内容
+- `license_path()` 按 `sys._MEIPASS` → 包上两级 → exe 目录 依次查找，
+  找不到返回 `tr("license.missing")` 而不是抛异常（缺文件不该让对话框打不开）
+- 打包 `xinrefinement.spec` 的 `datas` 增加 `LICENSE` / `LICENSE-CN` →
+  `licenses/`，否则安装版里对话框只剩「文件缺失」
+
+### 新增：步骤齿轮配色（八色区分）
+
+- `STEP_GEAR_COLORS`：`zero #1f77b4` / `bg #ff7f0e` / `scale #2ca02c` /
+  `cell #d62728` / `profile #9467bd` / `xyz #8c564b` / `micro #e377c2` /
+  `B #17becf`，字号 16 + 加粗，tooltip 给步骤名
+- 颜色只作**识别辅助**，不编码状态（跑没跑过、是否收敛仍看别的指示），
+  避免「红了就是失败」的误读
+
+### 内部
+
+- `i18n/catalog.py` 三语各补约 20 键（`plot.*` 9 个 tooltip +
+  `plot.crosshair_hint` / `cursor_x` / `cursor_d` / `cursor_y` /
+  `peak_added` / `peak_removed`，`license.menu/title/view/head/summary/missing`）
+- 新模块 `gui/plot_tools.py`（`PlotToolBar` + `TOOL_GROUPS` + `MODE_TOOLS`）；
+  `gui/button_icons.py` 扩约 200 行（4 个配色 + 5 个绘图辅助 + 9 个按钮绘制）
+- `PatternCanvas` 新信号 `cursorInfo(str)` / `manualPeaksChanged(list)`；
+  主窗口把 `cursorInfo` 接到状态栏，与既有 `axisHint` 同一通道
+- 工具栏尺寸参数化：`_render_colored_icon(..., chip=)` /
+  `colorize_nav_toolbar(toolbar, chip=)`，主窗口传 30
+- `tests/test_v161_gui.py` 15 项（9 键齐全 / 布局顺序 / 导航条缩号 /
+  zoom-pan-reset / 三种框选 / 十字线读数与退出 / 峰位增删 / 换谱清空 /
+  状态栏标签 / 日志标题 / 齿轮八色 / 许可入口与正文 / 打包路径解析）
+
+### 回归
+
+- 全量 **527 项：527 passed / 0 failed / 0 skipped，EXIT=0**
+  （`--basetemp` 干净目录；= v1.6.0 的 512 + `test_v161_gui.py` 15）
+- golden CLI Rwp 50/50 档 **3.4074156640940005**（仍未变，证实本版没碰引擎）
+- `tests/test_gui_smoke.py::test_nav_toolbar_colorized_icons` 断言 36 → 30
+  （chip 缩小一号的直接后果）
+
 ## v1.6.0（2026-11-08 发布）：界面重构与晶胞勾选真正生效
 
 主题：**引擎不动，把结果讲清楚**。v1.5.0 让拟合质量追到 MAUD 的 +0.21 pt，
