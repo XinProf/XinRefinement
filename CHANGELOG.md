@@ -1,5 +1,81 @@
 # 变更记录
 
+## v1.6.2（2026-11-09 发布）：停止按钮真正能停
+
+主题：**「停止」等到当前步跑完才生效，是个实现缺陷**。用户点一键连跑后想
+中止，按了停止却要等很久——原因不是算得慢，而是取消标志只在**步与步之间**
+检查，一步内部的多轮拟合（cell 步 3 次 solve、micro 步 PO 试探 + 正式 + 重解、
+profile 步最多 4 次 LM 重启）全部跑完才回到循环顶。**引擎与数值路径零改动**
+（golden 未变），只把已有的取消钩子接到该接的地方。
+
+### 根因（先说清楚，避免误诊为「性能问题」）
+
+```python
+for step in todo:
+    if self._cancel:        # ← 只有这里看停止标志
+        break
+    result, rec = self._runner.run_step(step, ...)
+```
+
+更关键的是：引擎里**本来就有**细粒度钩子——`RefineConfig.cancel_cb` +
+`_check_cancel()`，注释写明「放在残差函数入口…两个后端都覆盖、响应最快」。
+但 GUI 从来没接上，全仓库只有 `tests/test_recipe.py` 用过一次，等于死代码。
+
+实测量化（样 1：5751 点 / 5 相）：
+
+| | 数值 |
+|---|---|
+| 单次残差评估 | **16 ms** ← 修复后停止延迟的量级 |
+| `cell` 步整步 | **19.8 s** ← 修复前点停止要等的时间 |
+
+### 修正：三处残差闭包接上取消钩子
+
+- **主 solve**：原本就有（`_build_residual` 的 `residual_fn` 首行）。
+- **`refine_cell_full`**（晶胞引擎）：**独立残差闭包，之前完全没有检查**——
+  cell 步是全链最慢的步之一，这一处漏接等于最该快的地方最慢。
+- **`refine_sites`**（坐标引擎）：数值雅可比每迭代 O(n_free) 次
+  「多相全谱 + 线性层」评估，xyz 步也因此能秒停。
+
+### 修正：配方层不再把「取消」记成「失败」
+
+配方里每个引擎调用都包着 `except Exception → StepRecord("failed")`。这对
+真正的数值失败是对的（继续跑下一步），但对用户取消是错的：吞掉之后日志会
+写「某步失败」，界面还会弹一个假的失败告警。新增 `_reraise_if_cancelled()`
+在 7 处兜底里先透传 `RefineCancelled`；`run_all` 则在步内捕获它并**返回已
+完成的部分**（连跑语义是「停在最后完成的步」，不把异常抛给 CLI/测试）。
+
+### 修正：界面收尾不再停在「正在执行…」
+
+- `RefineWorker` 把 `cancel_cb=self._cancel_requested` 挂进 `inputs.config`，
+  经 `config_for` 的 `replace()` 自动带到每步配置（不需要给 `run_step`
+  加参数）。
+- 捕获 `RefineCancelled` 后：已算出的部分结果照常 `finished_ok` 回填（界面
+  显示当前谱与 Rwp），没有结果才走 `failed`；后者在取消场景下不弹模态框。
+- `_on_worker_done` 取消时把进度条改成「已停止」，日志追加
+  `=== 精修已由用户停止（当前步在残差评估处中断）===`（三语补齐）。
+
+### 修正：一条「碰巧成立」的测试断言（`test_i18n_project`）
+
+`test_serialize_uses_relative_paths` 断言「同盘符 → 相对路径」，但
+`_rel()` 用的是 `relative_to` 的**前缀**语义，只有数据在工程目录子树内才写
+相对路径。旧断言只因为 pytest 的 tmp 恰好在 C:、项目在 D:（跨盘符 → 绝对）
+才通过；换同盘 basetemp 立刻红，而序列化本身没问题。改成真正检验契约：
+子树内 → 相对且能还原，子树外 → 绝对。
+
+### 内部
+
+- `i18n/catalog.py` 三语各补 `log.cancelled`
+- `tests/test_v162_cancel.py` 5 项：步内取消停在第 N 次评估（`calls == 3`）、
+  停止延迟 < 0.5 s、`cancel_cb=None` 时 Rwp 逐位一致、晶胞引擎独立生效、
+  连跑取消不留 `failed` 假记录
+
+### 回归
+
+- 全量 **532 项：532 passed / 0 failed / 0 skipped，EXIT=0**
+  （= v1.6.1 的 527 + 本轮 5）
+- golden CLI Rwp 50/50 档 **3.4074156640940005** 未变（`cancel_cb=None` 时
+  引擎逐位不变）
+
 ## v1.6.1（2026-11-09 发布）：谱图交互工具行与许可信息
 
 主题：**给谱图装上操作台**。v1.6.0 把信息讲清楚了，但谱图本身仍只有 matplotlib
