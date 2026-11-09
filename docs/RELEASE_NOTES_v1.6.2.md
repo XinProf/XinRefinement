@@ -10,11 +10,11 @@
 
 | 文件 | 大小 | SHA256 |
 |---|---|---|
-| `XinRefinement-1.6.2-setup.exe` | 75.9 MB | `613bf3c4c643550711164697ba0cf376a54b090f04b50784de713e7fa42c324e` |
+| `XinRefinement-1.6.2-setup.exe` | 75.9 MB | `50548f0d8a8747f0772166cd5ae28fdf296588c6912e9e0ad73047d482237012` |
 
 > 正式版安装包（含注册机制，zh/en/ja 三语安装界面）。内部评估版便携包
 > （`XinRefinement-internal-1.6.2-portable.zip`，114.2 MB，
-> sha256 `a825bedadf03b2d8948b3d1692a779bea603cd3be65d7cbaee424cd3da03a9ac`）
+> sha256 `ad7fde8b2f0e5952dc97a220220bd96024e7c4a767ef0ec31bc29304eb0f3748`）
 > 仅用于内部验收，不随本 Release 发布。
 
 ## 一句话看变化
@@ -86,6 +86,22 @@ for step in todo:
 - 顺带修一条「碰巧成立」的既有断言：`test_serialize_uses_relative_paths`
   原断言说「同盘符 → 相对路径」，但 `_rel()` 是 `relative_to` 的前缀语义，
   只因为 pytest 的 tmp 恰好在 C:、项目在 D: 才通过。改成检验真实契约。
+
+## 构建与可复现性
+
+本版对构建链做了一次可复现性核查，结论分两层：
+
+- **PyInstaller 产物（`.exe` 层）逐字节可复现**：固定 `SOURCE_DATE_EPOCH`
+  （取 git 提交时间）、`PYTHONHASHSEED=0` 后，同一 commit 两次构建得到完全
+  相同的 `XinRefinement.exe` / `XinRefinementCLI.exe` 哈希（已实测两次，
+  含不同 `--distpath`）。因此可以从产物反查源码版本。
+- **安装包（Inno Setup 层）不逐字节复现**：同样输入、同样 `SOURCE_DATE_EPOCH`
+  两次打包得到**同尺寸、不同字节**的结果（PE 头时间戳来自编译器 stub，
+  不受 epoch 影响）。故本 Release 的 SHA256 只对**本资产**有效，
+  不代表「任何人重建都得到同一串哈希」。
+- **一条流程约束**：`SOURCE_DATE_EPOCH` 取的是构建时的 HEAD 提交时间，所以
+  **必须先提交、后构建**。若在提交前构建，产物里的 PE 时间戳会指向上一个
+  commit——内容不受影响，但无法从产物反推源码版本，重建哈希也对不上。
 
 ## 已知限制
 
