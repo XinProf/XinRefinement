@@ -63,7 +63,7 @@ TARGET_WORD_W = 990.0
 BASE_FONT_PX = 236  # 家族 Match 字号
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
-SPLASH_SIZE = (2730, 1536)
+SPLASH_SIZE = (800, 600)
 INSTALLER_SIZE = (164, 314)  # Inno Setup WizardImageFile
 
 REFILL_X = 300  # 家族 logo 每行是纯水平渐变，取固定 x 即可重建擦除区
@@ -248,9 +248,9 @@ def _build_fitting_plot(W, H, data_path: Path):
     bg = gaussian_filter1d(minimum_filter1d(obs, size=240), 20)
     diff = obs - calc
 
-    x0, x1 = 120, W - 120
-    y_base, y_top = 1470, 1180
-    y_mid, y_amp = 1492, 22
+    x0, x1 = int(W * 0.05), int(W * 0.95)
+    y_base, y_top = int(H * 0.96), int(H * 0.77)
+    y_mid, y_amp = int(H * 0.973), max(2, int(H * 0.014))
     Imax = calc.max() * 1.06
     dmax = max(np.abs(diff).max() * 1.25, 1.0)
     tmin, tmax = float(t.min()), float(t.max())
@@ -365,8 +365,6 @@ def _compose_splash_text(img: Image.Image, cx, cy):
     draw.line([(x + 2, y_ver - int(size_ver * 0.55)),
                (x + 2 + int(W * 0.052), y_ver - int(size_ver * 0.55))],
               fill=(120, 190, 255, 230), width=max(2, H // 400))
-    draw.text((x + 2, y_ver), "v0.1.0", font=_font(FONT_REG, size_ver),
-              fill=(198, 226, 255, 245))
     draw.text((x + 2, y_ver + int(size_ver * 1.6)),
               "Whole-pattern fitting · Rietveld refinement",
               font=_font(FONT_REG, size_tag), fill=(176, 205, 232, 240))
