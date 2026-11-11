@@ -453,6 +453,7 @@ def _unpack(x: np.ndarray, base: ProfileParams, cfg: RefineConfig,
                         width_basis=getattr(base, "width_basis", "tan"),
                         microabs=microabs, texture=texture, aniso=aniso,
                         b_iso=b_iso,
+                        size_strain=base.size_strain,
                         X=X, Y=Y)   # NCA 修改（T2.1）
     return prm, cell
 

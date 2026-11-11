@@ -167,7 +167,7 @@ def resolve_axes(system: str, requested=None) -> tuple[str, ...]:
 #: 缺了 QPA 直接返回 ``weight_pct=None``；``spacegroup``/``sg_number`` 缺了
 #: ``crystal_system_of`` 退化成按晶胞度量猜、位点精修拿不到对称约束。
 _CELL_META = ("n_asym", "n_sym_ops", "spacegroup", "sg_number",
-              "formula", "z_declared", "source_path")
+              "formula", "z_declared", "source_path", "name_mineral")
 
 
 def structure_with_cell(struct: CifStructure, cell) -> CifStructure:

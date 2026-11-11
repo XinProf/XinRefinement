@@ -130,8 +130,8 @@ def _pattern_csv_text(pattern_path: str | Path) -> str:
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(["two_theta", "intensity"])
     writer.writerows(
-        zip((("%.10g" % v) for v in pat.two_theta.tolist()),
-            (("%.10g" % v) for v in pat.intensity.tolist())))
+        zip((("%.17g" % v) for v in pat.two_theta.tolist()),
+            (("%.17g" % v) for v in pat.intensity.tolist())))
     return buf.getvalue()
 
 
@@ -215,7 +215,7 @@ def _load_zip(p: Path) -> dict:
             xy = session / "pattern.xy"
             with xy.open("w", encoding="utf-8", newline="\n") as fh:
                 for x, y in arr:
-                    fh.write(f"{x:.10g} {y:.10g}\n")
+                    fh.write(f"{x:.17g} {y:.17g}\n")
             pattern_path = str(xy)
         elif pm.get("source_path"):
             src = _abs(pm.get("source_path"), p.parent)
@@ -284,7 +284,8 @@ def load_project(project_path: str | Path) -> dict:
     p = Path(project_path)
     if not p.is_file():
         raise ValueError(f"工程文件不存在: {p}")
-    head = p.open("rb").read(2)
+    with p.open("rb") as fh:
+        head = fh.read(2)
     if head == _ZIP_MAGIC:
         try:
             return _load_zip(p)

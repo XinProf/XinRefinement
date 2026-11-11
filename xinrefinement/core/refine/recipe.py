@@ -653,7 +653,7 @@ class RecipeRunner:
                 # formula/spacegroup；QPA 的 z_declared 与对称性/源路径元数据
                 # 必须逐项继承，否则精修后定量静默退化、下一轮 xyz 步找不到 CIF。
                 for attr in ("z_declared", "n_asym", "n_sym_ops",
-                             "source_path"):
+                             "source_path", "name_mineral"):
                     if hasattr(src_st, attr):
                         setattr(st_new, attr, getattr(src_st, attr))
                 new_phases.append(st_new)

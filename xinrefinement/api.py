@@ -110,7 +110,7 @@ def quant(request: RefineRequest) -> dict:
 def report(request: RefineRequest, out_dir: str | Path) -> dict[str, str]:
     """精修并导出 HTML/PNG/JSON 报告。"""
     from xinrefinement.core.report import export_report as _export
-    pat = request  # 复用 refine 的求解，避免二次读盘不一致
+    # 报告路径调用 _solve_raw() 独立读盘求解，不与 refine() 共享中间结果
     res = _solve_raw(request)
     return _export(res, out_dir)
 
@@ -127,8 +127,10 @@ def _solve_raw(request: RefineRequest):
     prm = ProfileParams(zero=0.0, U=0.0, V=0.0, W=0.02, eta=0.5,
                         anode=request.anode,
                         integrated=not request.peak_height)
-    cfg = RefineConfig(refine_zero=True, refine_uvw=True, n_bg=3,
-                       max_iter=40, tmin=request.tmin, tmax=request.tmax)
+    cfg = RefineConfig(refine_zero=True, refine_uvw=True,
+                       refine_po=request.refine_po,
+                       n_bg=3, max_iter=40,
+                       tmin=request.tmin, tmax=request.tmax)
     return solve(RefineInputs(pattern=pat, phases=phases, profile=prm,
                               config=cfg, formulas=request.formulas))
 

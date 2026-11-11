@@ -708,7 +708,7 @@ class MainWindow(QMainWindow):
         with xy.open("w", encoding="utf-8", newline="\n") as fh:
             for x, y in zip(payload.two_theta.tolist(),
                             payload.intensity.tolist()):
-                fh.write(f"{x:.10g} {y:.10g}\n")
+                fh.write(f"{x:.17g} {y:.17g}\n")
         if not self._load_pattern_path(
                 xy, wavelength=payload.meta.get("wavelength")):
             return None
@@ -1456,8 +1456,8 @@ class MainWindow(QMainWindow):
         title = next((s[1] for s in STEPS if s[0] == key), key)
         if btn is not None:
             mark = {"done": "✓", "skipped": "–", "failed": "!"}.get(status, "")
-            btn.setText(f"{mark} {title}" if not btn.text().startswith(mark)
-                        else btn.text())
+            btn.setText(f"{mark} {tr(f'step.{key}')}"
+                        if not btn.text().startswith(mark) else btn.text())
         # 跑码窗口的收尾行：Rwp 前后对照
         before = self._rwp_before_step
         self.log_line(tr("log.step_done").format(

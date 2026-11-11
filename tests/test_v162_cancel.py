@@ -110,14 +110,67 @@ def test_cell_engine_honours_cancel():
 
 
 def test_run_all_does_not_record_cancel_as_failure():
-    """连跑取消：返回已完成部分的结果，且不留 status='failed' 的假记录。"""
-    t0 = time.monotonic()
+    """连跑取消：任意取消时机都不产生 status='failed' 的假记录。
+
+    原用例用 ``time.monotonic() - t0 > 0.15`` 赌「第一步一定在 0.15 s 内
+    跑完」，在负载 / 慢机器上会拿到 records == [] 而误报（QA 基线已复现）。
+    这里改用残差检查点计数谓词，与墙钟完全解耦；断言的是真正的产品契约
+    （取消不被记成失败、记录状态只能是 done/skipped、结果与已完成记录一致），
+    而不再附加「至少完成一步」这个 recipe.py:960-963 从未承诺的前置条件。
+    """
+    calls = [0]
 
     def cancel():
-        return time.monotonic() - t0 > 0.15
+        calls[0] += 1
+        return calls[0] >= 3          # 第 3 次残差检查点（首步内）请求取消
 
     res, records = RecipeRunner().run_all(_inputs(cancel_cb=cancel))
-    assert records, "应至少跑完/开始过一步"
     assert all(r.status != "failed" for r in records), \
         [(r.key, r.status, r.message) for r in records]
+    assert all(r.status in ("done", "skipped") for r in records)
+    assert (res is None) == (len(records) == 0)
+
+
+@pytest.mark.parametrize("cancel_at", [1, 2, 3, 10, 40, 10**9])
+def test_cancel_at_any_checkpoint_keeps_contract(cancel_at):
+    """覆盖：首个检查点 / 首步内 / 步间 / 链尾 / 从不取消。
+
+    cancel_at=10**9 等价于「不取消」，用于校验全链 8 步的基线记录形态。
+    """
+    calls = [0]
+
+    def cancel():
+        calls[0] += 1
+        return calls[0] >= cancel_at
+
+    res, records = RecipeRunner().run_all(_inputs(cancel_cb=cancel))
+    assert all(r.status != "failed" for r in records), \
+        [(r.key, r.status, r.message) for r in records]
+    assert all(r.status in ("done", "skipped") for r in records)
+    assert (res is None) == (len(records) == 0)
+
+
+def test_cancel_preserves_completed_partial_results(monkeypatch):
+    """确定性：取消发生在第 3 步内时，前 2 步的已完成结果必须保留。
+
+    用 monkeypatch 包一层 run_step 计数「已完成步数」，谓词只认这个计数，
+    因此完全不受迭代次数 / 墙钟 / 机器负载影响，也不依赖任何魔法数字。
+    """
+    orig = RecipeRunner.run_step
+    completed = [0]
+
+    def spy(self, step, inputs, prev=None):
+        out = orig(self, step, inputs, prev)   # 取消异常会在此透传，不计数
+        completed[0] += 1
+        return out
+
+    monkeypatch.setattr(RecipeRunner, "run_step", spy)
+
+    def cancel():
+        return completed[0] >= 2          # 已跑完 2 步；第 3 步首个检查点即取消
+
+    res, records = RecipeRunner().run_all(_inputs(cancel_cb=cancel))
+    assert len(records) == 2
+    assert all(r.status == "done" for r in records)
     assert res is not None
+    assert all(r.status != "failed" for r in records)

@@ -85,7 +85,7 @@ def test_save_xinr_zip_and_reopen(workdir: Path) -> None:
     assert data["settings"] == {"n_bg": 3}
     assert data["result"] == {"rwp": 3.409617}
 
-    # 内嵌谱图数值往返（%.10g，rel ≤ 1e-9）
+    # 内嵌谱图数值往返（%.17g 写出，逐位保真；此处仍用 rel ≤ 1e-9 近似断言）
     tt = np.loadtxt(data["pattern"])
     assert tt.shape == (171, 2)
     assert tt[:, 0] == pytest.approx(

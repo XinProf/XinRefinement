@@ -353,7 +353,11 @@ def to_report(res: SolveResult, args) -> dict:
             "wavelength": _round(res.params.wavelength),
             "anode": res.params.anode,
             "texture": ({name: {"axis": list(entry.get("axis") or []),
-                                "grid": _round_list(entry.get("grid") or [])}
+                                "grid": _round_list(entry.get("grid") or []),
+                                "model": entry.get("model"),
+                                "degree": entry.get("degree"),
+                                "coeffs": _round_list(
+                                    entry.get("coeffs") or [])}
                         for name, entry in (res.params.texture or {}).items()}
                         or None),
             "aniso": ({name: {"size": _round_list(entry.get("size") or []),
@@ -505,6 +509,7 @@ def _run(args) -> int:
         if esd is not None and esd.weight_esd_pct is not None:
             for p, w in zip(report["phases"], esd.weight_esd_pct):
                 print(f"    ± {w:.3g}")
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     print(text)
 
