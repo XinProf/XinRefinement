@@ -1,5 +1,37 @@
 # 变更记录
 
+## v1.6.3（2026-11-11）：e.s.d. 报表值列修正 + 审计低风险修复
+
+主题：修复 A11（e.s.d. 文本/JSON 报表的「值」列误填 e.s.d.、参数真值缺失），
+并收纳上一轮全局代码审计的 6 项低风险修复。**引擎与数值路径零改动**
+（golden CLI Rwp 3.4074156640940005 逐位不变）。
+
+### 修复 A11：e.s.d. 报表「值」列
+- 根因：`cli/refine.py` 的 e.s.d. 表格用 `zip(esd.labels, esd.esd, esd.esd)`，
+  「值」列与「e.s.d.」列同源；`EsdResult` 未保存参数真值。
+- 修法：`EsdResult` 新增 `values`（`estimate_esd` 以 `concat(x_final, c)` 填好，
+  与 `labels` 严格同序）；文本报告改 `zip(labels, values, esd)`，JSON esd 段新增
+  `values`。e.s.d./协方差/相关性/scale/含量 e.s.d. 计算路径一律不动。
+- TCH 边界（X/Y=0）参数的 e.s.d. 仍记 NaN → 文本显示「—（TCH 边界，无定义）」，
+  值列照常显示真实值。
+
+### 修复（上一轮全局审计 F01–F06）
+- F01：`name_mineral` 在 `structure_with_cell` / xyz 步重建时丢失 → 显示名退化（Quartz→SiO2）。
+- F02：legacy `_unpack` 重建 `ProfileParams` 漏搬运 `size_strain`。
+- F03：`api.report()` 的 `_solve_raw` 漏 `refine_po`，与 `api.refine()` 不一致。
+- F04：`.xinr`/`.xinm` 谱图序列化 `10g→17g`，保存/重开逐位一致。
+- F05：CLI `-o` 父目录缺失时自动建目录；`to_report` 织构补 `model/degree/coeffs`。
+- F06：步骤按钮语言切换后仍显示中文 title → 改用 `tr(f'step.{key}')`。
+
+### 测试
+- 取消连跑测试去脆弱化：`test_run_all_does_not_record_cancel_as_failure` 的取消谓词
+  由「绝对墙钟 `> 0.15s`」改为「残差检查点调用计数」，消除慢机/重负载下的时序假失败；
+  断言回归真正的产品契约（取消不记成 failed），不再附加「至少完成一步」这一
+  `run_all` 从未承诺的前置条件。
+
+### 说明
+- 基线档位：文档权威值 532 passed / 0 skipped 需「本机 COD 档案 + XinMatch/gemmi 齐全」；缺这些外部依赖时，本轮修复前为 1 failed / 525 passed / 6 skipped，**本次修复后为 0 failed / 6 skipped**（collected 553），golden 逐位不变（详见 `docs/audit-20261111-architecture.md` 第 2 节）。
+
 ## v1.6.2（2026-11-09 发布）：停止按钮真正能停
 
 主题：**「停止」等到当前步跑完才生效，是个实现缺陷**。用户点一键连跑后想
