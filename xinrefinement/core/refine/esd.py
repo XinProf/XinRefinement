@@ -52,6 +52,7 @@ class EsdResult:
     """e.s.d. 与相关性结果。"""
 
     labels: tuple[str, ...]
+    values: tuple[float, ...]              # 与 labels 逐项对齐的参数真值 θ=(x,c)
     esd: tuple[float, ...]                 # 全参数 θ=(x,c) 的 e.s.d.
     covariance: np.ndarray                 # 全参数协方差 (n×n)
     correlation: np.ndarray                # 全参数相关系数 (n×n)
@@ -200,6 +201,11 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
     labels = (tuple(reg.labels())
               + tuple(f"scale[{i}]" for i in range(n_phase))
               + tuple(f"bg[{j}]" for j in range(n_bg)))
+    # A11：参数真值 θ=(x, c)，与 labels 严格同序（供 e.s.d. 报表「值」列）。
+    # x_final 顺序 == reg.labels()，c 顺序 == [scale..., bg...]；仅复制已算好的
+    # 值，不参与 d/cov/corr 的任何数值计算。
+    values = tuple(float(v) for v in np.concatenate([x_final, c]))
+    assert len(values) == n_total, (len(values), n_total)
     scale_esd = tuple(float(v) for v in d[p:p + n_phase])
 
     # ---- 物相含量误差传播 ----
@@ -227,7 +233,7 @@ def estimate_esd(phases: list[CifStructure], res: SolveResult,
         weight_esd = None
 
     return EsdResult(
-        labels=labels, esd=tuple(float(v) for v in d), covariance=cov,
-        correlation=corr, scale_esd=scale_esd, weight_esd_pct=weight_esd,
-        variance_factor=s2, schur_consistency=consistency,
-        n_points=m, n_params=n_total)
+        labels=labels, values=values, esd=tuple(float(v) for v in d),
+        covariance=cov, correlation=corr, scale_esd=scale_esd,
+        weight_esd_pct=weight_esd, variance_factor=s2,
+        schur_consistency=consistency, n_points=m, n_params=n_total)

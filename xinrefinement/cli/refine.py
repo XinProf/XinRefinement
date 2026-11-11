@@ -434,15 +434,30 @@ def _esd_section(esd) -> list[str]:
     """e.s.d. 表格（文本 / HTML 共用的 markdown 片段）。"""
     rows = ["", "## 参数 e.s.d.", "| 参数 | 值 | e.s.d. |",
             "|---|---:|---:|"]
-    for lab, v, e in zip(esd.labels, esd.esd, esd.esd):
+    for lab, v, e in zip(esd.labels, esd.values, esd.esd):
+        vv = "—" if not math.isfinite(v) else f"{v:.6g}"
         ev = "—（TCH 边界，无定义）" if not math.isfinite(e) else f"±{e:.3g}"
-        rows.append(f"| {lab} | {v:.6g} | {ev} |")
+        rows.append(f"| {lab} | {vv} | {ev} |")
     if esd.weight_esd_pct is not None:
         rows += ["", "### 物相含量 e.s.d.（百分点）"]
         rows += [f"- ±{w:.3g}" for w in esd.weight_esd_pct]
     rows.append(f"- s² = {esd.variance_factor:.4g}  "
                 f"Schur 一致性 = {esd.schur_consistency:.2e}")
     return rows
+
+
+def _esd_json_dict(esd) -> dict:
+    """e.s.d. 的 JSON 序列化（A11：与文本报表同序，含参数真值 values）。"""
+    return {
+        "labels": list(esd.labels),
+        "values": [_esd_val(v) for v in esd.values],
+        "esd": [_esd_val(v) for v in esd.esd],
+        "scale_esd": [_esd_val(v, 8) for v in esd.scale_esd],
+        "weight_esd_pct": (None if esd.weight_esd_pct is None
+                           else [_esd_val(v, 4) for v in esd.weight_esd_pct]),
+        "variance_factor": _round(esd.variance_factor),
+        "schur_consistency": _round(esd.schur_consistency, 8),
+    }
 
 
 def _run(args) -> int:
@@ -481,16 +496,7 @@ def _run(args) -> int:
              "rwp_after": None if a is None else _round(a, 4)}
             for k, s, b, a in recipe_rows]
     if esd is not None:
-        report["esd"] = {
-            "labels": list(esd.labels),
-            "esd": [_esd_val(v) for v in esd.esd],
-            "scale_esd": [_esd_val(v, 8) for v in esd.scale_esd],
-            "weight_esd_pct": (None if esd.weight_esd_pct is None
-                               else [_esd_val(v, 4)
-                                     for v in esd.weight_esd_pct]),
-            "variance_factor": _round(esd.variance_factor),
-            "schur_consistency": _round(esd.schur_consistency, 8),
-        }
+        report["esd"] = _esd_json_dict(esd)
 
     out = Path(args.out)
     fmt = args.format

@@ -54,3 +54,16 @@ def test_build_script_passes_version_to_iscc() -> None:
     assert "/DAppVersion=" in text, (
         "build_binaries.build_installer 没有把版本号传给 ISCC"
     )
+
+
+def test_version_three_way_consistent() -> None:
+    """__version__ == iss AppVersion == CHANGELOG 最新标题版本号。"""
+    ver = xinrefinement.__version__
+    iss = _ISS.read_text(encoding="utf-8")
+    m = re.search(r'^#define\s+AppVersion\s+"([^"]+)"', iss, re.MULTILINE)
+    assert m and m.group(1) == ver, (m and m.group(1), ver)
+
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    head = re.search(r"^##\s+v([0-9]+\.[0-9]+\.[0-9]+)", changelog, re.MULTILINE)
+    assert head and head.group(1) == ver, (
+        f"CHANGELOG 最新版本 {head and head.group(1)} != __version__ {ver}")

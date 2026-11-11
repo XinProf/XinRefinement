@@ -54,6 +54,15 @@ def test_esd_full_covariance_includes_linear_params():
     assert all(v > 0 for v in out.weight_esd_pct), "含量 e.s.d. 不应为空"
     assert out.variance_factor > 0
     assert np.allclose(np.diag(out.correlation), 1.0, atol=1e-6)
+    # A11：values 与 labels/esd 同长同序，且真值等于 solve 的参数
+    assert len(out.values) == len(out.labels) == out.n_params
+    idx = {lab: i for i, lab in enumerate(out.labels)}
+    assert out.values[idx["global.zero"]] == pytest.approx(
+        res.params.zero, abs=1e-12)
+    # scale[i] 的值 == 对应相的 scale（防 scale/bg/非线性三类贴错位）
+    sidx = [i for i, lab in enumerate(out.labels) if lab.startswith("scale[")]
+    for i, ph in zip(sidx, res.phases):
+        assert out.values[i] == pytest.approx(ph.scale, rel=1e-6, abs=1e-9)
 
 
 def test_esd_schur_consistency():
