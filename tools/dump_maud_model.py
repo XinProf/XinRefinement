@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
-OUT = Path(r"C:/Temp/maud_compare/v14")
+#: 数据集根可用环境变量覆盖（2026-11-12 数据集迁到 d:\test_XRD，旧盘符已不存在）。
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
+OUT = Path(os.environ.get("XR_BENCH_OUT", r"C:/Temp/maud_compare/v14"))
 
 #: 每相关心的键（顺序即打印顺序）
 PHASE_KEYS = (

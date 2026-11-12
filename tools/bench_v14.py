@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import sys
 import time
@@ -42,9 +43,12 @@ from xinrefinement.core.refine.nonlinear import RefineConfig           # noqa: E
 from xinrefinement.core.refine.recipe import RecipeRunner              # noqa: E402
 from xinrefinement.core.refine.solve import RefineInputs, solve        # noqa: E402
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
-S5PHASE = Path(r"C:\Temp\maud_compare\s5phase")
-OUT = Path(r"C:\Temp\maud_compare\v14")
+#: 数据集根可用环境变量覆盖（2026-11-12 数据集迁到 d:\test_XRD，旧盘符已不存在）。
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
+#: 样 5 的相文件不在样目录内，单独放在 MAUD 侧目录；缺该目录时样 5 无法对标。
+S5PHASE = Path(os.environ.get("XR_BENCH_S5PHASE",
+                              r"C:\Temp\maud_compare\s5phase"))
+OUT = Path(os.environ.get("XR_BENCH_OUT", r"C:\Temp\maud_compare\v14"))
 OUT.mkdir(parents=True, exist_ok=True)
 
 #: MD 候选织构轴（低指数，覆盖常见纤维织构；负值等价，取 |cos| 折返）

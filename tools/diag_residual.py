@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
 import sys
 from dataclasses import replace
@@ -29,9 +30,11 @@ from xinrefinement.core.profile.forward import (              # noqa: E402
 from xinrefinement.core.refine.nonlinear import RefineConfig   # noqa: E402
 from xinrefinement.core.refine.solve import RefineInputs, solve  # noqa: E402
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
-S5PHASE = Path(r"C:\Temp\maud_compare\s5phase")
-OUT = Path(r"C:\Temp\maud_compare\v14")
+#: 数据集根可用环境变量覆盖（2026-11-12 数据集迁到 d:\test_XRD，旧盘符已不存在）。
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
+S5PHASE = Path(os.environ.get("XR_BENCH_S5PHASE",
+                              r"C:\Temp\maud_compare\s5phase"))
+OUT = Path(os.environ.get("XR_BENCH_OUT", r"C:\Temp\maud_compare\v14"))
 
 
 def _sample(i: int):
