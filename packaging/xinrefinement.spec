@@ -62,6 +62,15 @@ datas = [
 # matplotlib / PySide6 的运行时数据由各自 hook 处理；此处补 mpl 字体等
 datas += collect_data_files("matplotlib", includes=["mpl-data/**"])
 
+# ---- 注册密钥构建期注入（密钥本身不入库，见 .gitignore） ----
+# 正式版必须沿用原生产密钥，否则此前发出的注册码全部失效；密钥来源优先级：
+# XR_REG_SECRET 指向的文件 → xinrefinement/registration_secret.txt。
+# 缺文件时不打包，运行时退回社区占位密钥（源码构建/内部评估版即此路径）。
+_REG_SECRET = Path(os.environ.get("XR_REG_SECRET", "").strip()
+                   or ROOT / "xinrefinement" / "registration_secret.txt")
+if BUILD_VARIANT == "release" and _REG_SECRET.is_file():
+    datas.append((str(_REG_SECRET), "xinrefinement"))
+
 hiddenimports = [
     "matplotlib.backends.backend_qtagg",
     "matplotlib.backends.backend_agg",
