@@ -193,3 +193,51 @@ def test_load_corrupt_zip_raises(workdir: Path) -> None:
     p.write_bytes(b"PK\x03\x04garbage")
     with pytest.raises(ValueError, match="损坏"):
         load_project(p)
+
+
+# --------------------------------------------------------------------------- #
+# A08：result/refine.json 解码失败必须露出告警
+# --------------------------------------------------------------------------- #
+def _write_xinr_with_raw_result(p: Path, payload: bytes) -> Path:
+    """手工造 .xinr：manifest 声明了 result_full，但成员内容是坏数据。"""
+    manifest = {
+        "format": FORMAT, "format_version": FORMAT_VERSION,
+        "language": "zh", "settings": {}, "phase_edits": {},
+        "result": {"rwp": 3.409617}, "result_full": "result/refine.json",
+        "navigation": {}, "pattern": {}, "cifs": [],
+    }
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+        zf.writestr("result/refine.json", payload)
+    return p
+
+
+def test_load_xinr_bad_result_json_reports_warning(workdir: Path) -> None:
+    p = _write_xinr_with_raw_result(workdir / "badjson.xinr", b"{not json")
+    data = load_project(p)
+    assert data["result_full"] is None
+    assert data["warnings"]
+    assert "refine.json" in data["warnings"][0]
+
+
+def test_load_xinr_non_utf8_result_json_reports_warning(workdir: Path) -> None:
+    p = _write_xinr_with_raw_result(workdir / "badutf8.xinr", b"\xff\xfe\x00bad")
+    data = load_project(p)
+    assert data["result_full"] is None
+    assert data["warnings"]
+    assert "refine.json" in data["warnings"][0]
+
+
+def test_all_load_paths_expose_warnings_key(workdir: Path) -> None:
+    ok = workdir / "ok.xinr"
+    save_project({"language": "zh", "pattern": str(workdir / "demo.xy"),
+                  "cifs": [], "settings": {}, "phase_edits": {},
+                  "result": None, "navigation": {}}, ok, embed=True)
+    assert load_project(ok)["warnings"] == []
+
+    legacy = workdir / "ok.xrp"
+    save_project({"language": "zh", "pattern": str(workdir / "demo.xy"),
+                  "cifs": [], "settings": {}, "phase_edits": {},
+                  "result": None, "navigation": {}}, legacy, embed=False)
+    assert load_project(legacy)["warnings"] == []
+

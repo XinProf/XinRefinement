@@ -182,3 +182,30 @@ def test_load_reports_missing_files(win, tmp_path):
     data = load_project(out)
     assert len(data["missing"]) == 1
     assert data["pattern"].endswith("gone.xy")
+
+
+def test_open_project_surfaces_result_warning(win, qapp, tmp_path):
+    """A08：内嵌精修结果坏掉时，状态栏要说明「结果区可能不完整」。"""
+    import json
+    import zipfile
+
+    out = tmp_path / "badresult.xinr"
+    manifest = {
+        "format": FORMAT, "format_version": 2, "language": "zh",
+        "settings": {}, "phase_edits": {}, "result": None,
+        "result_full": "result/refine.json", "navigation": {},
+        "pattern": {}, "cifs": [],
+    }
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+        zf.writestr("result/refine.json", "{broken")
+
+    data = load_project(out)
+    assert data["result_full"] is None
+    assert data["warnings"]
+
+    win.apply_project(data)      # 若弹模态框，离屏测试会卡死
+    qapp.processEvents()
+    msg = win.statusBar().currentMessage()
+    assert "refine.json" in msg and "无法解析" in msg
+

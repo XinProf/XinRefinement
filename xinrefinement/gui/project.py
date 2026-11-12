@@ -13,7 +13,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import shutil
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -29,6 +31,11 @@ _RESULT_MEMBER = "result/refine.json"
 
 #: zip 容器解压内容上限（防 zip 炸弹）。
 _MAX_TOTAL_BYTES = 512 * 1024 * 1024
+
+#: 解压会话目录回收参数：最近 keep 个保底留存，其余超龄/超总量即删。
+_SESSION_KEEP = 8
+_SESSION_MAX_AGE_DAYS = 7.0
+_SESSION_MAX_TOTAL_MB = 512.0
 
 
 def _jsonable(obj):
@@ -110,6 +117,8 @@ def _load_json_v1(p: Path) -> dict:
         "result_full": None,
         "navigation": data.get("navigation", {}),
         "missing": missing,
+        # 与 zip 路径保持同一键集，调用方不必判键是否存在
+        "warnings": [],
         "project_path": str(p.resolve()),
         "embedded": False,
     }
@@ -176,11 +185,88 @@ def _save_zip(state: dict, out: Path) -> Path:
     return out
 
 
+def _session_root() -> Path:
+    """解压会话根目录。独立成函数是为了给测试留唯一的 monkeypatch 注入点。"""
+    return Path(tempfile.gettempdir()) / "xinrefinement_projects"
+
+
+def _dir_bytes(d: Path) -> int:
+    total = 0
+    for f in d.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            continue          # 统计失败按 0 算，别让清理影响打开工程
+    return total
+
+
+def _prune_sessions(root: Path, *, protect: Path,
+                    keep: int = _SESSION_KEEP,
+                    max_age_days: float = _SESSION_MAX_AGE_DAYS,
+                    max_total_mb: float = _SESSION_MAX_TOTAL_MB,
+                    now: float | None = None) -> list[Path]:
+    """回收 ``root`` 下的解压会话目录，返回「尝试删除」的路径列表。
+
+    ``keep`` 只是「最近 N 个」的数量门槛，**不是硬保底**：排在前 ``keep`` 个
+    之内但已超过 ``max_age_days`` 的目录照样删；唯一绝对保留的是 ``protect``
+    （当次正在使用的目录）。最后再按总字节上限从最旧删。清理是副业，
+    所有 ``OSError`` 一律吞掉。
+    """
+    now = time.time() if now is None else now
+    try:
+        entries = [d for d in root.iterdir() if d.is_dir()]
+    except OSError:
+        return []
+    dated: list[tuple[float, Path]] = []
+    for d in entries:
+        try:
+            dated.append((d.stat().st_mtime, d))
+        except OSError:
+            continue
+    dated.sort(key=lambda t: t[0], reverse=True)   # 新 → 旧
+
+    removed: list[Path] = []
+
+    def _drop(d: Path) -> None:
+        removed.append(d)
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass          # 兜底：rmtree 本身抛错也不能影响打开工程
+
+    survivors: list[tuple[float, Path]] = []
+    aged_cut = now - max_age_days * 86400
+    for i, (mtime, d) in enumerate(dated):
+        if d == protect or (i < keep and mtime >= aged_cut):
+            survivors.append((mtime, d))
+        else:
+            _drop(d)
+
+    total = sum(_dir_bytes(d) for _, d in survivors)
+    limit = max_total_mb * 1024 * 1024
+    if total > limit:
+        for _, d in sorted(survivors, key=lambda t: t[0]):   # 最旧先删
+            if total <= limit:
+                break
+            if d == protect:
+                continue
+            total -= _dir_bytes(d)
+            _drop(d)
+    return removed
+
+
 def _extract_session_dir(p: Path) -> Path:
     """zip 工程的内嵌数据解压目录（会话级，重复打开复用）。"""
-    d = Path(tempfile.gettempdir()) / "xinrefinement_projects" / (
-        f"{p.stem}_{int(p.stat().st_mtime)}")
+    root = _session_root()
+    d = root / f"{p.stem}_{int(p.stat().st_mtime)}"
     d.mkdir(parents=True, exist_ok=True)
+    # 每个 mtime 一个新目录且永不清理会撑爆临时目录；mkdir 之后再清理，
+    # 保证 protect 目录已存在、当次文件不会被回收。
+    try:
+        _prune_sessions(root, protect=d)
+    except OSError:
+        pass
     return d
 
 
@@ -189,6 +275,7 @@ def _load_zip(p: Path) -> dict:
 
     session = _extract_session_dir(p)
     missing: list[str] = []
+    warnings: list[str] = []
     pattern_path: str | None = None
     cif_paths: list[str] = []
     with zipfile.ZipFile(p) as zf:
@@ -241,7 +328,11 @@ def _load_zip(p: Path) -> dict:
             try:
                 result_full = json.loads(zf.read(rm).decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
+                # 静默置 None 会让结果区莫名变空，必须留痕给用户
                 result_full = None
+                warnings.append(
+                    "工程内嵌精修结果（result/refine.json）无法解析，"
+                    "已忽略；结果区可能不完整")
     return {
         "language": manifest.get("language", "zh"),
         "pattern": pattern_path,
@@ -252,6 +343,7 @@ def _load_zip(p: Path) -> dict:
         "result_full": result_full,
         "navigation": manifest.get("navigation", {}),
         "missing": missing,
+        "warnings": warnings,
         "project_path": str(p.resolve()),
         "embedded": True,
     }

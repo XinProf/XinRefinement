@@ -1,0 +1,47 @@
+{
+  "legacy_two_column": {
+    "layout": "two_column",
+    "path": "v50_wide.xy",
+    "source_format": "xy",
+    "wavelength_anode": null
+  },
+  "pd_dat": {
+    "layout": "pd",
+    "path": "pd_sample.dat",
+    "source_format": "dat",
+    "wavelength_anode": null
+  },
+  "vendor_jade_txt": {
+    "format": "jade_txt",
+    "format_key": "jade_txt",
+    "format_label": "jade_txt",
+    "layout": "jade_txt",
+    "num_points": 10,
+    "path": "jade_sample.txt",
+    "raw_variant": null,
+    "source_file": "jade_sample.txt",
+    "source_format": "txt",
+    "wavelength": 1.5406,
+    "wavelength_anode": "Cu"
+  },
+  "vendor_shimadzu_txt": {
+    "current": 30.0,
+    "format": "shimadzu_txt",
+    "format_key": "shimadzu_txt",
+    "format_label": "shimadzu_txt",
+    "instrument": "Shimadzu",
+    "layout": "shimadzu_txt",
+    "num_points": 3,
+    "path": "shimadzu_sample.txt",
+    "raw_variant": null,
+    "scan_end": 20.0,
+    "scan_start": 10.0,
+    "source_file": "shimadzu_sample.txt",
+    "source_format": "txt",
+    "step": 0.02,
+    "target": "Cu",
+    "voltage": 40.0,
+    "wavelength": 1.5406,
+    "wavelength_anode": "Cu"
+  }
+}

@@ -47,15 +47,19 @@ PD_Y_NAMES = ("_pd_meas_intensity_total", "_pd_calc_intensity_total",
 _ENCODINGS = ("utf-8-sig", "gbk", "latin-1")
 
 
-def _read_text(path: Path) -> str:
-    """按候选编码顺序读取文本；utf-8-sig 自动吃掉 BOM。"""
-    raw = path.read_bytes()
+def _decode_text(raw: bytes) -> str:
+    """按候选编码顺序解码文本；utf-8-sig 自动吃掉 BOM。"""
     for enc in _ENCODINGS:
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
             continue
     return raw.decode("latin-1", errors="replace")
+
+
+def _read_text(path: Path) -> str:
+    """按候选编码顺序读取文本（薄壳，保留给非单次读盘调用点）。"""
+    return _decode_text(path.read_bytes())
 
 
 def _to_float(token: str) -> float | None:
@@ -153,6 +157,9 @@ def load_pattern(path: str | Path) -> Pattern:
     ``.xy/.txt/.dat/.csv`` 仍优先使用 v1.5.0 的 pd/两列解析器；只有文件头
     明确命中新格式，或旧解析器确认没有数据点时，才交给 vendored reader。
     未知扩展名仍抛固定文案的 :class:`NotImplementedError`。
+
+    legacy 文本路径保证单次读盘：原始字节只读一次，解码结果与头嗅探、
+    解析器共用，避免同一文件被读 2~3 次。
     """
     p = Path(path)
     ext = p.suffix.lower()
@@ -160,14 +167,20 @@ def load_pattern(path: str | Path) -> Pattern:
         raise NotImplementedError(f"暂不支持的格式: {ext}")
 
     if ext in _LEGACY_TEXT_EXTS:
-        text = _read_text(p)
+        raw = p.read_bytes()
+        text = _decode_text(raw)
         if is_pd_format(text):
             tt, ii = _parse_pd(text)
             return _legacy_pattern(p, ext, text, tt, ii, "pd")
 
-        vendor_key, _label = detect_vendor_format(p)
+        # 已读到的字节直接喂给嗅探：head 取等价的前 4KB。full_text 只给 .dat：
+        # detect_format 的 FullProf 自洽校验要全文，且它那里是「full_text 为 None
+        # 才自己读盘」；非 .dat 扩展名压根不进那个分支，所以传 None 既省掉这次额外
+        # 的全量解码，也不会引发二次读盘。
+        full_text = raw.decode("utf-8-sig", "ignore") if ext == ".dat" else None
+        vendor_key, _label = detect_vendor_format(p, head=raw, full_text=full_text)
         if vendor_key in {"shimadzu_txt", "jade_txt", "gsas", "fp_dat", "xrdml"}:
-            return _load_vendored(p, text=text, detected_key=vendor_key)
+            return _load_vendored(p, text=text, detected_key=vendor_key, raw=raw)
 
         try:
             tt, ii = _parse_two_column(text)
@@ -176,7 +189,7 @@ def load_pattern(path: str | Path) -> Pattern:
             # 数据点时才允许更宽容/定宽的 vendored reader 再识别一次。
             if "有效数据点不足 2 个" not in str(exc):
                 raise
-            return _load_vendored(p, text=text, detected_key=vendor_key)
+            return _load_vendored(p, text=text, detected_key=vendor_key, raw=raw)
         return _legacy_pattern(p, ext, text, tt, ii, "two_column")
 
     return _load_vendored(p)
@@ -205,11 +218,14 @@ def _load_vendored(
     *,
     text: str | None = None,
     detected_key: str | None = None,
+    raw: bytes | None = None,
 ) -> Pattern:
     """读取新格式的 XRDData，并转换成 RutAna 的不可变 Pattern。"""
     try:
-        key = detected_key or detect_vendor_format(path)[0]
-        data = load_vendor_pattern(path)
+        key = detected_key or detect_vendor_format(
+            path, head=raw[:4096] if raw is not None else None
+        )[0]
+        data = load_vendor_pattern(path, raw=raw, key=key)
     except MemoryError as exc:
         raise ValueError(f"谱图文件过大，内存不足，无法读取: {path}") from exc
     except (OSError, DataFormatError, ValueError):

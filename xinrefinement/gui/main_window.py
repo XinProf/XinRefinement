@@ -160,6 +160,9 @@ class MainWindow(QMainWindow):
         self._cif_paths: list[str] = []
         self._phases: list = []
         self._result = None
+        #: v1.6.4：e.s.d. 单次缓存 (键, EsdResult|None)。三处结果面板各自
+        #: 重算一遍要跑 3 遍全谱前向，一次精修只该算一次。
+        self._esd_cache: tuple[tuple, object] | None = None
         self._settings: dict[str, dict] = {}
         self._worker: RefineWorker | None = None
         self._step_status: dict[str, str] = {}
@@ -587,12 +590,7 @@ class MainWindow(QMainWindow):
                                  for p in r.phases]}
             try:
                 from xinrefinement.core.report import solve_result_dict
-                esd = None
-                try:
-                    from xinrefinement.core.refine.esd import estimate_esd
-                    esd = estimate_esd(self._phases, r)
-                except Exception:
-                    esd = None
+                esd = self._esd_for(r)
                 result_full = solve_result_dict(
                     r, esd=esd,
                     input_info={"pattern": self._pattern_path,
@@ -816,6 +814,9 @@ class MainWindow(QMainWindow):
         msg = f"{tr('menu.open_project')}: {data.get('project_path', '')}"
         if missing:
             msg += f" | 缺失 {len(missing)} 个引用文件"
+        # 工程内嵌数据解析失败等非致命问题：逐条挂到状态栏，不弹模态框
+        for warn in data.get("warnings", []):
+            msg += f" | {warn}"
         self._restore_result_panel(data)
         self.statusBar().showMessage(msg)
 
@@ -891,6 +892,7 @@ class MainWindow(QMainWindow):
         self._cif_paths.clear()
         self._phases.clear()
         self._result = None
+        self._esd_cache = None      # 键含 id()，工程清空后旧键已无意义
         self._settings.clear()
         self._step_status.clear()
         self._phase_po.clear()
@@ -1617,10 +1619,34 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"精修完成：Rwp={res.rwp:.3f}%  success={res.success}")
 
+    def _esd_for(self, res):
+        """取 e.s.d.：同一精修结果的多次请求复用同一份结果。
+
+        一次 estimate_esd 要跑 4p 次全谱前向，全在主线程；失败路径同样昂贵，
+        所以算出来的 None 也一并缓存。失效靠键（新精修=新 SolveResult）。
+
+        键里的 ``id(res)`` 在对象被 GC 后可能被新对象复用，故并放 rwp/iters/
+        相名+cell 做兜底；重开工程时 ``_esd_cache`` 直接清空。
+        返回对象被多处共享（缓存命中即同一实例），调用方不得原地修改其 ndarray。
+        """
+        key = (id(res), getattr(res, "rwp", None), getattr(res, "iters", None),
+               id(self._phases),
+               tuple((getattr(p, "name", None), tuple(getattr(p, "cell", ()) or ()))
+                     for p in self._phases))
+        if self._esd_cache is not None and self._esd_cache[0] == key:
+            return self._esd_cache[1]
+        # 函数内 import：测试靠 monkeypatch 模块属性注入计数/异常实现
+        from xinrefinement.core.refine.esd import estimate_esd
+        try:
+            value = estimate_esd(self._phases, res)
+        except Exception:
+            value = None
+        self._esd_cache = (key, value)
+        return value
+
     def _fill_results(self, res) -> None:
         """P3.5：摘要 + 收敛曲线 + 相关性矩阵 + DW/e.s.d.。"""
         from xinrefinement.core.refine.diagnostics import diagnose
-        from xinrefinement.core.refine.esd import estimate_esd
 
         diag = diagnose(res)
         rows = [(tr("result.rwp"), f"{res.rwp:.4f}"),
@@ -1630,12 +1656,10 @@ class MainWindow(QMainWindow):
                 (tr("result.iters"), str(res.iters)),
                 (tr("result.dw"), f"{diag.dw:.4f}")]
         weight_esd = None
-        try:
-            esd = estimate_esd(self._phases, res)
+        esd = self._esd_for(res)
+        if esd is not None:
             weight_esd = esd.weight_esd_pct
             rows.append(("Rwp 下降 (pp)", f"{diag.rwp_drop:.4f}"))
-        except Exception:
-            esd = None
         for i, p in enumerate(res.phases):
             wt = "—" if p.weight_pct is None else f"{p.weight_pct:.3f}"
             disp = self._disp_unique().get(p.name, p.name)   # v1.6：显示名
@@ -1804,13 +1828,9 @@ class MainWindow(QMainWindow):
             "HTML 报告 (*.html);;所有文件 (*)")
         if not path:
             return
-        from xinrefinement.core.refine.esd import estimate_esd
         from xinrefinement.core.report import export_report as _export
 
-        try:
-            esd = estimate_esd(self._phases, self._result)
-        except Exception:
-            esd = None
+        esd = self._esd_for(self._result)
         out = Path(path)
         try:
             paths = _export(self._result, out.parent, stem=out.stem, esd=esd)

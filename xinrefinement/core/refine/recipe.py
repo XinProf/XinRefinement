@@ -935,6 +935,8 @@ class RecipeRunner:
         self._per_eval_s = None
         self.time_report = []
         self.state.current = 0
+        # 同一 runner 复用跑第二轮时会累加上一轮记录（记录数翻倍、回退下标错位）
+        self.state.records.clear()
         self._phases = list(inputs.phases)
         self.po_probe_report = []
         self.xyz_report = {}

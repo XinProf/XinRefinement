@@ -176,8 +176,19 @@ def wavelength_from_text(text: str) -> Optional[float]:
 # 格式识别
 # ----------------------------------------------------------------------
 
-def detect_format(path: Union[str, Path]) -> tuple[str, str]:
+def detect_format(
+    path: Union[str, Path],
+    *,
+    head: Optional[bytes] = None,
+    full_text: Optional[str] = None,
+) -> tuple[str, str]:
     """按扩展名 + 文件头嗅探格式。
+
+    Args:
+        head: 调用方已读到的文件字节（只取前 4096 字节，等价于自己 open 读头）；
+            给定时不再读盘。
+        full_text: 调用方已解码的全量文本（仅 .dat 的 FullProf 自洽校验需要）；
+            给定时不再读盘。
 
     Returns:
         ``(key, label)`` —— ``key`` 见 :data:`FORMAT_LABELS`; ``label`` 是按当前
@@ -185,10 +196,13 @@ def detect_format(path: Union[str, Path]) -> tuple[str, str]:
     """
     p = Path(path)
     ext = p.suffix.lower()
-    try:
-        head = p.open("rb").read(4096)
-    except OSError:
-        head = b""
+    if head is None:
+        try:
+            head = p.open("rb").read(4096)
+        except OSError:
+            head = b""
+    else:
+        head = head[:4096]
 
     if ext == ".raw":
         return "raw", _L("raw")
@@ -235,11 +249,12 @@ def detect_format(path: Union[str, Path]) -> tuple[str, str]:
         if _gsas_banks(head_lines_l1):
             return "gsas", _L("gsas")
         # FullProf 判定需要全量数据做 stop 自洽校验 (头嗅探 4KB 不够), .dat 都是小文本
-        try:
-            full_lines = p.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
-        except OSError:
-            full_lines = []
-        if _fp_head(full_lines) is not None:
+        if full_text is None:
+            try:
+                full_text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            except OSError:
+                full_text = ""
+        if _fp_head(full_text.splitlines()) is not None:
             return "fp_dat", _L("fp_dat")
 
     if ext in (".xy", ".txt", ".dat", ".csv", ".smz"):
@@ -254,9 +269,16 @@ def detect_format(path: Union[str, Path]) -> tuple[str, str]:
 # 文本解析
 # ----------------------------------------------------------------------
 
-def _read_numeric_rows(path: Path) -> tuple[list[list[float]], list[str]]:
-    """读取纯文本 → (数值行, 原始行)。跳过注释 / 空行 / 表头。"""
-    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+def _read_numeric_rows(
+    path: Path, raw: Optional[bytes] = None, text: Optional[str] = None
+) -> tuple[list[list[float]], list[str]]:
+    """读取纯文本 → (数值行, 原始行)。跳过注释 / 空行 / 表头。
+
+    ``text`` 给定时直接复用调用方已解码的文本（同一份字节只解一次码）。
+    """
+    if text is None:
+        text = (raw.decode("utf-8-sig", errors="ignore") if raw is not None
+                else path.read_text(encoding="utf-8-sig", errors="ignore"))
     lines = text.splitlines()
     if not lines:
         raise DataFormatError(tr("err.empty_file", path=str(path)))
@@ -304,11 +326,11 @@ def _pick_columns(rows: list[list[float]]) -> tuple[int, int]:
     return 0, max(cands, key=lambda j: diffs[j])
 
 
-def _load_text(path: Path, key: str) -> XRDData:
-    rows, lines = _read_numeric_rows(path)
+def _load_text(path: Path, key: str, raw: Optional[bytes] = None) -> XRDData:
+    rows, lines = _read_numeric_rows(path, raw)
     # Jade/MDI 两行头文本: 头里有 start/step, 数据是单列定宽强度, 不能按两列读。
     if _jade_head(lines) is not None:
-        return _load_mdi(path, "jade_txt")
+        return _load_mdi(path, "jade_txt", raw)
     xc, yc = _pick_columns(rows)
     arr = np.asarray(rows, dtype=float)
     head_text = "\n".join(lines[:40])
@@ -327,9 +349,10 @@ def _load_text(path: Path, key: str) -> XRDData:
     )
 
 
-def _load_shimadzu_txt(path: Path) -> XRDData:
+def _load_shimadzu_txt(path: Path, raw: Optional[bytes] = None) -> XRDData:
     """岛津 ASCII 导出 (带 target / voltage / sampling pitch 等参数头)。"""
-    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+    text = (raw.decode("utf-8-sig", errors="ignore") if raw is not None
+            else path.read_text(encoding="utf-8-sig", errors="ignore"))
     meta: dict = {"instrument": "Shimadzu"}
     patterns = {
         "target": r"target\s*[:=]\s*(\S+)",
@@ -349,7 +372,7 @@ def _load_shimadzu_txt(path: Path) -> XRDData:
                 meta[key] = m.group(1)
 
     wl = wavelength_from_text(text)
-    rows, _ = _read_numeric_rows(path)
+    rows, _ = _read_numeric_rows(path, raw, text)
     xc, yc = _pick_columns(rows)
     arr = np.asarray(rows, dtype=float)
     return XRDData(
@@ -360,14 +383,15 @@ def _load_shimadzu_txt(path: Path) -> XRDData:
     )
 
 
-def _load_mdi(path: Path, key: str = "mdi") -> XRDData:
+def _load_mdi(path: Path, key: str = "mdi", raw: Optional[bytes] = None) -> XRDData:
     """MDI (Jade) 文本格式: 定宽整数强度, 头含 start/step/.../stop。
 
     实测坑: 该格式转换时可能丢掉**第一个**通道 (如 count=7250 却带 5.000→150.000
     的区间)。若按 start 起算整条谱会平移一个步长 (峰位全错 0.02°), 故当
     ``start + step*(n-1)`` 对不上头里的 stop 时, 改以 stop 反推 start。
     """
-    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+    text = (raw.decode("utf-8-sig", errors="ignore") if raw is not None
+            else path.read_text(encoding="utf-8-sig", errors="ignore"))
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if len(lines) < 2:
         raise DataFormatError(tr("err.mdi_too_short", path=str(path)))
@@ -521,7 +545,7 @@ def _q_to_two_theta(q: np.ndarray, wavelength: float) -> np.ndarray:
     return 2.0 * np.degrees(np.arcsin(arg))
 
 
-def _load_gsas(path: Path) -> XRDData:
+def _load_gsas(path: Path, raw: Optional[bytes] = None) -> XRDData:
     """GSAS 粉末数据 (.gsas/.fxye/.gda/.gsa/.gss, BANK 记录四种数据类型)。
 
     - FXYE: 每行 ``x(百分度) y esd`` 三列, x/100 → 度 (显式 x 列, 最可靠);
@@ -533,7 +557,8 @@ def _load_gsas(path: Path) -> XRDData:
     多 BANK 取第一块 (本工具单谱定位); TOF/EDS 明确拒绝。
     """
     # latin-1 逐字节解码: ESD/STD 是定宽格式, 字节偏移即字符偏移
-    text = path.read_bytes().decode("latin-1", errors="ignore")
+    text = (raw.decode("latin-1", errors="ignore") if raw is not None
+            else path.read_bytes().decode("latin-1", errors="ignore"))
     if "TIME_MAP" in text:
         raise DataFormatError(tr("err.gsas_tof", name=path.name))
     lines = text.splitlines()
@@ -609,11 +634,12 @@ def _load_gsas(path: Path) -> XRDData:
     )
 
 
-def _load_fp_dat(path: Path) -> XRDData:
+def _load_fp_dat(path: Path, raw: Optional[bytes] = None) -> XRDData:
     """FullProf .dat (1-10 列): 注释后首行 ``start step stop``, 之后每行 1-10 个
     强度值, x = start + N*step 递增到 stop; ``lambda λ`` 行给波长。
     参考: GSAS-II imports/G2pwd_FP.py。"""
-    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+    text = (raw.decode("utf-8-sig", errors="ignore") if raw is not None
+            else path.read_text(encoding="utf-8-sig", errors="ignore"))
     lines = text.splitlines()
     got_c = False
     start = step = stop_at = None
@@ -943,10 +969,10 @@ def _xml_arrays(root: ET.Element):
     return two_theta, intensity
 
 
-def _load_xrdml(path: Path) -> XRDData:
+def _load_xrdml(path: Path, raw: Optional[bytes] = None) -> XRDData:
     """Bruker/PANalytical XRDML (XML)。"""
     try:
-        root = ET.parse(str(path)).getroot()
+        root = (ET.fromstring(raw) if raw is not None else ET.parse(str(path)).getroot())
     except ET.ParseError as exc:
         raise DataFormatError(tr("err.xrdml_xml_fail", path=str(path), exc=exc)) from exc
 
@@ -1061,6 +1087,9 @@ def load_pattern(
     path: Union[str, Path],
     wavelength: Optional[float] = None,
     manual_axis: Optional[tuple[float, float]] = None,
+    *,
+    raw: Optional[bytes] = None,
+    key: Optional[str] = None,
 ) -> XRDData:
     """打开任意受支持的谱图文件。
 
@@ -1068,6 +1097,8 @@ def load_pattern(
         path: 文件路径
         wavelength: 显式波长 (None → 从头识别或默认 Cu Kα1)
         manual_axis: ``(起始 2θ, 步长)`` —— 仅在 RAW 角度轴不可信时使用
+        raw: 调用方已读到的文件字节（文本类 loader 直接复用，不再二次读盘）
+        key: 调用方已识别的格式 key —— 给定时跳过内部 :func:`detect_format`
 
     Raises:
         FileNotFoundError: 文件不存在
@@ -1077,7 +1108,10 @@ def load_pattern(
     if not p.exists():
         raise FileNotFoundError(tr("err.file_missing", path=str(p)))
 
-    key, label = detect_format(p)
+    if key is None:
+        key, label = detect_format(p, head=raw)
+    else:
+        label = _L(key)
     try:
         if key == "raw":
             result = parse_raw(p.read_bytes(), p)
@@ -1108,11 +1142,11 @@ def load_pattern(
             return data
 
         if key in ("mdi", "jade_txt"):
-            data = _load_mdi(p, key)
+            data = _load_mdi(p, key, raw)
         elif key == "gsas":
-            data = _load_gsas(p)
+            data = _load_gsas(p, raw)
         elif key == "fp_dat":
-            data = _load_fp_dat(p)
+            data = _load_fp_dat(p, raw)
         elif key == "ras":
             data = _load_ras(p)
         elif key == "xye":
@@ -1120,15 +1154,15 @@ def load_pattern(
         elif key == "chi":
             data = _load_chi(p)
         elif key == "xrdml":
-            data = _load_xrdml(p)
+            data = _load_xrdml(p, raw)
         elif key == "brml":
             data = _load_brml(p)
         elif key == "json":
             data = _load_json(p)
         elif key == "shimadzu_txt":
-            data = _load_shimadzu_txt(p)
+            data = _load_shimadzu_txt(p, raw)
         else:
-            data = _load_text(p, key)
+            data = _load_text(p, key, raw)
     except (DataFormatError, FileNotFoundError):
         raise
     except Exception as exc:  # noqa: BLE001 - 统一成 DataFormatError 便于 GUI 展示

@@ -150,3 +150,13 @@ def test_cell_step_keeps_phase_metadata():
     assert any(p.weight_pct is not None for p in res.phases), \
         "走完晶胞精修后 QPA 整表变 None（元数据在回写时丢了）"
 
+
+def test_run_all_twice_does_not_accumulate_records():
+    """同一 runner 二次连跑不得累加上一轮 StepRecord。"""
+    runner = RecipeRunner()
+    runner.run_all(_inputs())
+    runner.run_all(_inputs())
+    keys = [r.key for r in runner.records]
+    assert len(keys) == len(DEFAULT_STEPS), f"记录累加：{keys}"
+    assert keys == [s.key for s in DEFAULT_STEPS]
+

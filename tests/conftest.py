@@ -18,3 +18,14 @@ CIF_DIR = ROOT / "xinrefinement" / "data" / "cif"
 def cif_dir() -> Path:
     """内置 CIF 目录。"""
     return CIF_DIR
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_sessions(tmp_path, monkeypatch):
+    """把 .xinr 解压会话根重定向到临时目录：测试绝不读写真实 %TEMP%。
+
+    ``_extract_session_dir`` 会顺手回收旧会话（既写又删），所以任何走
+    ``load_project`` 的用例都必须隔离；否则会删掉真实 %TEMP% 里别人的目录。
+    """
+    monkeypatch.setattr("xinrefinement.gui.project._session_root",
+                        lambda: tmp_path / "sessions")
