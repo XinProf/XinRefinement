@@ -35,20 +35,22 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 GSAS2 = Path(r"C:\gsas2main\GSAS-II")
 GSAS_DIR = Path(r"D:\Project\XRD\XRData\IUCr\gsas")
-ROOT = Path(r"D:\Project\XRD\XRData\IUCr\Must do\Rietveld")
+ROOT = Path(os.environ.get("XR_IUCr_ROOT", r"d:\test_XRD\IUCr_Rietveld"))
 OUT = Path(r"C:/Temp/iucr")
 
 #: 与 tools/eval_iucr_qpa.py 保持**同一套**结构文件，否则不是同一实验。
 CIF = {
-    "Corundum": Path(r"D:\Project\XRDdata\ShiJK-Refinement"
-                     r"\ShiJiKong3#1##20260126-130900_100"
-                     r"\4Entry_96-900-9673.cif"),
+    "Corundum": (Path(os.environ.get("XR_BENCH_ROOT",
+                    r"d:\test_XRD\ShiJK-Refinement"))
+                 / "ShiJiKong3#1##20260126-130900_100"
+                 / "4Entry_96-900-9673.cif"),
     "Zincite": ROOT / "Entry_96-230-0113-ZnO.cif",
     "Fluorite": ROOT / "Entry_96-230-0450-CaF2.cif",
 }

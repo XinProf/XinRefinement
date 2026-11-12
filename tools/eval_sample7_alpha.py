@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import replace
@@ -32,7 +33,7 @@ from xinrefinement.core.refine.nonlinear import RefineConfig        # noqa: E402
 from xinrefinement.core.refine.recipe import RecipeRunner           # noqa: E402
 from xinrefinement.core.refine.solve import RefineInputs            # noqa: E402
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
 OUT = B.OUT
 DIRS = sorted(p for p in ROOT.iterdir() if p.is_dir())
 D7 = DIRS[6]

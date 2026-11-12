@@ -17,6 +17,7 @@ P4₁2₁2 的 (101)），但用户给的 CIF 是高温 Fd-3m，且两种理想�
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -30,7 +31,7 @@ import bench_v14 as B                                             # noqa: E402
 from xinrefinement.core.profile.cif import parse_cif              # noqa: E402
 from xinrefinement.core.refine.solve import RefineInputs, solve   # noqa: E402
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
 OUT = B.OUT
 D7 = sorted(p for p in ROOT.iterdir() if p.is_dir())[6]
 LOW_S6 = (sorted(p for p in ROOT.iterdir() if p.is_dir())[5]

@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -43,15 +44,16 @@ from xinrefinement.core.refine.nonlinear import RefineConfig    # noqa: E402
 from xinrefinement.core.refine.recipe import RecipeRunner       # noqa: E402
 from xinrefinement.core.refine.solve import RefineInputs        # noqa: E402
 
-ROOT = Path(r"D:\Project\XRD\XRData\IUCr\Must do\Rietveld")
+ROOT = Path(os.environ.get("XR_IUCr_ROOT", r"d:\test_XRD\IUCr_Rietveld"))
 OUT = Path(r"C:/Temp/iucr")
 OUT.mkdir(parents=True, exist_ok=True)
 
 #: 结构 CIF（刚玉取 ShiJiKong3 的 COD 文件，ZnO/CaF₂ 取 IUCr 自带）
 CIF = {
-    "Corundum": Path(r"D:\Project\XRDdata\ShiJK-Refinement"
-                     r"\ShiJiKong3#1##20260126-130900_100"
-                     r"\4Entry_96-900-9673.cif"),
+    "Corundum": (Path(os.environ.get("XR_BENCH_ROOT",
+                    r"d:\test_XRD\ShiJK-Refinement"))
+                 / "ShiJiKong3#1##20260126-130900_100"
+                 / "4Entry_96-900-9673.cif"),
     "Zincite": ROOT / "Entry_96-230-0113-ZnO.cif",
     "Fluorite": ROOT / "Entry_96-230-0450-CaF2.cif",
 }

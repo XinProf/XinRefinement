@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import replace
@@ -25,7 +26,7 @@ from xinrefinement.core.profile.forward import (                   # noqa: E402
     default_texture_grid)
 from xinrefinement.core.refine.solve import RefineInputs, solve     # noqa: E402
 
-ROOT = Path(r"D:\Project\XRDdata\ShiJK-Refinement")
+ROOT = Path(os.environ.get("XR_BENCH_ROOT", r"d:\test_XRD\ShiJK-Refinement"))
 OUT = B.OUT
 #: MAUD 2.99993 在样 7 上精修出的 Caglioti 参数（7#.par L314 起）
 MAUD_UVW = (0.00252935, 0.002716717, 0.002312246)
