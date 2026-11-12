@@ -6,7 +6,9 @@
 
 **Desktop software for whole-pattern fitting of powder diffraction data (Rietveld structural refinement / Le Bail / profile refinement).**
 
-[简体中文](README.md) · English
+[Chinese (Simplified)](README-CN.md) · English (legacy v1.1.0 snapshot)
+
+> **Current documentation:** this page is an archived v1.1.0 snapshot. The up-to-date English README is [README.md](README.md); the original Chinese version is [README-CN.md](README-CN.md).
 
 Three entry points — Qt6 GUI, command line, and a Python library API — covering the full workflow
 «import pattern + phase CIFs → whole-pattern fit → quantification and uncertainties → report».
@@ -215,7 +217,8 @@ tests/             # pytest (including offscreen GUI smoke tests)
 | [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) | Technical design and architecture decisions (Chinese) |
 | [`docs/TASKS.md`](docs/TASKS.md) | Task book, P1–P5 delivery log (Chinese) |
 | [`docs/CROSS_VALIDATION.md`](docs/CROSS_VALIDATION.md) | Structural cross-validation against GSAS-II |
-| [`README.md`](README.md) | 简体中文 README |
+| [`README.md`](README.md) | English README (current) |
+| [`README-CN.md`](README-CN.md) | Chinese (Simplified) README |
 
 ---
 
