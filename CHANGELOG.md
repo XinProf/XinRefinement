@@ -1,5 +1,89 @@
 # 变更记录
 
+## v1.6.4（2026-11-12）：审计整改第三批（工程健壮性 + 读取性能）
+
+主题：收纳 2026-11-11 全局审计中「可安全修、不碰数值」的五项——工程解压
+目录的有界回收、内嵌结果损坏不再静默、legacy 文本谱图单次读盘、e.s.d.
+多次重复求值收敛为一次、配方 records 二次连跑累加。**引擎与数值路径零改动**
+（golden CLI Rwp 3.4074156640940005 逐位不变），交付的只是用户可感知的
+健壮性与读取/求值重复开销。
+
+### 修复 A07：`.xinr` 解压会话目录从「只写不删」改为有界回收
+- 根因：`gui/project.py` 的会话目录按 `<stem>_<mtime>` 建在
+  `tempfile.gettempdir()` 下，**每个 mtime 一个新目录且从不清理**；同一工程
+  改一次重存就多一份内嵌谱/CIF，长期使用把临时目录撑满。
+- 修法：新增 `_session_root/_dir_bytes/_prune_sessions`，`_extract_session_dir`
+  在 `mkdir` 之后（保证当次目录已存在）回收：**保留最近 8 个 / 7 天 / 512 MB
+  三重上限**，按 mtime 新→旧判定，最后再按总字节从最旧删。
+- 当次目录 `protect` **绝对保留**：`keep` 只是数量门槛，排在前 8 但已超龄
+  的照删，唯独 `protect` 不删；所有 `OSError` 一律吞掉，清理失败绝不影响
+  打开工程。
+- 预期行为：超龄目录被删后，下次打开该工程会**重解压一次内嵌数据**——这属于
+  设计内的预期，不是缺陷（内嵌数据始终在 `.xinr` 里，重解压的只是临时副本）。
+
+### 修复 A08：内嵌 `result/refine.json` 解码失败不再静默
+- 根因：`_load_zip` 里 `except (UnicodeDecodeError, json.JSONDecodeError) →
+  result_full = None`，界面结果区莫名变空，用户无从判断是「没跑过精修」还是
+  「工程文件坏了」。
+- 修法：加载结果新增 `warnings` 键（zip 路径逐条追加，`.xrp` 旧 JSON 路径
+  同键给空列表，调用方不必判键是否存在），`main_window.apply_project()` 把
+  每条 warning 追加到状态栏消息末尾，文案为「工程内嵌精修结果
+  （result/refine.json）无法解析，已忽略；结果区可能不完整」。不弹模态框。
+
+### 修复 B07：legacy 文本谱图 2~3 次读盘收敛为 1 次
+- 根因：`load_pattern` 先 `read_bytes` 解码全文，`detect_vendor_format` 又
+  `open` 读 4 KB 头，`.dat` 的 FullProf 自洽校验再 `read_text` 读一遍全文，
+  岛津 txt 的 loader 又各自读一遍。
+- 修法：`core/patterns.py` 原始字节只读一次（`_decode_text` 与 `_read_text`
+  拆分，后者留作薄壳），经四个可选入参下传——`detect_format(head=,
+  full_text=)`、`load_pattern(raw=, key=)` 及 7 个文本 loader 的 `raw=`。
+  `full_text` 只给 `.dat`（`detect_format` 里「`full_text` 为 None 才自己读盘」，
+  非 `.dat` 扩展名不进那个分支）。
+- 实测单文件物理 `open()` 次数：`.xy` 2→1、两列 `.csv` 2→1、岛津 `.txt`
+  5→1、FullProf `.dat` 3→1。
+- 契约不变：`Pattern.meta` 键集合与取值（含浮点）逐字不变（
+  `tests/data/pattern_meta_golden.json` 锁定），异常类型与文案逐字不变。
+
+### 修复 B02：`estimate_esd` 由三处各算一遍改为一次复用
+- 根因：结果面板 `_fill_results`、存工程 `project_state`、导出报告
+  `export_report` 各调一次 `estimate_esd`，每次约 4p 次全谱前向，
+  且全在主线程——一次精修要白跑 3 遍。
+- 修法：新增 `MainWindow._esd_for(res)` 单值缓存，键 = `id(res)` + rwp/iters
+  + 相名与晶胞兜底（防 `id()` 被 GC 复用）；**失败也算结果一并缓存**（异常
+  路径同样昂贵）。
+- 实测：连续 4 次结果面板/存工程请求 → `estimate_esd` 实际调用 **1 次**。
+- 返回对象多处共享，调用方不得原地修改其 ndarray（已写入 docstring）。
+
+### 修复 records：`run_all()` 开跑前清空 `state.records`
+- 根因：`recipe.py` 的 `run_all` 重置了 `current`/`time_report`，唯独没清
+  `state.records`；同一 runner 二次连跑时记录数翻倍、回退下标错位。
+- 修法：一行 `self.state.records.clear()` + 守护用例
+  `test_run_all_twice_does_not_accumulate_records`（二次连跑后记录仍恰好是
+  `DEFAULT_STEPS` 的长度且 key 顺序一致）。
+- 实测：同一 runner 连跑两次，改动前 8→16，改动后 8→8。
+
+### 测试
+- 全量回归 **579 collected / 579 passed / 0 failed / 0 skipped**
+  （上一批 553 collected，本批新增 26 个用例：`test_project_sessions.py`
+  回收三上限与 protect 语义、`test_patterns_single_read.py` 单次读盘 +
+  `pattern_meta_golden.json` 元数据冻结、`test_v164_esd_cache.py` 缓存命中/
+  失败也缓存/失效三态、`test_project_zip.py` 与 `test_i18n_project.py` 的
+  warnings 键、`test_recipe.py` 的 records 不累加；外加并发/隔离相关的
+  `conftest` 自动 fixture）。
+- `tests/conftest.py` 新增 autouse fixture，把 `.xinr` 解压会话根重定向到
+  `tmp_path`：测试绝不读写真实 `%TEMP%`（清理是新增的写副作用，不隔离会删掉
+  真实临时目录里别人的数据）。
+- `test_version_consistency.py` 绿：`__version__` / iss `AppVersion` /
+  CHANGELOG 最新标题三方一致（1.6.4）。
+
+### 环境注意事项（踩过的坑，别再踩）
+- pytest 的 `--basetemp` **不要放在仓库工作区内**（如 `D:\XinRefinement\.pytest_tmp_*`）：
+  会在 `tmp_path` 复用/清理阶段撞上沙箱「每 turn 50 次批量删除」保护，
+  报 `SystemExit: 1`，表现为 75 个**假 ERROR**（不是产品缺陷）。
+  正确做法：`--basetemp="$TEMP/xinr_..."`，并一律带 `-o addopts=""`。
+- 仓库内遗留的 `.pytest_tmp_*` 目录属历史产物，已由 `.gitignore` 的
+  `*pytest_tmp*/` 忽略，不随本次交付入库。
+
 ## v1.6.3（2026-11-11）：e.s.d. 报表值列修正 + 审计低风险修复
 
 主题：修复 A11（e.s.d. 文本/JSON 报表的「值」列误填 e.s.d.、参数真值缺失），
