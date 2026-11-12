@@ -70,8 +70,26 @@ _GROUP = 4
 _MAC_LEN = 8
 
 #: 密钥 —— **混淆级**：随软件分发，可被逆向提取。
-#: 修改密钥会使此前生成的所有注册码失效，请谨慎并同步 make_reg_code.py 的说明。
-_SECRET_KEY = b"REDACTED"
+#: 生产密钥不入版本库：按「环境变量 → 本地密钥文件（已 gitignore）→ 社区构建占位值」解析。
+#: 发布构建设置 POLYXRD_REGISTRATION_KEY 为原生产密钥，即可让此前发出的注册码继续有效。
+_COMMUNITY_KEY = b"polyxrd-community-source-build"
+
+
+def _load_secret_key() -> bytes:
+    env_key = os.environ.get("POLYXRD_REGISTRATION_KEY")
+    if env_key:
+        return env_key.encode("utf-8")
+    secret_file = Path(__file__).with_name("registration_secret.txt")
+    try:
+        raw = secret_file.read_text(encoding="utf-8").strip()
+        if raw:
+            return raw.encode("utf-8")
+    except OSError:
+        pass
+    return _COMMUNITY_KEY
+
+
+_SECRET_KEY = _load_secret_key()
 
 #: 版权提示中的联系邮箱
 CONTACT_EMAIL = "sshztx@outlook.com"

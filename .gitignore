@@ -48,3 +48,6 @@ cod_data/
 
 # 会话级产物目录（报告/docx/图表，不入库）
 output/
+
+# Offline registration key injected at build time; never commit
+registration_secret.txt
