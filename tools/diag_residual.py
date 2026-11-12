@@ -40,7 +40,8 @@ OUT = Path(os.environ.get("XR_BENCH_OUT", r"C:\Temp\maud_compare\v14"))
 def _sample(i: int):
     dirs = sorted(p for p in ROOT.iterdir() if p.is_dir())
     d = dirs[i - 1]
-    pdir = S5PHASE if i == 5 else d
+    # 与 bench_v14.sample_dirs 同规则：s5phase 只在存在时覆盖样本目录
+    pdir = S5PHASE if (i == 5 and S5PHASE.is_dir()) else d
     pat = load_pattern(next(d.glob("*.txt")))
     phases = [parse_cif(c) for c in sorted(pdir.glob("*.cif"))]
     return d, pat, phases

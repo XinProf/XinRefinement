@@ -60,7 +60,10 @@ GRAIN_UM = 5.0
 def sample_dirs() -> list[tuple[int, Path, Path]]:
     out = []
     for i, d in enumerate(sorted(p for p in ROOT.iterdir() if p.is_dir()), 1):
-        out.append((i, d, S5PHASE if i == 5 else d))
+        # 样 5 的相文件原先单独放在 MAUD 侧目录；该目录不存在时（2026-11-12 起
+        # CIF 已并入样本目录）直接用样本目录，避免拿到空相表。
+        pdir = S5PHASE if (i == 5 and S5PHASE.is_dir()) else d
+        out.append((i, d, pdir))
     return out
 
 
