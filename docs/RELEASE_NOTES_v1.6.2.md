@@ -1,128 +1,144 @@
-# XinRefinement v1.6.2 — 停止按钮真正能停
+# XinRefinement v1.6.2 — Stop button now actually stops
 
-> 基线 `v1.6.1`｜主题：**「停止」要等当前步跑完才生效，是实现缺陷**。
-> 点一键连跑后想中止，按了停止却要等很久——不是算得慢，是取消标志只在
-> 步与步之间检查，一步内部的多轮拟合全部跑完才回到循环顶。
+> Baseline `v1.6.1` | Theme: **"Stop" taking effect only after the current step finishes is an
+> implementation defect**. After starting run-all, pressing Stop meant waiting a long time —
+> not because the computation is slow, but because the cancel flag was only checked between
+> steps, so all the fitting rounds inside one step ran to completion before returning to the
+> top of the loop.
 >
-> **数值零变化**：golden 50/50 档仍是 `3.4074156640940005`，CLI/API 逐位不变。
+> **Zero numerical change**: the golden 50/50 case is still `3.4074156640940005`, CLI/API
+> bit-for-bit unchanged.
 
-## 下载
+## Download
 
-| 文件 | 大小 | SHA256 |
+| File | Size | SHA256 |
 |---|---|---|
 | `XinRefinement-1.6.2-setup.exe` | 75.9 MB | `135cb1e87cf47522c25ba903f28cee244d83d8043b760ba13f6f6ee214c93b2f` |
 
-> 正式版安装包（含注册机制，zh/en/ja 三语安装界面）。内部评估版便携包
-> （`XinRefinement-internal-1.6.2-portable.zip`，114.2 MB，
-> sha256 `c51f786881c1ed8d965b27b31c9d406e2b51a648f6246a45a84f3f09e2abced1`）
-> 仅用于内部验收，不随本 Release 发布。
+> Release installer (includes registration, zh/en/ja installer UI). The internal evaluation
+> portable build (`XinRefinement-internal-1.6.2-portable.zip`, 114.2 MB,
+> sha256 `c51f786881c1ed8d965b27b31c9d406e2b51a648f6246a45a84f3f09e2abced1`)
+> is for internal acceptance only and is not distributed with this Release.
 
-## 一句话看变化
+## What changed at a glance
 
 | | v1.6.1 | v1.6.2 |
 |---|---|---|
-| 点「停止」 | 等当前步整步跑完（cell 步实测 **19.8 s**） | 下一次残差评估即中断（**16 ms** 量级） |
-| 取消被记成什么 | 可能生成一条「某步失败」记录 + 假告警框 | 透传取消，日志写「精修已由用户停止」，**不留失败记录** |
-| 进度条 | 停在「正在执行「微结构」…」 | 改为「已停止」 |
-| 已算结果 | 丢弃 | **部分结果照常回填**（谱、Rwp、各页表格） |
+| Pressing Stop | Waits for the whole current step (cell step measured **19.8 s**) | Interrupts at the next residual evaluation (**16 ms** scale) |
+| How cancel was recorded | Could produce a "some step failed" record + a spurious warning box | Cancel is passed through, the log writes "refinement stopped by user", **no failure record left** |
+| Progress bar | Stuck at "running microstructure…" | Changes to "stopped" |
+| Already computed results | Discarded | **Partial results still filled in** (pattern, Rwp, all result pages) |
 
-## 为什么慢（根因）
+## Why it was slow (root cause)
 
-`RefineWorker.run()` 的循环是：
+The loop in `RefineWorker.run()` is:
 
 ```python
 for step in todo:
-    if self._cancel:        # ← 只有这里看停止标志
+    if self._cancel:        # ← the only place that checks the stop flag
         break
     result, rec = self._runner.run_step(step, ...)
 ```
 
-所以停止的生效时刻 = 当前步跑完的时刻，而一步内部往往不止一次拟合：
+So the moment Stop takes effect = the moment the current step finishes, and a step often
+performs more than one fit internally:
 
-| 步 | 内部实际做了什么 |
+| Step | What actually happens inside |
 |---|---|
-| 晶胞参数 | solve → 精修全晶胞 → 再用新晶胞 solve 一次（3 次拟合） |
-| 微结构 | PO 试探（每相 × 每候选轴各一次短拟合）→ 正式 solve → 重解 |
-| 峰形参数 | 最多 4 次 LM（Rwp>10% 恒触发重启链） |
+| Unit cell parameters | solve → refine the full cell → solve again with the new cell (3 fits) |
+| Microstructure | PO trial (one short fit per phase × per candidate axis) → formal solve → re-solve |
+| Peak shape parameters | Up to 4 LM runs (Rwp>10% always triggers the restart chain) |
 
-更关键的是：引擎里**本来就有**细粒度钩子 `RefineConfig.cancel_cb` +
-`_check_cancel()`（放在残差函数入口，自研 LM 与 scipy 两个后端都覆盖），
-但 GUI 从来没接上——全仓库只有一处测试用过，等于死代码。
+More importantly: the engine **already had** a fine-grained hook,
+`RefineConfig.cancel_cb` + `_check_cancel()` (placed at the residual function entry, covering
+both the in-house LM and the scipy backends), but the GUI never wired it up — only one test
+anywhere in the repository used it, making it dead code.
 
-## 改了什么
+## What changed
 
-### 1. 三处残差闭包接上取消钩子
+### 1. Cancel hook wired into three residual closures
 
-- **主 solve**：原本就有。
-- **晶胞引擎 `refine_cell_full`**：**独立残差闭包，之前完全没有检查**——
-  cell 步是全链最慢的步之一，最该快的地方反而是最慢的。
-- **坐标引擎 `refine_sites`**：数值雅可比每迭代 O(n_free) 次「多相全谱 +
-  线性层」评估，xyz 步也因此能秒停。
+- **Main solve**: already had it.
+- **Cell engine `refine_cell_full`**: **an independent residual closure with no check at all before** —
+  the cell step is one of the slowest in the whole chain, the place that most needed it was the slowest.
+- **Coordinate engine `refine_sites`**: the numerical Jacobian performs O(n_free) evaluations of
+  "multi-phase whole pattern + linear layer" per iteration, so the xyz step can now also stop within a second.
 
-### 2. 配方层不再把「取消」记成「失败」
+### 2. The recipe layer no longer records "cancel" as "failed"
 
-配方里每个引擎调用都包着 `except Exception → StepRecord("failed")`——这对
-真正的数值失败是对的（继续跑下一步），但对用户取消是错的。现在 7 处兜底
-先透传 `RefineCancelled`；`run_all` 在步内捕获它并**返回已完成部分**
-（连跑语义是「停在最后完成的步」，不把异常抛给调用方）。
+Every engine call in the recipe is wrapped in `except Exception → StepRecord("failed")` — correct
+for genuine numerical failures (continue with the next step), but wrong for a user cancel. The
+7 fallbacks now re-raise `RefineCancelled` first; `run_all` catches it within a step and
+**returns the part already completed** (the run-all semantics are "stop at the last completed
+step", not throwing the exception at the caller).
 
-### 3. 界面收尾
+### 3. UI wrap-up
 
-- 取消回调挂进 `inputs.config`，经 `config_for` 的 `replace()` 自动带到
-  每个步配置。
-- 取消后：进度条「已停止」、日志追加「=== 精修已由用户停止（当前步在残差
-  评估处中断）==="、已算出的部分结果照常回填（谱 + Rwp + 各结果页），
-  且**不弹失败告警框**。
+- The cancel callback is attached to `inputs.config` and carried automatically into every step
+  config through `replace()` in `config_for`.
+- After cancelling: the progress bar shows "stopped", the log appends
+  "=== refinement stopped by user (current step interrupted at residual evaluation) ===",
+  the partial results already computed are filled in as usual (pattern + Rwp + all result
+  pages), and **no failure warning box is shown**.
 
-## 验证
+## Verification
 
-- 全量回归 **532 项：532 passed / 0 failed / 0 skipped，EXIT=0**
-  （v1.6.1 为 527 项，新增 `tests/test_v162_cancel.py` 5 项）。
-- golden CLI Rwp 50/50 档 **`3.4074156640940005`** 未变（`cancel_cb=None`
-  时引擎逐位不变，有专项测试守）。
-- 新增测试守的行为：取消停在第 N 次残差评估（`calls == 3`）、停止延迟
-  < 0.5 s、无回调时 Rwp 逐位一致、晶胞引擎独立生效、连跑取消不留
-  `status='failed'` 的假记录。
-- 顺带修一条「碰巧成立」的既有断言：`test_serialize_uses_relative_paths`
-  原断言说「同盘符 → 相对路径」，但 `_rel()` 是 `relative_to` 的前缀语义，
-  只因为 pytest 的 tmp 恰好在 C:、项目在 D: 才通过。改成检验真实契约。
+- Full regression **532 items: 532 passed / 0 failed / 0 skipped, EXIT=0**
+  (527 in v1.6.1; adds 5 in `tests/test_v162_cancel.py`).
+- golden CLI Rwp 50/50 case **`3.4074156640940005`** unchanged (with `cancel_cb=None` the
+  engine is bit-for-bit unchanged, guarded by a dedicated test).
+- Behaviour guarded by the new tests: cancel stops at the Nth residual evaluation
+  (`calls == 3`), stop latency < 0.5 s, bit-for-bit identical Rwp with no callback, the cell
+  engine takes effect independently, and no spurious `status='failed'` record is left after
+  cancelling a run-all.
+- Also fixes an existing assertion that "happened to hold": `test_serialize_uses_relative_paths`
+  asserted "same drive → relative path", but `_rel()` has prefix semantics via `relative_to`,
+  and it only passed because pytest's tmp happened to be on C: and the project on D:. It now
+  checks the real contract.
 
-## 构建与可复现性
+## Build and reproducibility
 
-本版对构建链做了一次可复现性核查，结论分两层：
+This version performed a reproducibility audit of the build chain; the conclusion has two layers:
 
-- **PyInstaller 产物（`.exe` 层）逐字节可复现**：固定 `SOURCE_DATE_EPOCH`
-  （取 git 提交时间）、`PYTHONHASHSEED=0` 后，同一 commit 两次构建得到完全
-  相同的 `XinRefinement.exe` / `XinRefinementCLI.exe` 哈希（已实测两次，
-  含不同 `--distpath`）。因此可以从产物反查源码版本。
-- **安装包（Inno Setup 层）不逐字节复现**：同样输入、同样 `SOURCE_DATE_EPOCH`
-  两次打包得到**同尺寸、不同字节**的结果（PE 头时间戳来自编译器 stub，
-  不受 epoch 影响）。故上表 SHA256 只对**本 Release 的这一个资产**有效，
-  不代表「任何人重建都得到同一串哈希」；同源重建的安装包哈希会不同，
-  但里面的两个 `.exe` 可以逐字节对上。
-- **一条流程约束**：`SOURCE_DATE_EPOCH` 取的是构建时的 HEAD 提交时间，所以
-  **必须先提交、后构建**。若在提交前构建，产物里的 PE 时间戳会指向上一个
-  commit——内容不受影响，但无法从产物反推源码版本，重建哈希也对不上。
-- **本资产的实际构建方式**：在 `06b115c`（tag `v1.6.2` 指向的 release commit）
-  之后构建，`SOURCE_DATE_EPOCH=1794219055` 固定为该 commit 的提交时间；
-  产物内 `XinRefinement.exe` = `2b2436de…`、`XinRefinementCLI.exe` =
-  `16c99cb3…`，两者均可由同源码逐字节重建。
+- **PyInstaller artifacts (the `.exe` layer) are byte-for-byte reproducible**: with a fixed
+  `SOURCE_DATE_EPOCH` (taken from the git commit time) and `PYTHONHASHSEED=0`, two builds of the
+  same commit produce exactly the same `XinRefinement.exe` / `XinRefinementCLI.exe` hashes
+  (measured twice, including with a different `--distpath`). The source version can therefore be
+  traced back from the artifact.
+- **The installer (Inno Setup layer) is not byte-for-byte reproducible**: the same input and the
+  same `SOURCE_DATE_EPOCH` produce **the same size but different bytes** across two packagings
+  (the PE header timestamp comes from the compiler stub and is not affected by epoch). The
+  SHA256 in the table above is therefore valid only for **this one asset of this Release**, and
+  does not mean "anyone rebuilding gets the same hash string"; a rebuild from the same source
+  produces a different installer hash, though the two `.exe` files inside can be matched
+  byte-for-byte.
+- **One process constraint**: `SOURCE_DATE_EPOCH` takes the HEAD commit time at build time, so
+  **you must commit first and build afterwards**. If you build before committing, the PE
+  timestamp in the artifact points at the previous commit — the content is unaffected, but the
+  source version cannot be inferred from the artifact and rebuild hashes will not match.
+- **How this asset was actually built**: after `06b115c` (the release commit that tag `v1.6.2`
+  points to), with `SOURCE_DATE_EPOCH=1794219055` fixed to that commit's commit time; the
+  artifact contains `XinRefinement.exe` = `2b2436de…`, `XinRefinementCLI.exe` = `16c99cb3…`,
+  both byte-for-byte reproducible from the same source.
 
-## 已知限制
+## Known limits
 
-- 停止是**协作式**：引擎在残差评估处检查标志，因此正在进行的**单次**评估
-  会跑完（样 1 约 16 ms；相数与点数更多时相应变长）。不做线程强杀——那会
-  让 numpy/BLAS 内部状态与临时缓存无法回收。
-- **样 7 仍未达标**（+3.39 pt，方石英近非晶宽包起点问题），本版未触碰引擎。
+- Stopping is **cooperative**: the engine checks the flag at residual evaluation, so the
+  **single** evaluation in progress will finish (about 16 ms for sample 1; correspondingly
+  longer with more phases and points). There is no thread kill — that would leave numpy/BLAS
+  internal state and temporary caches unreclaimable.
+- **Sample 7 is still below standard** (+3.39 pt, the near-amorphous broad-envelope starting
+  point of cristobalite); this version does not touch the engine.
 
-## 安装与注册
+## Installation and registration
 
-与 v1.6.1 相同：安装包内置 zh/en/ja 三语界面，注册码与 XinMatch 家族互通
-（`%APPDATA%\PolyXRD\Registration\XinRefinement.json`）。内部评估版免注册
-免安装，状态栏红字标示。
+Same as v1.6.1: the installer has a built-in zh/en/ja interface, registration codes
+interoperate across the XinMatch family
+(`%APPDATA%\PolyXRD\Registration\XinRefinement.json`). The internal evaluation build needs
+no registration and no installation, and is marked in red in the status bar.
 
-## 许可
+## License
 
-本软件使用 MIT 许可证（`LICENSE` / `LICENSE-CN`，帮助菜单内可查看全文）。
-内置晶体结构数据来自 COD（CC0）与 ICSD 派生公开文献，**不含任何 PDF 卡片
-或 ICDD 数据**。
+This software uses the MIT license (`LICENSE` / `LICENSE-CN`, full text viewable from the Help
+menu). The bundled crystal structure data comes from COD (CC0) and ICSD-derived public
+literature, and **contains no PDF cards or ICDD data**.

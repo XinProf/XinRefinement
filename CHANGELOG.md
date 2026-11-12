@@ -1,609 +1,744 @@
-# 变更记录
+# Changelog
 
-## v1.6.4（2026-11-12）：审计整改第三批（工程健壮性 + 读取性能）
+> English is the default for this changelog. A complete Chinese reference
+> copy is kept in [CHANGELOG-CN.md](CHANGELOG-CN.md); version numbers and
+> content are kept in sync.
 
-主题：收纳 2026-11-11 全局审计中「可安全修、不碰数值」的五项——工程解压
-目录的有界回收、内嵌结果损坏不再静默、legacy 文本谱图单次读盘、e.s.d.
-多次重复求值收敛为一次、配方 records 二次连跑累加。**引擎与数值路径零改动**
-（golden CLI Rwp 3.4074156640940005 逐位不变），交付的只是用户可感知的
-健壮性与读取/求值重复开销。
 
-### 修复 A07：`.xinr` 解压会话目录从「只写不删」改为有界回收
-- 根因：`gui/project.py` 的会话目录按 `<stem>_<mtime>` 建在
-  `tempfile.gettempdir()` 下，**每个 mtime 一个新目录且从不清理**；同一工程
-  改一次重存就多一份内嵌谱/CIF，长期使用把临时目录撑满。
-- 修法：新增 `_session_root/_dir_bytes/_prune_sessions`，`_extract_session_dir`
-  在 `mkdir` 之后（保证当次目录已存在）回收：**保留最近 8 个 / 7 天 / 512 MB
-  三重上限**，按 mtime 新→旧判定，最后再按总字节从最旧删。
-- 当次目录 `protect` **绝对保留**：`keep` 只是数量门槛，排在前 8 但已超龄
-  的照删，唯独 `protect` 不删；所有 `OSError` 一律吞掉，清理失败绝不影响
-  打开工程。
-- 预期行为：超龄目录被删后，下次打开该工程会**重解压一次内嵌数据**——这属于
-  设计内的预期，不是缺陷（内嵌数据始终在 `.xinr` 里，重解压的只是临时副本）。
+## v1.6.4 (2026-11-12) — Third batch of audit remediation (engineering robustness + read performance)
 
-### 修复 A08：内嵌 `result/refine.json` 解码失败不再静默
-- 根因：`_load_zip` 里 `except (UnicodeDecodeError, json.JSONDecodeError) →
-  result_full = None`，界面结果区莫名变空，用户无从判断是「没跑过精修」还是
-  「工程文件坏了」。
-- 修法：加载结果新增 `warnings` 键（zip 路径逐条追加，`.xrp` 旧 JSON 路径
-  同键给空列表，调用方不必判键是否存在），`main_window.apply_project()` 把
-  每条 warning 追加到状态栏消息末尾，文案为「工程内嵌精修结果
-  （result/refine.json）无法解析，已忽略；结果区可能不完整」。不弹模态框。
+Theme: absorb the five "safe to fix, no numerical impact" items from the 2026-11-11 global
+audit — bounded reclamation of the project extraction session directory, corrupted embedded
+results no longer failing silently, a single read from disk for legacy text patterns, e.s.d.
+repeated evaluation collapsed into one, and accumulation of recipe `records` on a second
+consecutive run. **Zero changes to the engine and numerical path**
+(golden CLI Rwp 3.4074156640940005 unchanged bit for bit); what is delivered is only the
+user-perceivable robustness plus the repeated read/evaluation overhead.
 
-### 修复 B07：legacy 文本谱图 2~3 次读盘收敛为 1 次
-- 根因：`load_pattern` 先 `read_bytes` 解码全文，`detect_vendor_format` 又
-  `open` 读 4 KB 头，`.dat` 的 FullProf 自洽校验再 `read_text` 读一遍全文，
-  岛津 txt 的 loader 又各自读一遍。
-- 修法：`core/patterns.py` 原始字节只读一次（`_decode_text` 与 `_read_text`
-  拆分，后者留作薄壳），经四个可选入参下传——`detect_format(head=,
-  full_text=)`、`load_pattern(raw=, key=)` 及 7 个文本 loader 的 `raw=`。
-  `full_text` 只给 `.dat`（`detect_format` 里「`full_text` 为 None 才自己读盘」，
-  非 `.dat` 扩展名不进那个分支）。
-- 实测单文件物理 `open()` 次数：`.xy` 2→1、两列 `.csv` 2→1、岛津 `.txt`
-  5→1、FullProf `.dat` 3→1。
-- 契约不变：`Pattern.meta` 键集合与取值（含浮点）逐字不变（
-  `tests/data/pattern_meta_golden.json` 锁定），异常类型与文案逐字不变。
+### Fix A07: `.xinr` extraction session directory changed from "write-only, never delete" to bounded reclamation
+- Root cause: the session directory in `gui/project.py` is created as `<stem>_<mtime>` under
+  `tempfile.gettempdir()`, **one new directory per mtime, never cleaned up**; re-saving the
+  same project after one change leaves one more copy of the embedded pattern/CIF, and
+  long-term use fills up the temp directory.
+- Fix: add `_session_root/_dir_bytes/_prune_sessions`; `_extract_session_dir` reclaims after
+  `mkdir` (so that the current directory already exists): **triple limits of keeping the
+  newest 8 / 7 days / 512 MB**, judged by mtime newest→oldest, then finally deleting from the
+  oldest by total bytes.
+- The current directory is **absolutely retained** by `protect`: `keep` is only a count
+  threshold, entries in the top 8 but already over age are still deleted, only `protect` is
+  never deleted; all `OSError` are swallowed, and a cleanup failure never affects opening the
+  project.
+- Expected behaviour: after an over-age directory is deleted, opening that project the next
+  time **re-extracts the embedded data once** — this is expected by design, not a defect
+  (the embedded data always lives in the `.xinr`; only the temporary copy is re-extracted).
 
-### 修复 B02：`estimate_esd` 由三处各算一遍改为一次复用
-- 根因：结果面板 `_fill_results`、存工程 `project_state`、导出报告
-  `export_report` 各调一次 `estimate_esd`，每次约 4p 次全谱前向，
-  且全在主线程——一次精修要白跑 3 遍。
-- 修法：新增 `MainWindow._esd_for(res)` 单值缓存，键 = `id(res)` + rwp/iters
-  + 相名与晶胞兜底（防 `id()` 被 GC 复用）；**失败也算结果一并缓存**（异常
-  路径同样昂贵）。
-- 实测：连续 4 次结果面板/存工程请求 → `estimate_esd` 实际调用 **1 次**。
-- 返回对象多处共享，调用方不得原地修改其 ndarray（已写入 docstring）。
+### Fix A08: decoding failure of the embedded `result/refine.json` no longer silent
+- Root cause: in `_load_zip`, `except (UnicodeDecodeError, json.JSONDecodeError) →
+  result_full = None`; the UI result area inexplicably becomes empty, and the user cannot
+  tell whether "refinement was never run" or "the project file is broken".
+- Fix: the load result gains a `warnings` key (appended entry by entry on the zip path; the
+  legacy `.xrp` JSON path returns an empty list for the same key, so callers need not check
+  whether the key exists); `main_window.apply_project()` appends each warning to the end of
+  the status-bar message, with the text "the project's embedded refinement result
+  (result/refine.json) cannot be parsed and has been ignored; the result area may be
+  incomplete". No modal dialog is shown.
 
-### 修复 records：`run_all()` 开跑前清空 `state.records`
-- 根因：`recipe.py` 的 `run_all` 重置了 `current`/`time_report`，唯独没清
-  `state.records`；同一 runner 二次连跑时记录数翻倍、回退下标错位。
-- 修法：一行 `self.state.records.clear()` + 守护用例
-  `test_run_all_twice_does_not_accumulate_records`（二次连跑后记录仍恰好是
-  `DEFAULT_STEPS` 的长度且 key 顺序一致）。
-- 实测：同一 runner 连跑两次，改动前 8→16，改动后 8→8。
+### Fix B07: legacy text pattern 2–3 disk reads collapsed into 1
+- Root cause: `load_pattern` first `read_bytes` and decodes the whole text,
+  `detect_vendor_format` then `open`s and reads the 4 KB header, the FullProf
+  self-consistency check of `.dat` does `read_text` over the whole file again, and the
+  Shimadzu txt loaders each read it once more.
+- Fix: `core/patterns.py` reads the raw bytes only once (`_decode_text` and `_read_text`
+  split, the latter kept as a thin shell), passed down through four optional parameters —
+  `detect_format(head=, full_text=)`, `load_pattern(raw=, key=)` and `raw=` for the 7 text
+  loaders. `full_text` is only given for `.dat` (in `detect_format`, "read from disk by
+  itself only when `full_text` is None"; non-`.dat` extensions do not enter that branch).
+- Measured physical `open()` calls per single file: `.xy` 2→1, two-column `.csv` 2→1,
+  Shimadzu `.txt` 5→1, FullProf `.dat` 3→1.
+- Contract unchanged: the `Pattern.meta` key set and values (including floats) are unchanged
+  verbatim (locked by `tests/data/pattern_meta_golden.json`); exception types and message
+  texts are unchanged verbatim.
 
-### 测试
-- 全量回归 **579 collected / 579 passed / 0 failed / 0 skipped**
-  （上一批 553 collected，本批新增 26 个用例：`test_project_sessions.py`
-  回收三上限与 protect 语义、`test_patterns_single_read.py` 单次读盘 +
-  `pattern_meta_golden.json` 元数据冻结、`test_v164_esd_cache.py` 缓存命中/
-  失败也缓存/失效三态、`test_project_zip.py` 与 `test_i18n_project.py` 的
-  warnings 键、`test_recipe.py` 的 records 不累加；外加并发/隔离相关的
-  `conftest` 自动 fixture）。
-- `tests/conftest.py` 新增 autouse fixture，把 `.xinr` 解压会话根重定向到
-  `tmp_path`：测试绝不读写真实 `%TEMP%`（清理是新增的写副作用，不隔离会删掉
-  真实临时目录里别人的数据）。
-- `test_version_consistency.py` 绿：`__version__` / iss `AppVersion` /
-  CHANGELOG 最新标题三方一致（1.6.4）。
+### Fix B02: `estimate_esd` computed in three places changed to reuse once
+- Root cause: the result panel `_fill_results`, saving the project `project_state`, and
+  exporting the report `export_report` each call `estimate_esd`, each time about 4p
+  full-pattern forward evaluations, all on the main thread — one refinement runs it 3 times
+  for nothing.
+- Fix: add `MainWindow._esd_for(res)` single-value cache, key = `id(res)` + rwp/iters
+  + phase name and unit cell as fallback (to prevent `id()` being reused by GC); **failures
+  are also cached as results** (the exception path is equally expensive).
+- Measured: 4 consecutive result-panel/save-project requests → `estimate_esd` actually
+  called **1 time**.
+- The returned object is shared across multiple places; callers must not modify its ndarray
+  in place (already written into the docstring).
 
-### 环境注意事项（踩过的坑，别再踩）
-- pytest 的 `--basetemp` **不要放在仓库工作区内**（如 `D:\XinRefinement\.pytest_tmp_*`）：
-  会在 `tmp_path` 复用/清理阶段撞上沙箱「每 turn 50 次批量删除」保护，
-  报 `SystemExit: 1`，表现为 75 个**假 ERROR**（不是产品缺陷）。
-  正确做法：`--basetemp="$TEMP/xinr_..."`，并一律带 `-o addopts=""`。
-- 仓库内遗留的 `.pytest_tmp_*` 目录属历史产物，已由 `.gitignore` 的
-  `*pytest_tmp*/` 忽略，不随本次交付入库。
+### Fix records: `run_all()` clears `state.records` before starting
+- Root cause: `run_all` in `recipe.py` resets `current`/`time_report` but not
+  `state.records`; when the same runner runs twice consecutively, the record count doubles
+  and the rollback index is misaligned.
+- Fix: one line `self.state.records.clear()` + guard test
+  `test_run_all_twice_does_not_accumulate_records` (after two consecutive runs the records
+  are still exactly the length of `DEFAULT_STEPS`, with the same key order).
+- Measured: the same runner run twice, 8→16 before the change, 8→8 after.
 
-## v1.6.3（2026-11-11）：e.s.d. 报表值列修正 + 审计低风险修复
+### Tests
+- Full regression **579 collected / 579 passed / 0 failed / 0 skipped**
+  (553 collected in the previous batch; 26 cases added in this batch: the three reclamation
+  limits and protect semantics in `test_project_sessions.py`, single read plus
+  `pattern_meta_golden.json` metadata freeze in `test_patterns_single_read.py`, the three
+  states of cache hit / cached on failure / invalidation in `test_v164_esd_cache.py`, the
+  warnings key in `test_project_zip.py` and `test_i18n_project.py`, records
+  non-accumulation in `test_recipe.py`; plus a concurrency/isolation-related `conftest`
+  autouse fixture).
+- `tests/conftest.py` adds an autouse fixture that redirects the `.xinr` extraction session
+  root to `tmp_path`: tests never read or write the real `%TEMP%` (cleanup is a newly added
+  write side effect; without isolation it would delete other people's data in the real temp
+  directory).
+- `test_version_consistency.py` is green: `__version__` / iss `AppVersion` /
+  latest CHANGELOG heading agree in three places (1.6.4).
 
-主题：修复 A11（e.s.d. 文本/JSON 报表的「值」列误填 e.s.d.、参数真值缺失），
-并收纳上一轮全局代码审计的 6 项低风险修复。**引擎与数值路径零改动**
-（golden CLI Rwp 3.4074156640940005 逐位不变）。
+### Environment notes (pitfalls already hit — don't hit them again)
+- pytest's `--basetemp` **must not be placed inside the repository working tree** (e.g.
+  `D:\XinRefinement\.pytest_tmp_*`): it will hit the sandbox's "max 50 bulk deletions per
+  turn" protection during the `tmp_path` reuse/cleanup phase, reporting `SystemExit: 1`,
+  manifesting as 75 **false ERRORs** (not a product defect). Correct approach:
+  `--basetemp="$TEMP/xinr_..."`, always with `-o addopts=""`.
+- The leftover `.pytest_tmp_*` directories in the repo are historical artifacts, already
+  ignored by `*pytest_tmp*/` in `.gitignore`, and are not committed as part of this delivery.
 
-### 修复 A11：e.s.d. 报表「值」列
-- 根因：`cli/refine.py` 的 e.s.d. 表格用 `zip(esd.labels, esd.esd, esd.esd)`，
-  「值」列与「e.s.d.」列同源；`EsdResult` 未保存参数真值。
-- 修法：`EsdResult` 新增 `values`（`estimate_esd` 以 `concat(x_final, c)` 填好，
-  与 `labels` 严格同序）；文本报告改 `zip(labels, values, esd)`，JSON esd 段新增
-  `values`。e.s.d./协方差/相关性/scale/含量 e.s.d. 计算路径一律不动。
-- TCH 边界（X/Y=0）参数的 e.s.d. 仍记 NaN → 文本显示「—（TCH 边界，无定义）」，
-  值列照常显示真实值。
+## v1.6.3 (2026-11-11) — e.s.d. report value column fix + low-risk audit fixes
 
-### 修复（上一轮全局审计 F01–F06）
-- F01：`name_mineral` 在 `structure_with_cell` / xyz 步重建时丢失 → 显示名退化（Quartz→SiO2）。
-- F02：legacy `_unpack` 重建 `ProfileParams` 漏搬运 `size_strain`。
-- F03：`api.report()` 的 `_solve_raw` 漏 `refine_po`，与 `api.refine()` 不一致。
-- F04：`.xinr`/`.xinm` 谱图序列化 `10g→17g`，保存/重开逐位一致。
-- F05：CLI `-o` 父目录缺失时自动建目录；`to_report` 织构补 `model/degree/coeffs`。
-- F06：步骤按钮语言切换后仍显示中文 title → 改用 `tr(f'step.{key}')`。
+Theme: fix A11 (the "value" column of the e.s.d. text/JSON report was mistakenly filled with
+e.s.d. and the true parameter values were missing), and absorb 6 low-risk fixes from the
+previous round of global code audit. **Zero changes to the engine and numerical path**
+(golden CLI Rwp 3.4074156640940005 unchanged bit for bit).
 
-### 测试
-- 取消连跑测试去脆弱化：`test_run_all_does_not_record_cancel_as_failure` 的取消谓词
-  由「绝对墙钟 `> 0.15s`」改为「残差检查点调用计数」，消除慢机/重负载下的时序假失败；
-  断言回归真正的产品契约（取消不记成 failed），不再附加「至少完成一步」这一
-  `run_all` 从未承诺的前置条件。
+### Fix A11: e.s.d. report "value" column
+- Root cause: the e.s.d. table in `cli/refine.py` uses `zip(esd.labels, esd.esd, esd.esd)`,
+  so the "value" column and the "e.s.d." column share the same source; `EsdResult` did not
+  store the true parameter values.
+- Fix: `EsdResult` gains `values` (`estimate_esd` fills it with `concat(x_final, c)`,
+  strictly in the same order as `labels`); the text report changes to
+  `zip(labels, values, esd)`, and the JSON esd section gains `values`. The calculation paths
+  for e.s.d./covariance/correlation/scale/content e.s.d. are all left untouched.
+- The e.s.d. of TCH boundary (X/Y=0) parameters is still recorded as NaN → the text shows
+  "— (TCH boundary, undefined)", while the value column shows the true value as usual.
 
-### 说明
-- 基线档位：文档权威值 532 passed / 0 skipped 需「本机 COD 档案 + XinMatch/gemmi 齐全」；缺这些外部依赖时，本轮修复前为 1 failed / 525 passed / 6 skipped，**本次修复后为 0 failed / 6 skipped**（collected 553），golden 逐位不变（详见 `docs/audit-20261111-architecture.md` 第 2 节）。
+### Fixes (previous round of global audit F01–F06)
+- F01: `name_mineral` is lost when rebuilding in the `structure_with_cell` / xyz step → display name degrades (Quartz→SiO2).
+- F02: legacy `_unpack` rebuilding `ProfileParams` misses carrying over `size_strain`.
+- F03: `_solve_raw` in `api.report()` misses `refine_po`, inconsistent with `api.refine()`.
+- F04: `.xinr`/`.xinm` pattern serialization `10g→17g`, save/reopen identical bit for bit.
+- F05: CLI `-o` auto-creates the parent directory when missing; `to_report` texture gains `model/degree/coeffs`.
+- F06: step buttons still show the Chinese title after a language switch → changed to `tr(f'step.{key}')`.
 
-## v1.6.2（2026-11-09 发布）：停止按钮真正能停
+### Tests
+- De-fragilizing the cancellation test: the cancel predicate in
+  `test_run_all_does_not_record_cancel_as_failure` changes from "absolute wall clock
+  `> 0.15s`" to "residual checkpoint call count", eliminating timing false failures on slow
+  machines / under heavy load; the assertion returns to the real product contract
+  (cancellation is not recorded as failed), and no longer attaches the precondition "at
+  least one step completed", which `run_all` never promised.
 
-主题：**「停止」等到当前步跑完才生效，是个实现缺陷**。用户点一键连跑后想
-中止，按了停止却要等很久——原因不是算得慢，而是取消标志只在**步与步之间**
-检查，一步内部的多轮拟合（cell 步 3 次 solve、micro 步 PO 试探 + 正式 + 重解、
-profile 步最多 4 次 LM 重启）全部跑完才回到循环顶。**引擎与数值路径零改动**
-（golden 未变），只把已有的取消钩子接到该接的地方。
+### Notes
+- Baseline tier: the document's authoritative value of 532 passed / 0 skipped requires "local COD profile + XinMatch/gemmi available"; without these external dependencies, before this round of fixes it was 1 failed / 525 passed / 6 skipped, **after this round of fixes it is 0 failed / 6 skipped** (collected 553), golden unchanged bit for bit (see section 2 of `docs/audit-20261111-architecture.md`).
 
-### 根因（先说清楚，避免误诊为「性能问题」）
+## v1.6.2 (released 2026-11-09) — the stop button actually stops
+
+Theme: **"stop" takes effect only after the current step finishes — that is an implementation
+defect**. After the user clicks the one-click consecutive run and wants to abort, pressing
+stop takes a long time — the reason is not slow computation, but that the cancel flag is
+checked only **between steps**; the multiple fitting rounds inside one step (3 solves in the
+cell step, PO trial + formal + re-solve in the micro step, up to 4 LM restarts in the profile
+step) all have to finish before returning to the top of the loop. **Zero changes to the
+engine and numerical path** (golden unchanged); only the existing cancel hook is wired to
+where it should be.
+
+### Root cause (stated first, to avoid misdiagnosing it as a "performance problem")
 
 ```python
 for step in todo:
-    if self._cancel:        # ← 只有这里看停止标志
+    if self._cancel:        # ← only here is the stop flag checked
         break
     result, rec = self._runner.run_step(step, ...)
 ```
 
-更关键的是：引擎里**本来就有**细粒度钩子——`RefineConfig.cancel_cb` +
-`_check_cancel()`，注释写明「放在残差函数入口…两个后端都覆盖、响应最快」。
-但 GUI 从来没接上，全仓库只有 `tests/test_recipe.py` 用过一次，等于死代码。
+More importantly: the engine **already has** a fine-grained hook — `RefineConfig.cancel_cb` +
+`_check_cancel()`, whose comment states "put it at the residual function entry… covers both
+backends, fastest response". But the GUI never wired it up; in the whole repository only
+`tests/test_recipe.py` used it once, i.e. dead code.
 
-实测量化（样 1：5751 点 / 5 相）：
+Measured quantification (sample 1: 5751 points / 5 phases):
 
-| | 数值 |
+| | Value |
 |---|---|
-| 单次残差评估 | **16 ms** ← 修复后停止延迟的量级 |
-| `cell` 步整步 | **19.8 s** ← 修复前点停止要等的时间 |
+| single residual evaluation | **16 ms** ← the order of magnitude of stop latency after the fix |
+| entire `cell` step | **19.8 s** ← the time to wait after pressing stop before the fix |
 
-### 修正：三处残差闭包接上取消钩子
+### Fix: cancel hook wired into three residual closures
 
-- **主 solve**：原本就有（`_build_residual` 的 `residual_fn` 首行）。
-- **`refine_cell_full`**（晶胞引擎）：**独立残差闭包，之前完全没有检查**——
-  cell 步是全链最慢的步之一，这一处漏接等于最该快的地方最慢。
-- **`refine_sites`**（坐标引擎）：数值雅可比每迭代 O(n_free) 次
-  「多相全谱 + 线性层」评估，xyz 步也因此能秒停。
+- **Main solve**: already present (`residual_fn` first line of `_build_residual`).
+- **`refine_cell_full`** (unit cell engine): **an independent residual closure with no check
+  at all before** — the cell step is one of the slowest steps in the whole chain; missing the
+  hook here means the place that should be fastest is the slowest.
+- **`refine_sites`** (coordinate engine): the numerical Jacobian performs O(n_free)
+  "multi-phase full pattern + linear layer" evaluations per iteration, so the xyz step can
+  also stop within a second.
 
-### 修正：配方层不再把「取消」记成「失败」
+### Fix: the recipe layer no longer records "cancel" as "failed"
 
-配方里每个引擎调用都包着 `except Exception → StepRecord("failed")`。这对
-真正的数值失败是对的（继续跑下一步），但对用户取消是错的：吞掉之后日志会
-写「某步失败」，界面还会弹一个假的失败告警。新增 `_reraise_if_cancelled()`
-在 7 处兜底里先透传 `RefineCancelled`；`run_all` 则在步内捕获它并**返回已
-完成的部分**（连跑语义是「停在最后完成的步」，不把异常抛给 CLI/测试）。
+Every engine call in the recipe is wrapped in `except Exception → StepRecord("failed")`. That
+is right for genuine numerical failures (continue with the next step), but wrong for user
+cancellation: after swallowing it, the log writes "some step failed" and the UI pops a fake
+failure warning. Add `_reraise_if_cancelled()` to pass `RefineCancelled` through first in the
+7 fallbacks; `run_all` catches it inside the step and **returns the completed part** (the
+consecutive-run semantics is "stop at the last completed step", not throwing the exception to
+the CLI/tests).
 
-### 修正：界面收尾不再停在「正在执行…」
+### Fix: UI finalization no longer stuck at "running…"
 
-- `RefineWorker` 把 `cancel_cb=self._cancel_requested` 挂进 `inputs.config`，
-  经 `config_for` 的 `replace()` 自动带到每步配置（不需要给 `run_step`
-  加参数）。
-- 捕获 `RefineCancelled` 后：已算出的部分结果照常 `finished_ok` 回填（界面
-  显示当前谱与 Rwp），没有结果才走 `failed`；后者在取消场景下不弹模态框。
-- `_on_worker_done` 取消时把进度条改成「已停止」，日志追加
-  `=== 精修已由用户停止（当前步在残差评估处中断）===`（三语补齐）。
+- `RefineWorker` attaches `cancel_cb=self._cancel_requested` into `inputs.config`, and
+  `config_for`'s `replace()` carries it automatically into each step's config (no need to add
+  a parameter to `run_step`).
+- After catching `RefineCancelled`: the partial results already computed are back-filled
+  through `finished_ok` as usual (the UI shows the current pattern and Rwp); only when there
+  is no result does it go through `failed`, and the latter does not show a modal dialog in
+  the cancellation scenario.
+- On cancellation, `_on_worker_done` changes the progress bar to "stopped" and appends to the
+  log `=== Refinement stopped by user (the current step was interrupted at residual evaluation) ===` (completed in all three languages).
 
-### 修正：一条「碰巧成立」的测试断言（`test_i18n_project`）
+### Fix: a test assertion that was only "accidentally true" (`test_i18n_project`)
 
-`test_serialize_uses_relative_paths` 断言「同盘符 → 相对路径」，但
-`_rel()` 用的是 `relative_to` 的**前缀**语义，只有数据在工程目录子树内才写
-相对路径。旧断言只因为 pytest 的 tmp 恰好在 C:、项目在 D:（跨盘符 → 绝对）
-才通过；换同盘 basetemp 立刻红，而序列化本身没问题。改成真正检验契约：
-子树内 → 相对且能还原，子树外 → 绝对。
+`test_serialize_uses_relative_paths` asserts "same drive letter → relative path", but
+`_rel()` uses the **prefix** semantics of `relative_to`, writing a relative path only when
+the data is inside the project directory subtree. The old assertion passed only because
+pytest's tmp happened to be on C:, while the project was on D: (cross-drive → absolute);
+switching to a same-drive basetemp immediately turns it red, although serialization itself is
+fine. Changed to genuinely test the contract: inside the subtree → relative and restorable,
+outside the subtree → absolute.
 
-### 内部
+### Internal
 
-- `i18n/catalog.py` 三语各补 `log.cancelled`
-- `tests/test_v162_cancel.py` 5 项：步内取消停在第 N 次评估（`calls == 3`）、
-  停止延迟 < 0.5 s、`cancel_cb=None` 时 Rwp 逐位一致、晶胞引擎独立生效、
-  连跑取消不留 `failed` 假记录
+- `i18n/catalog.py` adds `log.cancelled` in each of the three languages
+- `tests/test_v162_cancel.py` 5 items: in-step cancellation stops at the Nth evaluation
+  (`calls == 3`), stop latency < 0.5 s, Rwp identical bit for bit when `cancel_cb=None`, the
+  unit cell engine takes effect independently, cancellation in a consecutive run leaves no
+  fake `failed` record
 
-### 回归
+### Regression
 
-- 全量 **532 项：532 passed / 0 failed / 0 skipped，EXIT=0**
-  （= v1.6.1 的 527 + 本轮 5）
-- golden CLI Rwp 50/50 档 **3.4074156640940005** 未变（`cancel_cb=None` 时
-  引擎逐位不变）
+- Full **532 items: 532 passed / 0 failed / 0 skipped, EXIT=0**
+  (= 527 in v1.6.1 + 5 in this round)
+- golden CLI Rwp 50/50 tiers **3.4074156640940005** unchanged (with `cancel_cb=None` the
+  engine is unchanged bit for bit)
 
-## v1.6.1（2026-11-09 发布）：谱图交互工具行与许可信息
+## v1.6.1 (released 2026-11-09) — pattern interaction tool row and license information
 
-主题：**给谱图装上操作台**。v1.6.0 把信息讲清楚了，但谱图本身仍只有 matplotlib
-自带那排英文图标、还挤在谱图下方；想放大一段角度只能靠滚轮和拖拽，量一个峰位
-只能截图用尺子比。本版按逐条点名的六项做界面微调，**引擎与数值路径一行未动**
-（golden 未变），新增的谱图操作全部是画布层的视场变换与标注，不触碰精修数据。
+Theme: **give the pattern an operator console**. v1.6.0 made the information clear,
+but the pattern itself still had only matplotlib's built-in row of English icons,
+squeezed below the plot; zooming into an angle range required the scroll wheel and
+dragging, and measuring a peak position required a screenshot and a ruler. This
+release applies UI tweaks to the six items named one by one; **the engine and the
+numerical path are untouched, line for line** (golden unchanged). All new pattern
+operations are canvas-level view transforms and annotations and do not touch
+refinement data.
 
-### 设计口径（先说清楚，避免误用）
+### Design rationale (stated up front to avoid misuse)
 
-- **谱图操作只改「看的方式」，不改数据**：`zoom/pan` 只改 `xlim/ylim`，
-  `crosshair` 与手动峰位是标注层（artist），干净重绘后重建，不进结果表、
-  不进报告、不参与拟合
-- **mode 工具与 matplotlib 自带的 `pan`/`zoom` 互斥**：两套拖拽会抢同一个
-  鼠标事件（自带工具在 `toolmanager` 层先吃掉 motion），所以进 mode 前先
-  `_cancel_nav_mode()`；同一按钮再点一次即退出，交还轴点击的原语义
-- **垂直方向严格按功能分工**：`zoom_x` 只压横轴、`zoom_y` 只压纵轴、
-  `zoom_rect` 两个都压。`zoom_x`/`zoom_rect` 之后会调 `_scale_y_to_view()`
-  让纵轴贴合**当前视场**——否则放大一个弱峰仍被全谱最高峰压成一条平线，
-  看起来像「没放大」
-- **反向轴不写死方向**：d 模式（`2θ→d`）横轴是反的，`_set_xlim/_set_ylim`
-  内部按 `ax.xaxis_inverted()` 还原方向，直接赋 `(lo, hi)` 会把轴翻回来
-- **许可正文只存一份**：`LicenseDialog` 运行时从磁盘读 `licenses/LICENSE` /
-  `LICENSE-CN`，不在代码里再复写一遍正文——两份文本必然漂移，改一处忘另一处
-  是迟早的事
+- **Pattern operations change only "how you look", not the data**: `zoom/pan` change
+  only `xlim/ylim`; `crosshair` and manual peaks are annotation layer (artist) items,
+  rebuilt after a clean redraw, and never enter the result table, the report, or
+  the fit
+- **mode tools are mutually exclusive with matplotlib's built-in `pan`/`zoom`**: the
+  two drag systems compete for the same mouse events (the built-in tools consume
+  motion first at the `toolmanager` layer), so `_cancel_nav_mode()` is called before
+  entering a mode; clicking the same button again exits and returns the original
+  semantics of axis clicks
+- **Vertical direction is strictly divided by function**: `zoom_x` compresses only the
+  horizontal axis, `zoom_y` only the vertical axis, `zoom_rect` both. After
+  `zoom_x`/`zoom_rect`, `_scale_y_to_view()` is called so the vertical axis fits the
+  **current view** — otherwise zooming into a weak peak still leaves it flattened
+  into a straight line by the global maximum, looking like "no zoom happened"
+- **Reversed axes are not hard-coded**: in d mode (`2θ→d`) the horizontal axis is
+  reversed; `_set_xlim/_set_ylim` restore the direction internally via
+  `ax.xaxis_inverted()`, whereas assigning `(lo, hi)` directly would flip the axis back
+- **The license body is stored in exactly one place**: `LicenseDialog` reads
+  `licenses/LICENSE` / `LICENSE-CN` from disk at runtime and does not duplicate the
+  body in code — two copies inevitably drift, and changing one while forgetting the
+  other is only a matter of time
 
-### 新增：谱图操作行（9 键，`gui/plot_tools.py` + `gui/button_icons.py`）
+### New: pattern operation row (9 buttons, `gui/plot_tools.py` + `gui/button_icons.py`)
 
-布局：中列自上而下 = matplotlib 导航条 → **谱图操作行** → 谱图画布。
+Layout: middle column, top to bottom = matplotlib navigation bar → **pattern
+operation row** → pattern canvas.
 
-| # | 按钮 | 行为 |
+| # | Button | Behavior |
 |---|---|---|
-| ① | `reset` 原始谱图 | 恢复初始 `xlim/ylim`（含 d 模式方向），清掉框选残留 |
-| ② | `zoom_x` 横向框选 | 拖出角度区间，**只改横轴**，纵轴随即贴合该区间 |
-| ③ | `zoom_y` 纵向框选 | 拖出强度区间，**只改纵轴** |
-| ④ | `zoom_rect` 矩形框选 | 拖出矩形，横纵都改 |
-| ⑤ | `pan_left` 左移 | `pan_x(-0.25)`，视场左移 1/4 宽 |
-| ⑥ | `pan_right` 右移 | `pan_x(+0.25)` |
-| ⑦ | `zoom_in` 放大 | `zoom_scale(0.8)`，以视场**中心**为锚 |
-| ⑧ | `zoom_out` 缩小 | `zoom_scale(1.25)`，同上 |
-| ⑨ | `crosshair` 十字线 | 红竖线跟手 + 右上角读数 `2θ = …° · I = …`；**右键**落点加/删手动峰位 |
+| ① | `reset` original pattern | Restore the initial `xlim/ylim` (including d-mode direction), clear rubber-band residue |
+| ② | `zoom_x` horizontal rubber band | Drag out an angle range, **changes only the horizontal axis**; the vertical axis then fits that range |
+| ③ | `zoom_y` vertical rubber band | Drag out an intensity range, **changes only the vertical axis** |
+| ④ | `zoom_rect` rectangular rubber band | Drag out a rectangle; both axes change |
+| ⑤ | `pan_left` pan left | `pan_x(-0.25)`, view shifts left by 1/4 width |
+| ⑥ | `pan_right` pan right | `pan_x(+0.25)` |
+| ⑦ | `zoom_in` zoom in | `zoom_scale(0.8)`, anchored at the **center** of the view |
+| ⑧ | `zoom_out` zoom out | `zoom_scale(1.25)`, same anchor |
+| ⑨ | `crosshair` crosshair | Red vertical line follows the cursor + readout at upper right `2θ = …° · I = …`; **right-click** to add/remove a manual peak |
 
-- `PatternCanvas.PLOT_TOOLS = ("zoom_x","zoom_y","zoom_rect","crosshair")`，
-  `tool=None` 时一切原样；框选在拖拽期间画红皮筋，松手即算并消失
-- **手动峰位**：`manual_peaks: list[float]`，落点在 `_PEAK_TOL=0.25°` 内视为
-  删除（再点一次即撤销），否则升序插入；显示为红色虚线 + 竖排角度标签，
-  `_peak_artists` 在每次 `_redraw()` 后由 `_draw_overlays()` 重建
-- **换谱即清**：`clear()` 清空手动峰位与十字线——留着上一个样品的峰位标注
-  比没有更误导
-- 图标全部用代码画（`button_icons.plot_icon(key)`，16/20/24/32/48 五档），
-  不引外部资源；分组之间插 `QFrame.VLine`，末位 `lbl_hint` 当十字线读数屏
+- `PatternCanvas.PLOT_TOOLS = ("zoom_x","zoom_y","zoom_rect","crosshair")`; with
+  `tool=None` everything behaves as before; a rubber band draws a red band while
+  dragging and computes-and-disappears on release
+- **Manual peaks**: `manual_peaks: list[float]`; a click within `_PEAK_TOL=0.25°` is
+  treated as removal (clicking again undoes it), otherwise the peak is inserted in
+  ascending order; displayed as a red dashed line + vertical angle label, and
+  `_peak_artists` is rebuilt by `_draw_overlays()` after every `_redraw()`
+- **Cleared on pattern change**: `clear()` wipes manual peaks and the crosshair —
+  leaving the previous sample's peak annotations is more misleading than having none
+- All icons are drawn in code (`button_icons.plot_icon(key)`, five sizes 16/20/24/32/48),
+  with no external assets; `QFrame.VLine` is inserted between groups, and the trailing
+  `lbl_hint` serves as the crosshair readout display
 
-### 修正：导航条缩小一号并移到谱图上方
+### Fix: navigation bar one size smaller and moved above the pattern
 
-- `NavigationToolbar2QT` 从谱图**下方**移到上方，chip 36 → **30**，
-  `iconSize` 24 → 20；配色仍走 `colorize_nav_toolbar(toolbar, chip=30)`
-- 顺序有意为之：上方是先「自带工具」（平移/缩放/存图），紧接着是本项目的
-  谱图操作行——两排都是「对图的操作」，放一起比隔着一个画布好找
+- `NavigationToolbar2QT` moved from **below** the pattern to above, chip 36 → **30**,
+  `iconSize` 24 → 20; coloring still goes through `colorize_nav_toolbar(toolbar, chip=30)`
+- The order is intentional: above is first the "built-in tools" (pan/zoom/save image),
+  immediately followed by this project's pattern operation row — both rows are
+  "operations on the plot", and keeping them together beats separating them with a canvas
 
-### 修正：状态栏「内部评估版本」居中、加粗、放大一号
+### Fix: status bar "internal evaluation build" centered, bold, one size larger
 
-- `AlignRight` → `AlignCenter`；`font.setPointSizeF(max(pt, 9.0) + 1.0)` +
-  `setBold(True)`，颜色取警示红
-- 仍用 `addPermanentWidget(label, 1)` 而不是 `showMessage()`：后者会被任何
-  一次 `statusBar().showMessage("2θ = …")` 顶掉（十字线读数就在往那儿写），
-  常驻标签只有 permanent 区才活得下来
+- `AlignRight` → `AlignCenter`; `font.setPointSizeF(max(pt, 9.0) + 1.0)` +
+  `setBold(True)`, color taken from alert red
+- Still uses `addPermanentWidget(label, 1)` rather than `showMessage()`: the latter is
+  displaced by any single `statusBar().showMessage("2θ = …")` (the crosshair readout
+  writes there), and a persistent label only survives in the permanent area
 
-### 修正：左下只写「精修日志」，去掉「（跑码）」
+### Fix: bottom left now reads only "Refinement log", dropping "(code run)"
 
-- `panel.log` 中文由「精修日志（跑码）」改为「精修日志」；en/ja 同步为
-  `Refinement log` / `精密化ログ`。窗口本身的行为不变
+- `panel.log` Chinese changed from "精修日志（跑码）" to "精修日志"; en/ja synced to
+  `Refinement log` / `精密化ログ`. The window's own behavior is unchanged
 
-### 新增：帮助页的版权与许可
+### New: copyright and license in the Help page
 
-- 帮助菜单新增 **「版权与许可…」**（在「关于…」之上，带分隔线），弹
-  `LicenseDialog`：许可摘要 + 只读全文（`QTextBrowser`，Consolas 11px）
-- `AboutDialog` 按钮区同步加「查看许可全文」，两个入口同一份内容
-- `license_path()` 按 `sys._MEIPASS` → 包上两级 → exe 目录 依次查找，
-  找不到返回 `tr("license.missing")` 而不是抛异常（缺文件不该让对话框打不开）
-- 打包 `xinrefinement.spec` 的 `datas` 增加 `LICENSE` / `LICENSE-CN` →
-  `licenses/`，否则安装版里对话框只剩「文件缺失」
+- The Help menu gains **"Copyright & License…"** (above "About…", with a separator),
+  opening `LicenseDialog`: license summary + read-only full text (`QTextBrowser`,
+  Consolas 11px)
+- `AboutDialog`'s button area gains "View full license" in sync; both entries show
+  the same content
+- `license_path()` searches in order `sys._MEIPASS` → two levels above the package →
+  exe directory, and returns `tr("license.missing")` instead of raising when not found
+  (a missing file should not make the dialog fail to open)
+- Packaging: `xinrefinement.spec`'s `datas` gains `LICENSE` / `LICENSE-CN` →
+  `licenses/`, otherwise the dialog in the installed build shows only "file missing"
 
-### 新增：步骤齿轮配色（八色区分）
+### New: step gear coloring (eight colors for distinction)
 
-- `STEP_GEAR_COLORS`：`zero #1f77b4` / `bg #ff7f0e` / `scale #2ca02c` /
+- `STEP_GEAR_COLORS`: `zero #1f77b4` / `bg #ff7f0e` / `scale #2ca02c` /
   `cell #d62728` / `profile #9467bd` / `xyz #8c564b` / `micro #e377c2` /
-  `B #17becf`，字号 16 + 加粗，tooltip 给步骤名
-- 颜色只作**识别辅助**，不编码状态（跑没跑过、是否收敛仍看别的指示），
-  避免「红了就是失败」的误读
+  `B #17becf`, font size 16 + bold, tooltip gives the step name
+- Color is only an **identification aid** and does not encode state (whether a step
+  has run or has converged is still read from other indicators), avoiding the
+  misreading "red means failed"
 
-### 内部
+### Internal
 
-- `i18n/catalog.py` 三语各补约 20 键（`plot.*` 9 个 tooltip +
+- `i18n/catalog.py`: about 20 keys added per language × 3 (`plot.*` 9 tooltips +
   `plot.crosshair_hint` / `cursor_x` / `cursor_d` / `cursor_y` /
-  `peak_added` / `peak_removed`，`license.menu/title/view/head/summary/missing`）
-- 新模块 `gui/plot_tools.py`（`PlotToolBar` + `TOOL_GROUPS` + `MODE_TOOLS`）；
-  `gui/button_icons.py` 扩约 200 行（4 个配色 + 5 个绘图辅助 + 9 个按钮绘制）
-- `PatternCanvas` 新信号 `cursorInfo(str)` / `manualPeaksChanged(list)`；
-  主窗口把 `cursorInfo` 接到状态栏，与既有 `axisHint` 同一通道
-- 工具栏尺寸参数化：`_render_colored_icon(..., chip=)` /
-  `colorize_nav_toolbar(toolbar, chip=)`，主窗口传 30
-- `tests/test_v161_gui.py` 15 项（9 键齐全 / 布局顺序 / 导航条缩号 /
-  zoom-pan-reset / 三种框选 / 十字线读数与退出 / 峰位增删 / 换谱清空 /
-  状态栏标签 / 日志标题 / 齿轮八色 / 许可入口与正文 / 打包路径解析）
+  `peak_added` / `peak_removed`, `license.menu/title/view/head/summary/missing`)
+- New module `gui/plot_tools.py` (`PlotToolBar` + `TOOL_GROUPS` + `MODE_TOOLS`);
+  `gui/button_icons.py` grown by about 200 lines (4 color schemes + 5 drawing
+  helpers + 9 button renderers)
+- `PatternCanvas` new signals `cursorInfo(str)` / `manualPeaksChanged(list)`;
+  the main window connects `cursorInfo` to the status bar, on the same channel as
+  the existing `axisHint`
+- Toolbar size parameterized: `_render_colored_icon(..., chip=)` /
+  `colorize_nav_toolbar(toolbar, chip=)`, the main window passes 30
+- `tests/test_v161_gui.py` 15 items (all 9 buttons present / layout order / nav bar
+  size reduction / zoom-pan-reset / three rubber-band modes / crosshair readout and
+  exit / peak add and remove / clear on pattern change / status bar label / log
+  title / eight gear colors / license entries and body text / packaging path resolution)
 
-### 回归
+### Regression
 
-- 全量 **527 项：527 passed / 0 failed / 0 skipped，EXIT=0**
-  （`--basetemp` 干净目录；= v1.6.0 的 512 + `test_v161_gui.py` 15）
-- golden CLI Rwp 50/50 档 **3.4074156640940005**（仍未变，证实本版没碰引擎）
-- `tests/test_gui_smoke.py::test_nav_toolbar_colorized_icons` 断言 36 → 30
-  （chip 缩小一号的直接后果）
+- Full **527 items: 527 passed / 0 failed / 0 skipped, EXIT=0**
+  (`--basetemp` clean directory; = v1.6.0's 512 + `test_v161_gui.py` 15)
+- golden CLI Rwp 50/50 bin **3.4074156640940005** (still unchanged, confirming this
+  release did not touch the engine)
+- `tests/test_gui_smoke.py::test_nav_toolbar_colorized_icons` assertion 36 → 30
+  (direct consequence of the one-size chip reduction)
 
-## v1.6.0（2026-11-08 发布）：界面重构与晶胞勾选真正生效
+## v1.6.0 (released 2026-11-08) — UI restructuring and unit-cell checkboxes actually taking effect
 
-主题：**引擎不动，把结果讲清楚**。v1.5.0 让拟合质量追到 MAUD 的 +0.21 pt，
-但界面沿用了 v1.0 的信息组织方式——物相用 CIF 文件名（`1Entry_96-500-0036`）
-显示、左下是一串静态占位行、点 ▶ 时不知道这一步要修什么、定量结果和晶胞
-参数只能从摘要表里逐行找。本版按逐条点名的界面要求重做四块区域，期间
-发现并修掉一个 v1.5 遗留的**功能性缺陷**：晶胞弹窗那排勾选从来没传进引擎。
+Theme: **don't touch the engine, explain the results clearly**. v1.5.0 brought the
+fit quality to MAUD's +0.21 pt, but the UI still used v1.0's way of organizing
+information — phases were shown by CIF file name (`1Entry_96-500-0036`), the bottom
+left was a string of static placeholder rows, clicking ▶ gave no indication of what
+that step would refine, and quantitative results and unit-cell parameters could only
+be found row by row in the summary table. This release reworks four areas per the
+itemized UI requirements and, along the way, found and fixed a **functional defect**
+left over from v1.5: the checkbox row in the unit-cell dialog was never passed to
+the engine.
 
-### 设计口径（先说清楚，避免误用）
+### Design rationale (stated up front to avoid misuse)
 
-- **默认显示口径是化学式**（`TiO2`），物相名称作副标题（`TiO2 · Anatase`）；
-  `_chemical_name_mineral` 缺失时回落到 common / systematic 名称，再回落到
-  文件名——三级回落保证永远有可显示的字串
-- **化学式规整不改元素计数**：只做紧凑化（`O2 Si` → `SiO2`）与「金属 →
-  非金属 → 阴离子」组内保序再分组（`O4 S Zn` → `ZnSO4`）。**不做电负性
-  排序**——那会打乱 NCA 这类多金属体系的熟悉顺序，也可能让占位配方失真
-- **同名同质多型必须可区分**：锐钛矿/金红石/板钛矿化学式都是 `TiO2`，
-  日志里出现两个 `TiO2.a` 就分不清谁在动；显示名重名时自动补物相名称
-- **引擎默认行为逐位不变**：`cell_axes` 默认 `None`（按晶系全放开），
-  `axes_override=None` 时 `refine_cell_full` 与 v1.5 逐位一致（有测试守）
+- **The default display convention is the chemical formula** (`TiO2`), with the phase
+  name as subtitle (`TiO2 · Anatase`); when `_chemical_name_mineral` is missing it
+  falls back to the common / systematic name, then to the file name — a three-level
+  fallback guarantee that a displayable string always exists
+- **Formula normalization does not change element counts**: only compacting
+  (`O2 Si` → `SiO2`) and regrouping "metal → non-metal → anion" with order preserved
+  within groups (`O4 S Zn` → `ZnSO4`). **No electronegativity ordering** — that would
+  disrupt the familiar order of multi-metal systems such as NCA and could also
+  distort the occupancy recipe
+- **Polymorphs with the same name must be distinguishable**: anatase/rutile/brookite
+  all have the formula `TiO2`; two `TiO2.a` entries in the log make it impossible to
+  tell which is moving; when display names collide, the phase name is appended
+  automatically
+- **Engine default behavior is bit-for-bit unchanged**: `cell_axes` defaults to
+  `None` (all axes released per crystal system); with `axes_override=None`,
+  `refine_cell_full` is bit-identical to v1.5 (guarded by tests)
 
-### 新增：物相显示口径三模式（`core/profile/naming.py`）
+### New: three modes for phase display convention (`core/profile/naming.py`)
 
-- `phase_label(struct, mode)` / `label_map(structs, mode)`，
-  `mode ∈ {"formula", "label", "file"}`，`DEFAULT_PHASE_LABEL_MODE="formula"`
-- 归一化只做「紧凑化 + 三分组保序」；解析不出元素（含括号、占位符 `?`）时
-  **只紧凑化，绝不臆测**
-- `CifStructure` 新增 `name_mineral`（`parse_cif` 按
+- `phase_label(struct, mode)` / `label_map(structs, mode)`,
+  `mode ∈ {"formula", "label", "file"}`, `DEFAULT_PHASE_LABEL_MODE="formula"`
+- Normalization only does "compact + three-group order preservation"; when no element
+  can be parsed (parentheses, placeholder `?`), **only compact, never guess**
+- `CifStructure` gains `name_mineral` (`parse_cif` takes the first non-empty of
   `_chemical_name_mineral` → `_chemical_name_common` →
-  `_chemical_name_systematic` 取第一个非空）
-- 界面四处统一走它：左上物相列表、谱图下方标记条、结果摘要、两个新结果页
+  `_chemical_name_systematic`)
+- Four places in the UI use it uniformly: the phase list at upper left, the marker
+  strip below the pattern, the result summary, and the two new result pages
 
-### 新增：左下跑码窗口（MAUD 式滚动日志）
+### New: bottom-left code-run window (MAUD-style scrolling log)
 
-- 原来的 `param_tree`（静态占位列表）换成只读 `QPlainTextEdit`：
-  NoWrap + `setMaximumBlockCount(4000)`（长链不无限涨内存）+ 自动滚底
-  + 「清空日志」按钮
-- **三类行**：`=== 开始「某步」===` / `参数: 旧 → 新` / `=== 「某步」done ·
-  Rwp a → b ===`。参数行按**相对 1e-9** 过滤，浮点抖动不刷屏
-- `RefineWorker.step_snapshot = Signal(str, object, object)` 在
-  `step_finished` **之前**发出，保证参数行排在收尾行之前（顺序写反会让
-  日志读起来像「先给结论再给参数」）
-- 首次快照没有「上一帧」可比时打印**参数初值清单**——否则日志里只剩一行
-  Rwp，用户看不出这一轮到底在精修什么
-- 快照把晶胞按相摊平成 `TiO2 · Anatase.a` 这类键，能直接看出哪一相的哪根
-  轴在动
+- The former `param_tree` (static placeholder list) is replaced by a read-only
+  `QPlainTextEdit`: NoWrap + `setMaximumBlockCount(4000)` (long chains no longer grow
+  memory without bound) + auto-scroll to bottom + a "Clear log" button
+- **Three kinds of lines**: `=== start "some step" ===` / `param: old → new` /
+  `=== "some step" done · Rwp a → b ===`. Parameter lines are filtered at
+  **relative 1e-9** so floating-point jitter does not flood the log
+- `RefineWorker.step_snapshot = Signal(str, object, object)` is emitted **before**
+  `step_finished`, ensuring parameter lines come before the closing line (reversing
+  the order would make the log read as "conclusion first, then parameters")
+- When the first snapshot has no "previous frame" to compare against, it prints the
+  **list of parameter initial values** — otherwise the log would contain only a
+  single Rwp line and the user could not see what this round was actually refining
+- The snapshot flattens the unit cell per phase into keys such as
+  `TiO2 · Anatase.a`, so it is immediately visible which axis of which phase is moving
 
-### 新增：导航步骤说明窗（与跑码窗口逐条对应）
+### New: navigation step description dialog (one-to-one with the code-run window)
 
-- 点任一 ▶ 先弹 `StepDescribeDialog`：「本步精修的参数 + 当前值」「说明」
-  「确认后点开始精修」；按钮文案是「▶ 开始精修」，不是「确定」（避免用户
-  以为是改参数的确定键）
-- 八步各有清单：`zero` 给当前零点、`bg` 给背景模式/节点数/峰形基底、
-  `scale` 给每相标度、`cell` 给每相**实际会精修的分量**、`profile` 给
-  U/V/W/η/asym/宽度基、`xyz` 给超预算策略、`micro` 给 X/Y/各向异性/织构、
-  `B` 给 ΔB_iso 与 6 Å² 上界
-- 确认后把**同样的内容**写进跑码窗口再启动，起始行不重复打印
+- Clicking any ▶ first opens `StepDescribeDialog`: "parameters refined in this step +
+  current values", "description", "click Start refinement after confirming"; the
+  button reads "▶ Start refinement", not "OK" (to avoid users thinking it is the
+  confirm key for changing parameters)
+- Each of the eight steps has its checklist: `zero` gives the current zero offset,
+  `bg` the background mode/node count/peak-shape basis, `scale` the per-phase scale,
+  `cell` the **components actually refined** per phase, `profile` the U/V/W/η/asym/width
+  basis, `xyz` the over-budget policy, `micro` the X/Y/anisotropic/texture settings,
+  `B` the ΔB_iso and the 6 Å² upper bound
+- After confirmation, **the same content** is written into the code-run window before
+  starting; the header line is not printed twice
 
-### 新增：结果区两个标签页（右下）
+### New: two result-area tabs (bottom right)
 
-- **物相定量**：显示名 / wt% / e.s.d. / Z / 晶胞体积，末行给合计
-  （QPA 理论上归一到 100，合计行是最快的一致性检查）
-- **晶胞与微结构**：显示名 / 精修分量 / a b c α β γ / V / 晶粒尺寸 D /
-  微观应变 ε —— 11 列铺开，不再挤成单列
-- 各向异性相：系数是 Cholesky 3×3，界面取**奇异值均值**（体积平均）折算
-  成与各向同性同量纲的 Å / ε，并在 D 列打 `*` 标记（表头 tooltip 说明）；
-  `aniso` 存在时不再读标量 X/Y（micro 步开 Popa LB 后标量已不精修，只读
-  X/Y 会一直显示初值）
+- **Phase quantification**: display name / wt% / e.s.d. / Z / unit-cell volume, with a
+  total row at the end (QPA theoretically normalizes to 100; the total row is the
+  fastest consistency check)
+- **Unit cell and microstructure**: display name / refined components / a b c α β γ /
+  V / crystallite size D / microstrain ε — 11 columns laid out flat, no longer
+  crammed into a single column
+- Anisotropic phases: the coefficients are a Cholesky 3×3, and the UI takes the
+  **mean of the singular values** (volume average) converted to Å / ε in the same
+  dimension as the isotropic case, marking the D column with `*` (explained in the
+  header tooltip); when `aniso` is present, the scalar X/Y are no longer read (after
+  the micro step enables Popa LB the scalars are no longer refined, so reading only
+  X/Y would keep showing the initial values)
 
-### 修正：晶胞弹窗的勾选是**装饰性**的（v1.5 遗留缺陷）
+### Fix: the unit-cell dialog checkboxes were **decorative** (v1.5 leftover defect)
 
-- **现象**：`CellDialog` 把非 a/c 的复选框全部 `setEnabled(False)` 并写
-  「全 6 参数由 P1.2 开放」——那句话早已过期（`refine_cell_full` 早就按晶系
-  放开全参数）；更严重的是 `_settings["cell"]` **从来没传给引擎**，勾了也
-  白勾，精修永远按晶系全放
-- **修法**：`RefineConfig.cell_axes: dict | None`（相名 → 允许的分量）→
+- **Symptom**: `CellDialog` called `setEnabled(False)` on all checkboxes other than
+  a/c and wrote "all 6 parameters released by P1.2" — a statement long out of date
+  (`refine_cell_full` had already released all parameters per crystal system); more
+  seriously, `_settings["cell"]` **was never passed to the engine**, so checking a box
+  did nothing and refinement always released everything per crystal system
+- **Fix**: `RefineConfig.cell_axes: dict | None` (phase name → allowed components) →
   `recipe._run_cell` → `refine_cell_full(axes_override=...)` →
-  `apply_cell_scales(..., axes=...)`；`resolve_axes(system, requested)` 给出
-  唯一口径「晶系允许 ∩ 用户勾选」，非法轴静默丢弃
-- **弹窗重做**：每相一个分组框、内部 3×2 复选框网格、两列并排（四个相不再
-  要滚 24 行）；按晶系置灰非自由轴并给出原因 tooltip（立方只放开 a；
-  四方/六方/三方放开 a、c；单斜加 β；三斜全放开）
-- **自由度计数同步**：配方消息原来按晶系全放开数报「2 参」，只勾 a 时仍
-  报 2；现在按勾选报「1 参」
-- 端到端验证：`{'anatase': ('a',), 'rutile': ('a',)}` → 只动 a
-  （3.785 → 3.78215），c 保持 9.5196
+  `apply_cell_scales(..., axes=...)`; `resolve_axes(system, requested)` gives the
+  single convention "allowed by crystal system ∩ user selection", silently dropping
+  illegal axes
+- **Dialog rework**: one group box per phase, an internal 3×2 checkbox grid, two
+  columns side by side (four phases no longer require scrolling 24 rows); axes that
+  are not free in the crystal system are greyed out with a reason tooltip (cubic
+  releases only a; tetragonal/hexagonal/trigonal release a and c; monoclinic adds β;
+  triclinic releases all)
+- **Degree-of-freedom count synced**: the recipe message used to report "2 params"
+  per the crystal system's full release, and still reported 2 when only a was
+  checked; it now reports "1 param" per the selection
+- End-to-end verification: `{'anatase': ('a',), 'rutile': ('a',)}` → only a moves
+  (3.785 → 3.78215), c stays at 9.5196
 
-### 修正：编辑→物相参数编辑的版式（单列显示不完整）
+### Fix: layout of Edit → Phase parameter editing (single column was incomplete)
 
-- 页面改 `QGridLayout` 两列：晶胞 / 择优取向 / 织构与各向异性 / 微观应变 /
-  对称性 两组并排，外包 `QScrollArea`，最小宽 880 —— 多相时底部按钮不再被
-  挤出窗口
-- 相选择 combo 用显示名（`SiO2 · Quartz`），不再是 CIF 文件名
+- The page now uses a two-column `QGridLayout`: unit cell / preferred orientation /
+  texture and anisotropy / microstrain / symmetry in two paired columns, wrapped in a
+  `QScrollArea`, minimum width 880 — with multiple phases the bottom buttons are no
+  longer pushed out of the window
+- The phase-selection combo uses display names (`SiO2 · Quartz`), no longer CIF file names
 
-### 修正：谱图下方标记条标签 + 右键切换口径
+### Fix: marker strip label below the pattern + right-click to switch convention
 
-- 标记条左侧文本从 CIF 文件名改为显示名；`PatternCanvas` 新增
-  `phaseLabelMode = Signal(str)`，右键落在标记条上弹三模式菜单（当前项打勾）
-- 内部显隐/配色仍按 `CifStructure.name`：标签是给人看的，键是给程序用的，
-  两者混淆会让相开关在切换口径后失效（已加测试守）
+- The text on the left of the marker strip changed from CIF file name to display name;
+  `PatternCanvas` gains `phaseLabelMode = Signal(str)`; right-clicking the marker
+  strip pops up a three-mode menu (current item checked)
+- Internal visibility/coloring still uses `CifStructure.name`: labels are for humans,
+  keys are for the program, and conflating the two would make phase toggles fail
+  after switching convention (guarded by tests)
 
-### 内部
+### Internal
 
-- `i18n/catalog.py` 三语各补约 40 键（`panel.log` / `log.*` / `quant.*` /
-  `cell.*` / `disp.*` / `stepdesc.*`）
-- `retranslate()` 改用 `result_tabs.indexOf(widget)` 定位标签页——写死下标
-  在新增页后会整排错位（v1.5 就是这么埋的）
-- `tests/test_v16_naming_and_cell_axes.py` 17 项（命名 7 + 晶胞轴 10）、
-  `tests/test_v16_gui.py` 20 项（跑码窗口 4 / 显示口径 3 / 说明窗 4 /
-  两个新页 2 / 晶胞弹窗与端到端 7）
+- `i18n/catalog.py`: about 40 keys added per language × 3 (`panel.log` / `log.*` /
+  `quant.*` / `cell.*` / `disp.*` / `stepdesc.*`)
+- `retranslate()` now locates tabs via `result_tabs.indexOf(widget)` — hard-coded
+  indices shift the entire row once a page is added (that is how v1.5 got it wrong)
+- `tests/test_v16_naming_and_cell_axes.py` 17 items (naming 7 + cell axes 10),
+  `tests/test_v16_gui.py` 20 items (code-run window 4 / display convention 3 /
+  description dialog 4 / two new pages 2 / cell dialog and end-to-end 7)
 
-### 回归
+### Regression
 
-- 全量 **512 项：512 passed / 0 failed / 0 skipped，EXIT=0**
-  （`--basetemp` 干净目录；比 v1.5.0 的 471 项多 41 = `test_v16_*` 17+20
-  + 本机装 `gemmi` 后不再跳过的 4 项）
-- golden CLI Rwp 50/50 档 **3.4074156640940005**（M11 起的有意值，未变）
-- 修掉两条**被 skip 掩盖**的测试问题（本机装上 `gemmi` 后它们开始真跑）：
-  - `test_joint_s1` 的黄金常量仍是 M11 之前的 `3.409617019598457`，
-    实测 API 路径现在就复现 golden 的 `3.4074156640940005`（`.xinm`
-    `%.10g` 往返仍然零偏差）→ 常量对齐 golden，并在 docstring 记下这段历史
-  - `test_xyz_phase_select` 的逐位断言（`abs=0, rel=0`）在全量连跑时差
-    8e-11：策略只选相、不参与数值路径，差异来自 BLAS 多线程归约不可逐位
-    复现、25 步迭代后放大 → 放宽到相对 1e-9，步状态与降级清单仍严格相等
+- Full **512 items: 512 passed / 0 failed / 0 skipped, EXIT=0**
+  (`--basetemp` clean directory; 41 more than v1.5.0's 471 = `test_v16_*` 17+20
+  + the 4 items no longer skipped after installing `gemmi` locally)
+- golden CLI Rwp 50/50 bin **3.4074156640940005** (intentional value since M11, unchanged)
+- Fixed two test issues **masked by skipping** (they began actually running after
+  `gemmi` was installed locally):
+  - `test_joint_s1`'s golden constant was still the pre-M11 `3.409617019598457`,
+    while the measured API path now reproduces the golden `3.4074156640940005`
+    (the `.xinm` `%.10g` round-trip still has zero deviation) → the constant was
+    aligned with golden, and this history is recorded in the docstring
+  - `test_xyz_phase_select`'s bit-exact assertion (`abs=0, rel=0`) differs by 8e-11
+    when the full suite runs consecutively: the policy only selects phases and does
+    not take part in the numerical path; the difference comes from BLAS multi-thread
+    reduction not being bit-reproducible, amplified after 25 iterations → relaxed to
+    relative 1e-9, while step state and degradation list remain strictly equal
 
-## v1.5.0（2026-11-07 发布）：对标 MAUD 的拟合质量
+## v1.5.0 (released 2026-11-07): fit quality benchmarked against MAUD
 
-主题：**把「对标 MAUD」从评估结论落成产品能力**。v1.4 的对拍证明
-Popa LB 各向异性（M4）是最大的单项收益，但它只存在于基准脚本里——
-产品路径必须手工给每相写系数才生效（K17 同族缺陷）。本版把它做成
-默认可用、带护栏的能力，并把样 7 的差距定位到「方石英结构模型」。
+Theme: **turn "benchmarking against MAUD" from an evaluation conclusion into a product
+capability**. The v1.4 cross-check proved that Popa LB anisotropy (M4) is the single
+largest gain, but it existed only in benchmark scripts — on the product path it took
+effect only when coefficients were written by hand for each phase (K17, same-family
+defect). This version makes it a default-available capability with guardrails, and
+localizes sample 7's gap to "the cristobalite structural model".
 
-### 设计口径（先说清楚，避免误用）
+### Design rules (stated up front to avoid misuse)
 
-- **CLI / 库 API 仍然默认关**：`aniso_auto` 默认 `False`，golden
-  （3.409617019598457）逐位不变；**GUI 微结构齿轮出厂默认开**，
-  依据是 7 样对拍里样 1 −3.49 / 样 7 −3.81 pt
-- **新自由度必须配两条护栏**才能默认开：① 可辨识性（方向数 < 8 的相
-  自动跳过）；② **不改善就整体回退**（micro 步叠加各向异性/织构后
-  Rwp 未下降即回退到上一步参数）。护栏只在开新自由度时生效，
-  默认路径逐位不变
+- **CLI / library API remain off by default**: `aniso_auto` defaults to `False`, golden
+  (3.409617019598457) bit-identical; **the GUI microstructure gear is factory-default on**,
+  justified by sample 1 −3.49 / sample 7 −3.81 pt in the 7-sample cross-check
+- **A new degree of freedom needs two guardrails** before it may be on by default:
+  ① identifiability (phases with fewer than 8 directions are skipped automatically);
+  ② **revert wholesale if not improved** (if Rwp does not decrease after the micro step
+  stacks anisotropy/texture, revert to the previous step's parameters). The guardrails
+  take effect only when a new degree of freedom is enabled; the default path stays
+  bit-identical
 
-### 新增：M9 性能护栏——配方墙钟预算与慢步自适应降迭代
+### Added: M9 performance guardrail — recipe wall-clock budget and adaptive iteration reduction for slow steps
 
-- **动机**：ShiJK 7 样全自动实测最慢样 4 = 44.5 min（5 相 xyz 40 参降级），
-  老引擎不封顶时病态样可能 **>1 h**（GUI 忙窗期间体验不可控）
-- **机制**（`RecipeRunner(time_budget_s=...)`，core/CLI 默认 0 = 不限、
-  逐位零回归）：
-  - 连跑启动时钟；剩余预算不足的可选步（xyz/micro/B）直接按
-    `skipped` 记录并继续（不中断链）
-  - `xyz` 步：用对照 solve（或 `max_iter=1` 探针）**实测单次残差评估
-    耗时**，按「数值雅可比 ≈ 2(n_free+1) 次评估/迭代」把站点迭代上限
-    压到剩余预算内；预算连 1 次迭代都不够时整步跳过。迭代数、跳过
-    动作均写入 `StepRecord.message` 与 `runner.time_report`
-  - `micro` 步：PO 试探预计耗时超剩余预算则跳过试探；正式步迭代上限
-    同步封顶
-- **接线**：GUI 出厂默认 **45 min**（micro 齿轮新增「精修时间预算
-  (分钟，0=不限)」，`RefineWorker` 传入）；CLI `--time-budget-min`
-- **验证**：`tests/test_time_guard.py` 5 项（不限时零回归 / 极小预算
-  xyz 跳过且结果与截断链逐位一致 / micro 预算耗尽跳过 / CLI 接线 /
-  GUI 默认值）；全量回归 exit 0
+- **Motivation**: ShiJK 7-sample fully automatic measurement gives a slowest sample 4 =
+  44.5 min (5-phase xyz 40-parameter downgrade); with no cap the old engine could take
+  **>1 h** on pathological samples (experience uncontrollable during the GUI busy window)
+- **Mechanism** (`RecipeRunner(time_budget_s=...)`, core/CLI default 0 = unlimited,
+  bit-level zero regression):
+  - the clock starts when a run starts; optional steps (xyz/micro/B) with insufficient
+    remaining budget are recorded as `skipped` and the run continues (the chain is not
+    interrupted)
+  - `xyz` step: measure the **time of a single residual evaluation** with a control solve
+    (or a `max_iter=1` probe), then use "numerical Jacobian ≈ 2(n_free+1) evaluations per
+    iteration" to cap the site iteration limit within the remaining budget; if the budget
+    does not even allow 1 iteration the whole step is skipped. Iteration counts and skip
+    actions are written into `StepRecord.message` and `runner.time_report`
+  - `micro` step: if the PO trial is expected to exceed the remaining budget, skip the
+    trial; the iteration limit of the formal step is capped likewise
+- **Wiring**: GUI factory default **45 min** (the micro gear gains "refinement time budget
+  (minutes, 0=unlimited)", passed in by `RefineWorker`); CLI `--time-budget-min`
+- **Verification**: `tests/test_time_guard.py` 5 items (zero regression when unlimited /
+  xyz skipped under a tiny budget with results bit-identical to the truncated chain /
+  micro skipped when the budget is exhausted / CLI wiring / GUI default); full regression
+  exit 0
 
-### 新增：M8c 多型建议（只建议，不自动改用户 CIF）
+### Added: M8c polymorph suggestion (suggestion only, never auto-modifies the user's CIF)
 
-- **动机**：`solve()` 早就在 ΔB_iso 顶到上界时告警「可能是该相结构模型
-  与样品不符（多型/占位/无序）」，但这句话**没法行动**——用户得自己出去
-  找另一个多型的 CIF，还要确认空间群、化学式、原子数都对得上。实测依据
-  很硬：样 7 的方石英被给成高温 β（Fd-3m），样品实为低温 α（P4₁2₁2），
-  端到端 14.689 → **14.031**（−0.66 pt），且该相 ΔB_iso 撞界同时消失
-  （4.10 → 1.93）
-- **机制**（`core/refine/polymorph.py`）：
-  - 触发**三条同时满足**，宁可不报也不误报：① 该相 ΔB_iso 顶到上界；
-    ② 化学式归一化后与候选相同（`'O2 Si'`/`'SiO2'` 都归一成 `O2Si`）；
-    ③ 空间群等于该候选的**基线多型**（β 方石英 `Fd-3m`）。只看撞界会
-    误报——7 样复测里 4 个样都有相撞界，绝大多数是织构/标度吸收
-  - `apply_suggestion()` 返回替换后的相列表，**相名沿用原相**（这样结果
-    表、配方消息、QPA 的键都不会错位），其余全部取内置 CIF
-  - 只改内存模型与 `_cif_paths`，**不回写用户磁盘上的 CIF**：结构模型属于
-    实验事实（合成温度、相变史），软件无权替用户判定
-- **内置结构**：`xinrefinement/data/cristobalite_alpha.cif`，α-方石英
-  P4₁2₁2（#92），a=4.9727 Å、c=6.9257 Å，Si 4a (0.301,0.301,0)、
-  O 8b (0.239,0.104,0.179)。数值取自 COD 9017338（Lee & Xu 2019,
-  Acta Cryst. B75, 812）并**按结构参数重新编排**，不含任何 PDF 卡片
-  或 ICDD 数据
-- **接线**：GUI 结果面板新增一个默认隐藏的按钮「试用 α-方石英并重新
-  精修」（用按钮而非模态框：既不给「立刻决定」的压力，也避免离屏测试
-  里模态框阻塞事件循环）；CLI 在报告末尾追加「## 建议：相结构可能是
-  另一个多型」
-- **验证**：内置 CIF 与实测样 6 里那份 α 方石英**逐位等效**（晶胞、
-  原子列表、计算谱 max|Δ|=0，故必然复现 14.031）；
-  `tests/test_polymorph.py` 11 项 + `tests/test_polymorph_gui.py` 4 项
+- **Motivation**: `solve()` has long warned, when ΔB_iso hits its upper bound, that "this
+  phase's structural model may not match the sample (polymorph/occupancy/disorder)", but
+  that sentence **was not actionable** — the user had to go find a CIF of another
+  polymorph and confirm that space group, chemical formula and atom count all matched.
+  The measured evidence is hard: sample 7's cristobalite was given as high-temperature β
+  (Fd-3m) while the sample is actually low-temperature α (P4₁2₁2), end-to-end 14.689 →
+  **14.031** (−0.66 pt), and the ΔB_iso bound collision of that phase vanished at the
+  same time (4.10 → 1.93)
+- **Mechanism** (`core/refine/polymorph.py`):
+  - triggering requires **three conditions at once**, preferring no report over a false
+    report: ① the phase's ΔB_iso hits its upper bound; ② the normalized chemical formula
+    equals the candidate's (`'O2 Si'`/`'SiO2'` both normalize to `O2Si`); ③ the space group
+    equals that candidate's **baseline polymorph** (β cristobalite `Fd-3m`). Bound
+    collision alone would produce false positives — in the 7-sample re-run 4 samples had a
+    phase at its bound, the vast majority from texture/scale absorption
+  - `apply_suggestion()` returns the replaced phase list, **keeping the original phase
+    names** (so the result table, recipe messages and QPA keys never shift), and takes
+    everything else from the built-in CIF
+  - only the in-memory model and `_cif_paths` are changed; **the user's CIF on disk is
+    never written back**: the structural model is part of the experimental facts
+    (synthesis temperature, phase-transition history), and the software has no right to
+    decide it for the user
+- **Built-in structure**: `xinrefinement/data/cristobalite_alpha.cif`, α-cristobalite
+  P4₁2₁2 (#92), a=4.9727 Å, c=6.9257 Å, Si 4a (0.301,0.301,0), O 8b (0.239,0.104,0.179).
+  Values taken from COD 9017338 (Lee & Xu 2019, Acta Cryst. B75, 812) and **re-laid out
+  from the structural parameters**; contains no PDF card or ICDD data
+- **Wiring**: the GUI result panel gains a hidden-by-default button "Try α-cristobalite and
+  re-refine" (a button rather than a modal: it neither pressures an immediate decision nor
+  blocks the event loop in offscreen tests); the CLI appends "## Suggestion: the phase
+  structure may be another polymorph" at the end of the report
+- **Verification**: the built-in CIF is **bit-equivalent** to the α cristobalite in
+  measured sample 6 (unit cell, atom list, calculated pattern max|Δ|=0, hence 14.031 is
+  necessarily reproduced); `tests/test_polymorph.py` 11 items +
+  `tests/test_polymorph_gui.py` 4 items
 
-### 新增：M7 优化器数值参数化（λ / 雅可比步长，默认逐位不变）
+### Added: M7 optimizer numerical parameterization (λ / Jacobian step, defaults bit-identical)
 
-- **动机**：MAUD 的 `Marquardt LS` 用 λ=0.01、导数步长 1e-4；我们历史
-  默认 λ=1e-3（步长本来就是 1e-4）。要对标就得能**同参对照**，而这两个
-  值原先写死在 `lm.py` 里。
-- **改动**（三处，全部默认值 = 历史行为）：
-  - `lm.py`：`_jacobian(..., step=1e-4)`、`lm_minimize(..., lambda0=1e-3,
-    step=1e-4)`，`h = step·max(1,|x_j|)`；
-  - `optimizers.py`：`_run_lm` 从 `kw` 取 `lambda0`/`step`（不给就用默认）；
-  - `nonlinear.py`：`RefineConfig.lm_lambda0` / `lm_step`，主调与重启链
-    两处 `_optimize(...)` 都透传；
-  - CLI：`--lm-lambda` / `--lm-step`。
-- **结论：判为噪声，不设默认值改动。** 样 1 从原始起点做联合精修
-  （zero+UVW+η+asym+cell+tent19），三档 λ = 1e-3 / 3e-3 / 1e-2：
-  Rwp = 23.8142 / **23.7725** / 23.8097，**极差 0.042 pt 且非单调**，
-  QPA 最大漂移 0.08 vol% → 阻尼不是收敛瓶颈（立项书 §1.11）。
-  旋钮保留供同参对照，**默认路径一个字节不变**。
-- **附带实证 K23**：三档**全部** `restarted=True`——重启链触发条件是
-  「Rwp>10%」，真实实样永远满足，于是每次 `refine_uvw=True` 都多跑 3 个
-  重启点（本表耗时 302–511 s 里占大头）。这是真成本问题，但改它会改数值，
-  留作后续（判据应是「重启候选取优且不劣化」，而非删掉重启）。
-- **验证**：`tests/test_lm_params.py` 11 项（默认逐位不变 / λ 只影响路径
-  不影响极小 / λ 越大单步越保守 / 步长不改雅可比精度 / `_run_lm` 透传 /
-  `RefineConfig` 默认 = 历史 / config 真到 `_optimize` / CLI 标志与映射）；
-  **golden 8 档逐位对拍**（见下条绊线）；全量回归 **471 项：467 passed /
-  4 skipped，EXIT=0**（4 个 skip 全是 XinMatch 相关，理由已改为带出真实异常）。
+- **Motivation**: MAUD's `Marquardt LS` uses λ=0.01 and a derivative step of 1e-4; our
+  historical default was λ=1e-3 (the step was already 1e-4). Benchmarking requires
+  **same-parameter comparison**, and these two values were hard-coded in `lm.py`.
+- **Changes** (three places, all defaults = historical behavior):
+  - `lm.py`: `_jacobian(..., step=1e-4)`, `lm_minimize(..., lambda0=1e-3, step=1e-4)`,
+    `h = step·max(1,|x_j|)`;
+  - `optimizers.py`: `_run_lm` takes `lambda0`/`step` from `kw` (defaults if not given);
+  - `nonlinear.py`: `RefineConfig.lm_lambda0` / `lm_step`, passed through at both
+    `_optimize(...)` call sites (main call and restart chain);
+  - CLI: `--lm-lambda` / `--lm-step`.
+- **Conclusion: judged as noise, no default value change.** Sample 1 jointly refined from
+  the original starting point (zero+UVW+η+asym+cell+tent19), three λ levels = 1e-3 / 3e-3 /
+  1e-2: Rwp = 23.8142 / **23.7725** / 23.8097, **range 0.042 pt and non-monotonic**,
+  maximum QPA drift 0.08 vol% → damping is not the convergence bottleneck (project plan
+  §1.11). The knobs are kept for same-parameter comparison; **the default path is unchanged
+  by a single byte**.
+- **Incidental evidence K23**: **all three** levels gave `restarted=True` — the restart
+  chain triggers on "Rwp>10%", which real measured samples always satisfy, so every
+  `refine_uvw=True` runs 3 extra restart points (the bulk of the 302–511 s in this table).
+  This is a real cost problem, but changing it changes numbers, so it is left for later
+  (the criterion should be "restart candidates are selected and do not degrade", not
+  deleting restarts).
+- **Verification**: `tests/test_lm_params.py` 11 items (defaults bit-identical / λ only
+  affects the path, not the minimum / a larger λ gives more conservative steps / the step
+  size does not change Jacobian accuracy / `_run_lm` pass-through / `RefineConfig` defaults
+  = historical / config actually reaches `_optimize` / CLI flag and mapping); **golden
+  8-level bit comparison** (see the tripwire below); full regression **471 items: 467
+  passed / 4 skipped, EXIT=0** (all 4 skips are XinMatch-related, reasons now surface the
+  real exception).
 
-### 结论（负）：M5 峰形换基（tanθ → 1/d）三样不一致，默认仍 tan 基
+### Conclusion (negative): M5 peak-shape basis change (tanθ → 1/d) inconsistent across three samples, default stays tan-based
 
-- **动机**：tanθ 基 `FWHM² = U·tan²θ + V·tanθ + W` 在 2θ→180° **发散**
-  （纯刚玉 U=0.188 时 100° 处 FWHM ≈ 0.85°，GSAS-II 在同样位置只 0.11°）。
-  MAUD 的 `caglioti_d_dep` 用 `x = 1/d = 2sinθ/λ`，在 2θ→180° **饱和于
-  2/λ** 不爆，看起来是更合理的参数化。
-- **引擎侧新增**（默认逐位不变）：
-  - `forward.caglioti_d(wavelength, U, V, W)` 与 `width_function(prm, ...)`
-    按 `ProfileParams.width_basis`（新字段，默认 `"tan"`）分派；
-  - `size_strain.fwhm_gaussian/split_fwhm` 增加 `basis`/`wavelength` 参数
-    ——**这条是必须的**，7 样所有相都开 Popa LB，走的是 `split_fwhm`
-    分支，只改 `width_function` 等于没改（第一版就这么错过一次，
-    第一轮 «无收益» 是假阴性）；
-  - `convert_width_basis(...)`：换基时的**起点迁移**（等距 240 点做 3 参数
-    线性最小二乘）。注意它是起点迁移**不是恒等变换**——d 基拟不出 tan 基
-    的高角发散，往返不回归原系数；只有 `U=V=0`（纯常数 W）时两基等价、
-    换基精确；
-  - `lebail` / `valley` / `rbragg` 三处调用点同步分派；
-  - CLI `--width-basis {tan,d}`。
-- **判负实验**（同配方链只换基）：
+- **Motivation**: the tanθ basis `FWHM² = U·tan²θ + V·tanθ + W` **diverges** as 2θ→180°
+  (with pure corundum U=0.188, FWHM ≈ 0.85° at 100°, whereas GSAS-II gives only 0.11° at
+  the same position). MAUD's `caglioti_d_dep` uses `x = 1/d = 2sinθ/λ`, which **saturates
+  at 2/λ** as 2θ→180° instead of blowing up, and looks like the more reasonable
+  parameterization.
+- **Engine-side additions** (defaults bit-identical):
+  - `forward.caglioti_d(wavelength, U, V, W)` and `width_function(prm, ...)` dispatch on
+    `ProfileParams.width_basis` (new field, default `"tan"`);
+  - `size_strain.fwhm_gaussian/split_fwhm` gain `basis`/`wavelength` parameters — **this is
+    mandatory**; all phases in the 7 samples enable Popa LB and go through the
+    `split_fwhm` branch, so changing only `width_function` equals no change (we got this
+    wrong once in the first version, and the first round of «no gain» was a false negative);
+  - `convert_width_basis(...)`: **starting-point migration** for a basis change
+    (3-parameter linear least squares over 240 equally spaced points). Note that it is a
+    starting-point migration, **not an identity transform** — the d basis cannot fit the
+    tan basis's high-angle divergence, so the round trip does not return the original
+    coefficients; the two bases are equivalent, and the conversion exact, only when
+    `U=V=0` (pure constant W);
+  - the three call sites `lebail` / `valley` / `rbragg` dispatch accordingly;
+  - CLI `--width-basis {tan,d}`.
+- **Falsification experiment** (same recipe chain, only the basis changed):
 
-  | 样 | MAUD | tan 基 | d 基 | Δ | QPA 最大漂移 |
+  | Sample | MAUD | tan basis | d basis | Δ | Max QPA drift |
   |---|---:|---:|---:|---:|---|
   | 1 | 10.90 | 11.880 | **11.699** | −0.180 | 2.66 vol% |
   | 5 | 14.87 | 15.865 | 15.840 | −0.025 | 0.29 vol% |
   | 7 | 11.30 | 14.689 | **15.399** | **+0.710** | 2.31 vol% |
 
-  三样均值 **+0.168（更差）**，且方向不一致 → **没有任何可移植的增益**。
-- **最耐人寻味的发现**：样 7 恰恰是方石英宽包最重的样，换基后明显变差。
-  说明 tan 基在高角的发散**部分对应了真实的宽化**（近非晶相在高角的宽度
-  确实更大），强行换到有界基反而把该有的展宽压掉了。这修正了「高角发散
-  一定是模型缺陷」的直觉，也让 §1.5 的那条立项理由从「缺陷」降级为
-  「参数化偏好」。
-- **产品动作**：**默认仍 tan 基**（v1.0 起行为，逐位不变）；`--width-basis d`
-  与 `ProfileParams.width_basis` 作为实验旋钮保留，供将来换仪器/换数据集
-  复核。**不进 GUI，不进出厂默认。**
-- **验证**：`tests/test_width_basis.py` 11 项（默认逐位一致 / d 基高角有界
-  的解析上界断言 / 换算给出可用起点 / `U=V=0` 时换算精确 / CLI 接线 /
-  **基在 solve 重建中不丢** / **各向异性路径也尊重换基**）。
+  Three-sample mean **+0.168 (worse)**, and the directions are inconsistent → **no
+  portable gain whatsoever**.
+- **Most intriguing finding**: sample 7 is precisely the sample with the heaviest
+  cristobalite broad hump, and it got clearly worse after the basis change. This shows
+  that the tan basis's high-angle divergence **partly corresponds to real broadening**
+  (near-amorphous phases really are broader at high angle), and forcing a bounded basis
+  instead suppressed the broadening that ought to be there. This corrects the intuition
+  that "high-angle divergence must be a model defect", and demotes that project-plan
+  justification in §1.5 from "defect" to "parameterization preference".
+- **Product action**: **the default remains tan-based** (behavior since v1.0,
+  bit-identical); `--width-basis d` and `ProfileParams.width_basis` are kept as
+  experimental knobs for future re-checks after instrument or dataset changes. **Not in
+  the GUI, not in factory defaults.**
+- **Verification**: `tests/test_width_basis.py` 11 items (default bit-identical / analytic
+  upper-bound assertion for bounded high angle under the d basis / conversion yields a
+  usable starting point / conversion exact when `U=V=0` / CLI wiring / **the basis is not
+  lost in a solve rebuild** / **the anisotropic path also respects the basis change**).
 
-### 结论（负）：M6 逐原子 B_iso + `equalTo` 无增量，不做引擎改造
+### Conclusion (negative): M6 per-atom B_iso + `equalTo` yields no increment, no engine rework
 
-- **动机**：MAUD 的写法是每原子一个 `B_iso`、同相氧原子用 `equalTo`
-  组约束。我们只有每相 `ΔB_iso`。立项预期 −0.3~0.8 pt，「且物理更合理」。
-- **探针设计**（`tools/probe_b_atom.py`）：逐相 `ΔB_iso` 本来就是全相原子
-  一起平移，所以「每原子 B」新增的自由度只有**相内对比**——`equalTo` 按
-  元素分组时就是**阳离子 vs 氧**一维。在 `combo_tex_aniso` 的收敛点上，
-  非氧加 δ、氧加 `−δ·n_nonO/n_O`（元素加权和恒 0，与 `ΔB_iso` 严格正交），
-  其余全冻、只解 scale/背景线性层，扫 δ∈[−3,3]。
-- **结果**：样 1（5 相 30/30/30/9/12 原子）与样 7（5 相，含一个无氧的
-  CaF₂）**十相 × 90 个扫描点，最大增益 −0.0025 pt**，其余恰好落在 δ=0；
-  每条曲线都是**顶点在 δ=0 的干净抛物线**（δ=±3 时涨 2–17 pt）。
-  逐相单独扫（防止两相方向相反互相抵消）同样全零。
-- **结论**：逐相 `ΔB_iso` 已经把这一维吃干；再开槽位只增参数、不改 Rwp。
-  **P3 判负，不改结构层。** 与 IUCr 结论六（Rwp 与 QPA 解耦）一致——本
-  数据集的信噪比撑不起这么细的温度因子。探针与 `--per-phase` 留档，将来
-  有高计数率同步辐射或低温数据可原样重跑。
-- **边界**：证否的是「按元素分组」这一参数化；「桥氧/端氧分组」属于化学
-  判据问题（Sample 5 结构占位那条线），不算在 B 因子参数化里。
+- **Motivation**: MAUD's approach is one `B_iso` per atom, with oxygen atoms in the same
+  phase tied by `equalTo` group constraints. We only have a per-phase `ΔB_iso`. The
+  project plan expected −0.3~0.8 pt, "and more physical".
+- **Probe design** (`tools/probe_b_atom.py`): the per-phase `ΔB_iso` already shifts all
+  atoms of the phase together, so the only new degree of freedom in per-atom B is the
+  **intra-phase contrast** — with `equalTo` grouped by element this is one dimension,
+  **cations vs oxygen**. At the converged point of `combo_tex_aniso`, add δ to non-oxygen
+  and `−δ·n_nonO/n_O` to oxygen (the element-weighted sum is identically 0, strictly
+  orthogonal to `ΔB_iso`), freeze everything else, solve only the scale/background linear
+  layer, and scan δ∈[−3,3].
+- **Result**: sample 1 (5 phases with 30/30/30/9/12 atoms) and sample 7 (5 phases,
+  including an oxygen-free CaF₂) — **ten phases × 90 scan points, maximum gain −0.0025
+  pt**, the rest landing exactly at δ=0; every curve is a **clean parabola with its vertex
+  at δ=0** (rising 2–17 pt at δ=±3). Scanning each phase separately (to prevent two phases
+  cancelling in opposite directions) is likewise all zero.
+- **Conclusion**: the per-phase `ΔB_iso` already exhausts this dimension; opening more
+  slots only adds parameters without changing Rwp. **P3 falsified, no structural-layer
+  change.** Consistent with IUCr conclusion six (Rwp and QPA are decoupled) — the
+  signal-to-noise ratio of this dataset cannot support such fine temperature factors. The
+  probe and `--per-phase` are kept on file so that future high-count-rate synchrotron or
+  low-temperature data can be re-run as is.
+- **Boundary**: what is disproved is the "grouped by element" parameterization; "bridging
+  oxygen / terminal oxygen grouping" is a chemical-criterion question (the Sample 5
+  structural occupancy line) and is not counted under B-factor parameterization.
 
-### 修正：golden 基线自 M11 起静默过期（重建 + 加活体绊线）
+### Fix: golden baseline silently stale since M11 (rebuild + add a live tripwire)
 
-- **发现过程**：本轮为 M7 做「默认路径逐位不变」验证时，`test_joint_s1.py`
-  的 golden 断言一直是**跳过**状态。查下去发现两件事：
-  1. 跳过理由写的是「XinMatch 不在 import 路径上」，真实原因却是缺
-     **`gemmi`**（XinMatch 的依赖）。路径本身是好的，这句话误导了很久，
-     现已改成把真实异常带出来（`skip(f"XinMatch 不可用：{exc}")`）；
-  2. 由于该用例恒被跳过，**`tests/golden/method_b_roundtrip.json` 从
-     `17525bb` 起就再没被验证过**——8 档 TiO₂ round-trip 全部漂移
-     （Rwp 差 1e-5 ~ 4.5e-3），一直没人发现。
+- **How it was found**: while validating "default path bit-identical" for M7 this round,
+  the golden assertion in `test_joint_s1.py` turned out to be **skipped** all along.
+  Digging in revealed two things:
+  1. the skip reason said "XinMatch is not on the import path", but the real cause was the
+     missing **`gemmi`** (a XinMatch dependency). The path itself was fine; that sentence
+     misled for a long time and now surfaces the real exception
+     (`skip(f"XinMatch unavailable: {exc}")`);
+  2. because that case was always skipped, **`tests/golden/method_b_roundtrip.json` had
+     not been verified since `17525bb`** — all 8 TiO₂ round-trip levels had drifted (Rwp
+     difference 1e-5 ~ 4.5e-3), and nobody noticed.
 
-- **归因（用 `git worktree` 逐提交对拍，不是猜）**：`ff1f3e4`（M11 之前）
-  与 golden **8 档逐位一致**；到 `17525bb`（M11 窗口边界峰外扩
-  `_EDGE_MARGIN=3.0` + 结构因子向量化）全部改变。即**漂移来自有意的模型
-  改动**（M11 补的是窗口外强峰漏进窗内的尾巴，属通用系统偏差修正），
-  golden 只是忘了同步——**不是回归**。
+- **Attribution (via `git worktree` commit-by-commit comparison, not guesswork)**:
+  `ff1f3e4` (before M11) is **bit-identical to golden at all 8 levels**; everything
+  changed by `17525bb` (M11 window-boundary peak extension `_EDGE_MARGIN=3.0` +
+  structure-factor vectorization). That is, **the drift comes from an intentional model
+  change** (M11 added the tails of strong peaks just outside the window leaking into the
+  window, a general systematic-bias correction); golden simply was not synchronized —
+  **this is not a regression**.
 
-- **动作**：
-  - 重建 golden 为当前值（8 档全部仍在原判据内，`judge()` = ALL PASS）：
+- **Actions**:
+  - rebuild golden to the current values (all 8 levels still within the original criteria,
+    `judge()` = ALL PASS):
 
-    | wa 真值 % | Rwp 旧 | Rwp 新 | Δ |
+    | wa true value % | Rwp old | Rwp new | Δ |
     |---|---|---|---|
     | 0.1 | 3.8959708138097335 | 3.891433844001866 | −4.54e−3 |
     | 1   | 3.8782257222028744 | 3.8808825247049343 | +2.66e−3 |
@@ -614,867 +749,955 @@ Popa LB 各向异性（M4）是最大的单项收益，但它只存在于基准�
     | 95  | 3.9944324597818075 | 3.9943675584403002 | −6.49e−5 |
     | 99  | 4.042342465909672  | 4.042329832047317  | −1.26e−5 |
 
-  - 新增 `tests/test_golden_b.py`：**不依赖 XinMatch / COD 档案**，只用仓库
-    内 `tests/data/virtual_b/v50_wide.xy` + 内置锐钛/金红石 CIF，直接对拍
-    golden 的 50/50 档（`rwp`/`zero`/`U`/`V`/`W` 五项 `rel=1e-12`），
-    几秒钟跑完。这样基线再想无声漂移就会立刻红。
+  - add `tests/test_golden_b.py`: **does not depend on XinMatch / COD archives**, uses only
+    the in-repo `tests/data/virtual_b/v50_wide.xy` + built-in anatase/rutile CIFs to
+    compare directly against the golden 50/50 level (five quantities `rwp`/`zero`/`U`/`V`/`W`
+    at `rel=1e-12`), finishing in seconds. Any future silent baseline drift then turns red
+    immediately.
 
-- **给后来者的判据**：看到 golden 断言失败，先 `git log -1 -- <触发文件>`
-  找数值路径改动，**不要**直接重建 golden；本条的归因方法（worktree 逐提交
-  对拍）是可复用的。
+- **Criterion for successors**: when a golden assertion fails, first run
+  `git log -1 -- <trigger file>` to find the numerical-path change, and **do not** rebuild
+  golden directly; the attribution method here (worktree commit-by-commit comparison) is
+  reusable.
 
-### 修正：M8d 背景节点数的界面口径（节点上限 30 → 60、初值不再掉到 3）
+### Fix: M8d UI convention for background node count (node cap 30 → 60, initial value no longer drops to 3)
 
-- **动机**：样 7 的单项最优变体就是背景加密（19 → 45 节点，−0.55 pt），
-  7 样全量复测（立项书 §1.9）也确认 7 个样里 6 个改善。但这条路**在界面上
-  根本走不通**，两处缺陷：
-  1. 背景齿轮的节点数上限写死 **30**。5–120° 每 2.5° 一节点要 46 个，
-     旧上限对应的最密档是每 3.8°；
-  2. 弹窗用 `cur.get("n_bg", 3)` 作初值，而 3 是 cheb 时代的代码兜底。
-     用户**第一次**打开背景齿轮、什么都不改直接点「确定」，就把出厂
-     自适应值 19 默默降成 3——背景灵活性骤降，界面上看不出任何异常。
-- **改动**：
-  - `dialogs.py`：节点数上限 `30 → 60`，并给 tooltip 说明「≈1 节点/6°
-    是出厂自适应值，背景起伏明显或荧光本底重时可试 1.5–2 倍」
-  - `main_window.py`：新增 `_refine_window()` 把精修窗口口径收敛到一处
-    （micro 齿轮 > bg 齿轮 > 兜底 5–90°），`_make_inputs()` 与弹窗初值
-    共用；`open_step_settings()` 对 `bg` 步用 `setdefault` 灌入
-    `adaptive_n_bg(...)`，用户显式设过的值不被覆盖
-- **不改默认值**：7 样全量实测（立项书 §1.9）显示 2.5° 档能把均值从
-  11.43 拉到 **10.90，字面上反超 MAUD 0.30 pt**，但这是**假反超**——
-  QPA 会崩：样 4 石英 18.09 → **10.49 vol%（−7.60）**、样 7 一个节点之差
-  让第一/第二相各甩 **6.0 / 6.4 vol%**。机理是多余本底节点与宽峰/重叠峰
-  尾共线，强度在峰与本底之间无代价搬运，Rwp 必降而相间标度失去可辨识性。
-  中间档 4.0°（29 节点）也不划算：样 1 拿 63% 的收益付 62% 的漂移
-- **验证**：`tests/test_bg_nodes.py` 6 项（46 节点可填、显式值不被覆盖、
-  窗口优先级、弹窗初值=自适应、非 bg 步不灌初值）
-  （按钮默认隐藏 / 命中显示并完成替换与重跑 / 未撞界不显示 / 新一轮
-  开始清除陈旧建议）
+- **Motivation**: the best single-variant for sample 7 is a denser background (19 → 45
+  nodes, −0.55 pt), and the full 7-sample re-measurement (project plan §1.9) also confirms
+  improvement in 6 of 7 samples. But this path **was simply unreachable in the UI**, due to
+  two defects:
+  1. the background gear's node cap was hard-coded to **30**. At 5–120° with one node every
+     2.5° you need 46, and the densest level under the old cap was one node per 3.8°;
+  2. the dialog used `cur.get("n_bg", 3)` as the initial value, and 3 is a legacy fallback
+     from the cheb era. The **first** time a user opens the background gear and clicks "OK"
+     without changing anything, the factory adaptive value 19 is silently reduced to 3 —
+     background flexibility collapses, with nothing abnormal visible in the UI.
+- **Changes**:
+  - `dialogs.py`: node cap `30 → 60`, plus a tooltip "≈1 node/6° is the factory adaptive
+    value; try 1.5–2× when background undulation is pronounced or the fluorescence
+    background is heavy"
+  - `main_window.py`: add `_refine_window()` to consolidate the refinement-window
+    convention in one place (micro gear > bg gear > fallback 5–90°), shared by
+    `_make_inputs()` and the dialog initial value; `open_step_settings()` uses `setdefault`
+    to inject `adaptive_n_bg(...)` for the `bg` step, so values the user set explicitly are
+    not overwritten
+- **Defaults unchanged**: the full 7-sample measurement (project plan §1.9) shows that the
+  2.5° level pulls the mean from 11.43 to **10.90, literally 0.30 pt ahead of MAUD**, but
+  this is a **false overtake** — QPA collapses: sample 4 quartz 18.09 → **10.49 vol%
+  (−7.60)**, and for sample 7 a single node's difference throws the first/second phase by
+  **6.0 / 6.4 vol%**. The mechanism is that surplus background nodes are collinear with the
+  tails of broad/overlapping peaks, intensity moves between peaks and background at no
+  cost, so Rwp necessarily drops while inter-phase scale loses identifiability. The
+  intermediate 4.0° level (29 nodes) is also not worth it: sample 1 takes 63% of the gain
+  while paying 62% of the drift
+- **Verification**: `tests/test_bg_nodes.py` 6 items (46 nodes can be entered, explicit
+  values not overwritten, window priority, dialog initial value = adaptive, no initial
+  value injected for non-bg steps)
+  (button hidden by default / shown on hit with replacement and re-run completed / not
+  shown when no bound collision / stale suggestions cleared when a new round starts)
 
-### 新增：M8b 逐相各向同性尺寸/应变（MAUD `Delft` 口径）
+### Added: M8b per-phase isotropic size/strain (MAUD `Delft` convention)
 
-- **动机**：`ProfileParams.X/Y` 是**全谱唯一标量**，而实测多相样各相微
-  结构可差三个量级。MAUD 的样 7 模型就是**逐相分开**的：石英
-  `Delft/Isotropic` size 7586 Å、strain 4.0e-7（等于不展宽），方石英
-  同样 `Delft` 但 size 27.17 Å、strain 0.01636（21.9° 处 FWHM≈3.3°，
-  本质是个近非晶宽包）；其余三相走 Popa LB。此前我们只能二选一：全相
-  6 参 Popa LB，或全相不展宽
-- **后果（实测）**：全相 Popa LB 时方石英的 6 参张量跑飞——某方向
-  FWHM 被撑到 **1.87°**，而谱上同位置只有 **0.24°**（4.8 倍过宽）；
-  模型随即用 19 维 EWIMV 织构在残差里乱填（相邻 bin 在 0.1 与 2.27
-  之间跳）。逐相 2 参因此不只是「更贴 MAUD」，而是**给展宽加结构性
-  约束**
-- **机制**：
-  - `ProfileParams.size_strain = {phase: (X_deg, Y_deg)}`，`X = 4ε`、
-    `Y = Kλ/D`，与标量 X/Y 同单位同语义
-  - 前向取值优先级：`aniso` 命中该相 → 用逐峰方向值；否则命中
-    `size_strain` → 用该相 (X, Y)；否则用全局标量 `X`/`Y`。故
-    「方石英逐相宽包 + 其余相吃全局标量」可并存
-  - 精修开关 `RefineConfig.refine_size_strain`（默认 **False**）：开启
-    后在参数注册表里为每个**已给起点**的相追加 2 个槽位
-    `phase[名].micro.X/.Y`；默认关时无槽位，向量与边界逐位不变
-- **验证**：`tests/test_size_strain_phase.py` 5 项（单相时与标量 X/Y
-  逐位等价 / 只影响被点名相 / aniso 优先 / 注册表槽位与 pack→unpack
-  往返 / 默认关无槽位但仍施加）；核心回归 139 项全过，golden 未漂
+- **Motivation**: `ProfileParams.X/Y` are **whole-pattern unique scalars**, whereas in
+  measured multiphase samples the microstructure of different phases can differ by three
+  orders of magnitude. MAUD's sample 7 model is **split per phase**: quartz
+  `Delft/Isotropic` size 7586 Å, strain 4.0e-7 (i.e. no broadening), cristobalite also
+  `Delft` but size 27.17 Å, strain 0.01636 (FWHM≈3.3° at 21.9°, essentially a
+  near-amorphous broad hump); the other three phases use Popa LB. Until now we could only
+  choose one of two: 6-parameter Popa LB for all phases, or no broadening for all phases
+- **Consequence (measured)**: with Popa LB for all phases, the 6-parameter tensor of
+  cristobalite ran away — FWHM in one direction was inflated to **1.87°**, whereas the
+  pattern shows only **0.24°** at the same position (4.8× too broad); the model then
+  filled the residual arbitrarily with a 19-dimensional EWIMV texture (adjacent bins
+  jumping between 0.1 and 2.27). The 2 parameters per phase therefore do not merely "match
+  MAUD better" but **impose a structural constraint on broadening**
+- **Mechanism**:
+  - `ProfileParams.size_strain = {phase: (X_deg, Y_deg)}`, `X = 4ε`, `Y = Kλ/D`, same
+    units and semantics as the scalar X/Y
+  - forward evaluation priority: if `aniso` hits that phase → use the per-peak-direction
+    values; else if `size_strain` hits → use that phase's (X, Y); else use the global
+    scalars `X`/`Y`. So "per-phase broad hump for cristobalite + global scalars for the
+    remaining phases" can coexist
+  - refinement switch `RefineConfig.refine_size_strain` (default **False**): when enabled,
+    2 slots `phase[name].micro.X/.Y` are appended in the parameter registry for every phase
+    **with a given starting value**; when off by default there are no slots, and the vector
+    and bounds are bit-identical
+- **Verification**: `tests/test_size_strain_phase.py` 5 items (bit-equivalent to scalar
+  X/Y in the single-phase case / only affects the named phases / aniso takes priority /
+  registry slots and pack→unpack round trip / off by default but still applied); core
+  regression 139 items all pass, golden not drifted
 
-### 新增：样 7 取证工具（诊断用，不进产品路径）
+### Added: sample 7 forensics tools (diagnostic only, not on the product path)
 
-- `tools/diag_peak_width.py`：逐峰把 FWHM 拆成 Caglioti 高斯项与 TCH
-  洛伦兹项（开 aniso 时后者逐峰由 `aniso_xy` 按晶向取值），并与实测
-  半高宽比。踩坑两条：① Kα1/Kα2 是**同一 hkl** 的两条线（间隔 0.08°、
-  Kα2 约 50% 高），不去重会互相判成「邻峰污染」；② 实测窗必须按
-  `4×FWHM_calc` 自适应，固定窗时 5 相混合谱 12/12 全被拦掉
-- `tools/eval_sample7_bg.py`：`n_bg` 扫描（19/31/45）。tent 节点走
-  线性层解析求解，**加节点不增加残差评估次数**，故近乎免费；此前只
-  试过 `interp` + 更稀疏的 12 节点，没回答「更密能不能行」。定位为
-  诊断——密背景会吸走重叠峰强度、漂 QPA
-- `tools/eval_sample7_sizestrain.py`：一比一复刻 MAUD 逐相混合模型
-  （三相 Popa LB + 石英/方石英各向同性），两个变体（按 MAUD 数值播种
-  / 中性起点）
+- `tools/diag_peak_width.py`: split the FWHM per peak into the Caglioti Gaussian term and
+  the TCH Lorentzian term (when aniso is on the latter is taken per peak from `aniso_xy`
+  by crystallographic direction), and compare against the measured half-width. Two
+  pitfalls: ① Kα1/Kα2 are **two lines of the same hkl** (0.08° apart, Kα2 about 50%
+  height); without de-duplication they are judged as "neighbour peak contamination";
+  ② the measurement window must be adaptive at `4×FWHM_calc`; with a fixed window all
+  12/12 cases in the 5-phase mixed pattern were rejected
+- `tools/eval_sample7_bg.py`: `n_bg` scan (19/31/45). tent nodes are solved analytically
+  through the linear layer, so **adding nodes does not increase the number of residual
+  evaluations** and is nearly free; previously only `interp` + sparser 12 nodes had been
+  tried, which never answered "does denser work". Positioned as diagnostics — a dense
+  background absorbs overlapping-peak intensity and drifts QPA
+- `tools/eval_sample7_sizestrain.py`: one-to-one replica of MAUD's per-phase mixed model
+  (three phases Popa LB + isotropic quartz/cristobalite), two variants (seeded with MAUD
+  values / neutral starting point)
 
-### 结论：样 7 逐项归因（M8b 取证，负结果为主）
+### Conclusion: itemized attribution for sample 7 (M8b forensics, mostly negative results)
 
-样 7 是唯一还剩 +3 以上的样（14.689 vs MAUD 11.30）。这一轮在同一配方链
-上只改一处，逐项判决（明细见 `docs/立项-MAUD对标改进计划-v1.md` §1.8）：
+Sample 7 is the only sample still more than +3 above (14.689 vs MAUD 11.30). This round
+changed one thing at a time on the same recipe chain; verdicts item by item (details in
+`docs/立项-MAUD对标改进计划-v1.md` §1.8):
 
-- **有效**：α 方石英（P4₁2₁2）替换 β（Fd-3m）→ **14.031**（−0.66 pt，
-  gap +3.39 → +2.73），且 `ΔB_iso` 撞界消失（方石英 4.10 → 1.93）。
-  对照组「β 不换相」逐位复现 14.689218140503746，故收益归因干净
-- **无效或更差**：全关各向异性 +3.53、球谐 8 阶替 EWIMV +1.52、复刻
-  MAUD 的三相 LB + 两相各向同性混合模型 +1.92（各向同性版方石英 X/Y
-  双双撞上界）；B_iso 上界从 6 收到 1 Å² 只差 0.04 pt
-- **单调有效但不能叠加**：背景节点 19→31→45 为 14.689/14.471/14.142，
-  但与 α 叠加反而变差（14.095）。方向上更接近 MAUD 的插值背景，改为
-  全样生效的默认值需先重测 7 样，列为候选
-- **结论**：宽度模型这条线**关闭**——三个方向全部更差；MAUD 的 32 vol%
-  方石英是其「27.2 Å/1.64% 近非晶宽包」参数化撑出来的（21.9° 处
-  FWHM≈3.3°，比谱上任何可观测峰宽大一个量级），QPA 上不可当真，我们
-  7% 尖峰的方石英更可辩护，不为对齐而复制
+- **Effective**: replacing β cristobalite (Fd-3m) with α (P4₁2₁2) → **14.031** (−0.66 pt,
+  gap +3.39 → +2.73), and the `ΔB_iso` bound collision disappears (cristobalite 4.10 →
+  1.93). The control "β, no phase replacement" reproduces 14.689218140503746 bit-exactly,
+  so the gain attribution is clean
+- **Ineffective or worse**: anisotropy fully off +3.53, 8th-order spherical harmonics
+  replacing EWIMV +1.52, replica of MAUD's three-phase LB + two-phase isotropic mixed model
+  +1.92 (in the isotropic version both X/Y of cristobalite hit their upper bounds);
+  tightening the B_iso upper bound from 6 to 1 Å² differs by only 0.04 pt
+- **Monotonically effective but not additive**: background nodes 19→31→45 give
+  14.689/14.471/14.142, but stacking with α makes it worse instead (14.095). The direction
+  is closer to MAUD's interpolated background; making it a default that applies to all
+  samples requires re-measuring the 7 samples first, so it is listed as a candidate
+- **Conclusion**: the width-model line is **closed** — all three directions are worse;
+  MAUD's 32 vol% cristobalite is propped up by its "27.2 Å/1.64% near-amorphous broad hump"
+  parameterization (FWHM≈3.3° at 21.9°, an order of magnitude broader than any observable
+  peak width in the pattern) and cannot be taken seriously for QPA; our 7% sharp-peak
+  cristobalite is more defensible, and we do not copy it just to align
 
-### 修复：窗口边界「峰泄漏」（M11）
+### Fix: window-boundary "peak leakage" (M11)
 
-- **现象**：修完 M10 后残差诊断显示 **140–150° 吃掉了全谱 18.8% 的加权
-  SS**（局部 Rwp 27.98%），而 5–140° 各 15° 区间只有 5.6–14.4%。
-  `149.5–150°` 观测峰高 388、计算只有 148
-- **根因**：反射枚举严格按 `[tmin, tmax]` 过滤，窗口外一点点位置的强峰
-  被**整体丢掉**，而它在窗口内仍有可观尾巴。实测同一区间：`tmax=150`
-  计算谱最大 142370、`tmax=152` 时 300805（**差 2.1 倍**）
-- **修复**：`_phase_peaks` 枚举窗口外扩 `forward._EDGE_MARGIN = 3.0°`；
-  累加侧 `_window_slice` 本就会把峰裁到网格内，不会引入窗口外强度
-- **效果**：纯刚玉 **14.632 → 13.642%**（−0.99 pt）；IUCr 1g base
-  14.029 → 13.955%。护栏 `tests/test_edge_peaks.py` 3 项
+- **Symptom**: after M10 the residual diagnostics showed that **140–150° consumed 18.8% of
+  the whole-pattern weighted SS** (local Rwp 27.98%), whereas each 15° interval in 5–140°
+  has only 5.6–14.4%. At `149.5–150°` the observed peak height is 388 but the calculation
+  gives only 148
+- **Root cause**: reflection enumeration filtered strictly by `[tmin, tmax]`, so a strong
+  peak located slightly outside the window was **dropped entirely**, although it still has
+  a considerable tail inside the window. Measured over the same interval: `tmax=150` gives
+  a calculated pattern maximum of 142370, `tmax=152` gives 300805 (**a 2.1× difference**)
+- **Fix**: extend the `_phase_peaks` enumeration window by `forward._EDGE_MARGIN = 3.0°`;
+  the accumulation side `_window_slice` already clips peaks to the grid, so no out-of-window
+  intensity is introduced
+- **Effect**: pure corundum **14.632 → 13.642%** (−0.99 pt); IUCr 1g base 14.029 → 13.955%.
+  Guardrail `tests/test_edge_peaks.py` 3 items
 
-### 新增：配方「分步投影」修复（M10/M10b，重大修复）+ 结构因子向量化
+### Added: recipe "stepwise projection" fix (M10/M10b, major fix) + structure-factor vectorization
 
-**背景**：v1.5 立项文档 §1.4 把「IUCr 单相纯刚玉 28.58% vs GSAS-II
-15.8%」归因为「峰形模型短板 + LM 收敛判据过松」。**该归因是错的**，
-真因是配方层的分步投影。
+**Background**: the v1.5 project document §1.4 attributed "IUCr single-phase pure corundum
+28.58% vs GSAS-II 15.8%" to "peak-shape model shortcomings + too loose an LM convergence
+criterion". **That attribution was wrong**; the real cause is stepwise projection at the
+recipe layer.
 
-- **根因链**（三层叠加）：`zero` 步在默认峰宽下精修 → zero 漂到 −0.1932
-  （真值 −0.064）；`bg` 步把零点和峰宽一起拉，停在 −0.1601；`cell` /
-  `profile` 步**冻结 zero** → 0.096° 的零点偏差被晶胞（a/c 偏小
-  0.12%/0.18%）和 `asym`（顶到 −0.05 下界）分头吸收 → Rwp 卡 **28.58%**
-- **决定性对照**：`solve()` 层联合精修 `cell+U/V/W+η+asym+zero`，三种
-  起点收敛到 14.633 / 14.637 / 14.635% → **与起点无关**，不是优化器缺陷
-- **修复**（`core/refine/recipe.py`）：
-  - `profile` 步 `refine_zero=True`（**决定性**）、`refine_cell=True`、
+- **Root-cause chain** (three layers stacking): the `zero` step refines at the default peak
+  width → zero drifts to −0.1932 (true value −0.064); the `bg` step pulls zero and peak
+  width together, stopping at −0.1601; the `cell` / `profile` steps **freeze zero** → the
+  0.096° zero offset is absorbed separately by the unit cell (a/c low by 0.12%/0.18%) and
+  `asym` (hitting the −0.05 lower bound) → Rwp stuck at **28.58%**
+- **Decisive control**: joint refinement at the `solve()` level of `cell+U/V/W+η+asym+zero`
+  converges to 14.633 / 14.637 / 14.635% from three starting points → **independent of the
+  starting point**, so it is not an optimizer defect
+- **Fix** (`core/refine/recipe.py`):
+  - `profile` step: `refine_zero=True` (**decisive**), `refine_cell=True`,
     `refine_eta/asym=True`
-  - `micro`/`B` 步「不改善就回退」改为**无条件**（原只在开新自由度时生效，
-    导致 28.58% 被 B 步恶化到 37.42% 仍被保留）
-  - `profile` 步结束后把 `PhaseInfo.cell` 回写 `runner.phases`，否则
-    `solve` 内部精修的 `(fa, fc)` 在下一步丢失
-- **结果**：单相纯刚玉 **28.582% → 14.632%**（−13.95 pt，反超 GSAS-II
-  15.8%）；IUCr Sample 1 八组 base/combo **8/8 全部改善**，其中 1b
-  （刚玉 94 wt%）base 29.99 → **13.95**、combo 29.24 → **13.44**
-- **`width_probe` 实测无收益**：zero 放开后开/关收敛结果逐位相同，配方
-  默认不再启用（保留字段供单点实验）
-- **7 样 MAUD 对拍复测**（`combo_tex_aniso`，同 §1.1 口径）：均值
-  **12.56 → 11.43%**，与 MAUD（11.20）的差距 **+1.36 → +0.23 pt**；
-  样 3 反超 2.17 pt、样 6 反超 2.64 pt、样 7 从 +5.89 收到 +3.39；
-  唯一样 4 小幅变差（+0.23 → +0.30，xyz 40 参收益不可加，K28）
-  **全程没有引入任何新物理模型**，只是不再把强相关参数分步锁死
-- **性能悬崖**：`compute_peaks` 的三重 Python 循环单次 443 ms、占残差
-  评估 86%（H=19 → 59319 次迭代，仅约 2100 个落在窗口内）。改为整体
-  向量化后 **26–37×**（刚玉 428 ms → 16 ms），端到端 `solve` 9.2×、
-  配方 `profile` 步 287 s → 32 s。数值**逐位等价**（峰位 Δ=0、强度相对差
-  ≤4e-16、PO `detail` 明细全同），护栏 `tests/test_peaks_vectorized.py`
-  ｜ 超 4M 倒易点的大晶胞自动退回循环版
+  - `micro`/`B` steps: "revert if not improved" becomes **unconditional** (it previously
+    applied only when opening a new degree of freedom, so 28.58% worsened by the B step to
+    37.42% was still kept)
+  - after the `profile` step, write `PhaseInfo.cell` back into `runner.phases`, otherwise
+    the `(fa, fc)` refined inside `solve` is lost in the next step
+- **Result**: single-phase pure corundum **28.582% → 14.632%** (−13.95 pt, overtaking
+  GSAS-II's 15.8%); IUCr Sample 1 eight base/combo groups **8/8 all improved**, among them
+  1b (corundum 94 wt%) base 29.99 → **13.95**, combo 29.24 → **13.44**
+- **`width_probe` measured as no gain**: with zero released, on/off converge bit-identically,
+  so the recipe no longer enables it by default (the field is kept for single-point
+  experiments)
+- **7-sample MAUD re-check** (`combo_tex_aniso`, same convention as §1.1): mean
+  **12.56 → 11.43%**, gap to MAUD (11.20) **+1.36 → +0.23 pt**; sample 3 overtakes by 2.17
+  pt, sample 6 by 2.64 pt, sample 7 from +5.89 to +3.39; only sample 4 slightly worse
+  (+0.23 → +0.30, the xyz 40-parameter gain is not additive, K28)
+  **no new physical model was introduced at any point**; strongly correlated parameters are
+  simply no longer locked step by step
+- **Performance cliff**: the triple Python loop in `compute_peaks` took 443 ms per call, 86%
+  of the residual evaluation (H=19 → 59319 iterations, only about 2100 inside the window).
+  Full vectorization gives **26–37×** (corundum 428 ms → 16 ms), end-to-end `solve` 9.2×,
+  recipe `profile` step 287 s → 32 s. Numerically **bit-equivalent** (peak positions Δ=0,
+  intensity relative difference ≤4e-16, PO `detail` entries all identical), guardrail
+  `tests/test_peaks_vectorized.py` | large cells exceeding 4M reciprocal points
+  automatically fall back to the loop version
 
-### 新增：xyz 步欠定「按相降级」（M9，重大修复）
+### Added: xyz step underdetermined "per-phase downgrade" (M9, major fix)
 
-- **发现**：查 `combo_tex_aniso.json` 逐步记录，**7 样里 4 个样的 xyz 步
-  是 `failed`、一个原子坐标都没精修**——样 4(45)、样 5(87)、样 6(63)、
-  样 7(48) 的自由坐标合计都超过 `xyz_max_params=40`。两个最大缺口样
-  （5:+2.33、7:+5.89）恰好都在里面
-- **根因**：v1.4 护栏把**所有相**的 `n_free` 求和后与预算比较，超限就整步
-  判失败。但多数情况下**单个最大相放得下预算**：样 7 高岭石 39 ≤ 40、
-  样 4 是 34 ≤ 40
-- **增量验证**（`tools/eval_sample7_xyz.py`，基准 26.709）：排除高岭石精修
-  其余 4 相只值 −0.27 pt，**只精修高岭石值 −1.87 pt（24.835）**。
-  → 「按自由坐标少的相优先」是错策略，值钱的正是被求和挤出去的大相
-- **实现**：`RefineConfig.xyz_phase_select` 默认 `"largest"`（`n_free` 降序
-  贪心保留，其余相转 `fixed_structures` 常量基，站点引擎原生支持），另有
-  `"small"`（诊断对照）、`"off"`（保留 v1.4 整步 failed）。
-  **只在 `n_free > xyz_max_params` 时生效，不超限路径逐位不变**（测试断言
-  `off`/`largest` 的 `params` 与 Rwp 逐位相等，golden 不漂）。
-  这不是「加自由度」而是修复整步失败，故默认开；被跳过的相写入
-  `xyz_report["dropped_phases"]` 与配方消息，回退护栏照旧
-- 接线：CLI `--xyz-phase-select {off,largest,small}`；GUI micro 齿轮
-  「xyz 欠定策略」下拉。`tests/test_xyz_phase_select.py` 8 项（默认策略、
-  off 保持旧行为、largest/small 选相相反、无相可放仍失败、不超限逐位零回归、
-  跳过相有记录、合成真值端到端回收）
-- **K27：MAUD Delft 尺寸应变参数不可移植**。`7#.par` 方石英 D=27.168 Å /
-  ε=0.01636 换算为 X=3.7502°、Y=2.9241°，边界够得着但配方起点差 58 倍。
-  `tools/eval_sample7_broad.py` 在 M4/M5 同口径（β 基线 18.059、α 15.592）
-  下扫描：**所有宽包组合都劣于各自基线**（MAUD 参数 β 19.008 / α 18.567）；
-  唯一「降 1.24 pt」的 D=200/ε=0 组 ΔB_iso 直接撞 6 Å²，按验收标准不采纳，
-  且 MAUD 参数把方石英 wt% 压到 0.0（变相删相）→ **宽包路线关闭**
-- 诊断工具：`tools/eval_sample7_broad.py`（`d`/`strain`/`alpha`/`m45`）、
-  `tools/eval_sample7_xyz.py`（`--list` / 分组，`s7_xyz.json`）。
-  两者都只读，不改产品代码
-- **4 样端到端复测**（`--model ewimv`，与 `combo_tex_aniso` 同一配方链）：
-  样 5 17.204 → **16.026（−1.18）**、样 6 12.603 → **12.207（−0.40）**、
-  样 7 17.193 → **16.930（−0.26）**；**样 4 未纳入**：降级到 40 参
-  （34 参白云母 + 小相）后跑了 77 min 仍无结果（CPU 持续推进、非死循环），
-  已终止——该样原本只差 MAUD 0.23 pt，是 4 个 failed 样里边际价值最低的。
-  样 1/2/3 的 `n_free ≤ 40`，逐位零回归。三样 `ΔB_iso` 均未撞界。
-  除样 4 外均值 **12.29%**（原 12.56，gap +1.36 → +1.09）；
-  叠加 M8 的 α 方石英后最佳组合 **12.07%**（gap +0.87）
-- **收益不可加 + 性能代价（M9 待办护栏）**：样 7 的 xyz 步自己降 1.51 pt，
-  最终只剩 0.26 pt（micro 步把起点差吸收掉了）；总耗时 ~17 → 34 min（翻倍）。
-  **样 4 的 40 参降级路径 > 77 min 无结果**，说明降级不能无差别全开，
-  下一步需按样判据（保留相的独立反射数/参数数，或给降级单独设更低的
-  `max_iter`）；在此之前这类样可用 `--xyz-phase-select off` 退回 v1.4。
-  样 7 的 `ΔB_iso` 撞 6.0 是固有方石英模型问题（旧版 combo 已 5.9993），
-  非 M9 引入
+- **Finding**: inspecting the step-by-step records of `combo_tex_aniso.json`, **4 of the 7
+  samples had a `failed` xyz step, refining not a single atomic coordinate** — samples
+  4(45), 5(87), 6(63), 7(48) all had total free coordinates above `xyz_max_params=40`. The
+  two samples with the largest gaps (5:+2.33, 7:+5.89) are exactly among them
+- **Root cause**: the v1.4 guardrail summed `n_free` over **all phases** and compared with
+  the budget, failing the whole step when over. But in most cases **the single largest phase
+  fits the budget**: sample 7 kaolinite 39 ≤ 40, sample 4 is 34 ≤ 40
+- **Incremental verification** (`tools/eval_sample7_xyz.py`, baseline 26.709): refining the
+  other 4 phases while excluding kaolinite is worth only −0.27 pt, whereas **refining
+  kaolinite alone is worth −1.87 pt (24.835)**. → "prefer phases with fewer free
+  coordinates" is the wrong strategy; the value lies precisely in the large phase squeezed
+  out by the sum
+- **Implementation**: `RefineConfig.xyz_phase_select` defaults to `"largest"` (greedy
+  retention in descending `n_free`, other phases turned into `fixed_structures` constant
+  bases, natively supported by the site engine), plus `"small"` (diagnostic control) and
+  `"off"` (keeping the v1.4 whole-step `failed`). **Takes effect only when
+  `n_free > xyz_max_params`; paths under the limit are bit-identical** (the test asserts
+  that `params` and Rwp are bit-equal for `off`/`largest`, golden does not drift). This is
+  not "adding degrees of freedom" but fixing a whole-step failure, hence on by default;
+  skipped phases are written into `xyz_report["dropped_phases"]` and the recipe message,
+  and the revert guardrail stays as before
+- Wiring: CLI `--xyz-phase-select {off,largest,small}`; GUI micro gear "xyz underdetermined
+  strategy" dropdown. `tests/test_xyz_phase_select.py` 8 items (default strategy, off keeps
+  old behavior, largest/small select opposite phases, still fails when no phase fits,
+  bit-level zero regression under the limit, skipped phases recorded, end-to-end recovery
+  of synthetic truth)
+- **K27: MAUD Delft size/strain parameters are not portable**. `7#.par` cristobalite
+  D=27.168 Å / ε=0.01636 converts to X=3.7502°, Y=2.9241°, within reach of the bounds but
+  the recipe starting point differs by 58×. `tools/eval_sample7_broad.py` scanned under the
+  same M4/M5 convention (β baseline 18.059, α 15.592): **all broad-hump combinations are
+  worse than their respective baselines** (MAUD parameters 19.008 for β / 18.567 for α);
+  the only group that "drops 1.24 pt" (D=200/ε=0) has ΔB_iso hitting 6 Å² outright, not
+  adopted under the acceptance criteria, and the MAUD parameters push cristobalite wt% down
+  to 0.0 (deleting the phase in disguise) → **broad-hump route closed**
+- Diagnostic tools: `tools/eval_sample7_broad.py` (`d`/`strain`/`alpha`/`m45`),
+  `tools/eval_sample7_xyz.py` (`--list` / grouping, `s7_xyz.json`). Both are read-only and
+  do not modify product code
+- **4-sample end-to-end re-check** (`--model ewimv`, same recipe chain as `combo_tex_aniso`):
+  sample 5 17.204 → **16.026 (−1.18)**, sample 6 12.603 → **12.207 (−0.40)**, sample 7
+  17.193 → **16.930 (−0.26)**; **sample 4 excluded**: after downgrading to 40 parameters
+  (34-parameter muscovite + small phases) it ran 77 min with no result (CPU kept advancing,
+  not a dead loop) and was terminated — that sample was only 0.23 pt from MAUD, the lowest
+  marginal value among the 4 failed samples. Samples 1/2/3 have `n_free ≤ 40` and are
+  bit-level zero regression. `ΔB_iso` in all three samples did not hit bounds. Mean
+  excluding sample 4 **12.29%** (was 12.56, gap +1.36 → +1.09); best combination stacked
+  with M8's α cristobalite **12.07%** (gap +0.87)
+- **Gains not additive + performance cost (M9 pending guardrail)**: sample 7's xyz step by
+  itself drops 1.51 pt but only 0.26 pt remains at the end (the micro step absorbed the
+  starting-point difference); total time ~17 → 34 min (doubled). **Sample 4's 40-parameter
+  downgrade path ran > 77 min with no result**, showing the downgrade cannot be enabled
+  indiscriminately; the next step needs a per-sample criterion (independent reflection
+  count / parameter count of the retained phases, or a lower `max_iter` for the downgrade
+  specifically); until then such samples can use `--xyz-phase-select off` to fall back to
+  v1.4. Sample 7's `ΔB_iso` hitting 6.0 is an inherent cristobalite model problem (the old
+  combo already had 5.9993), not introduced by M9
 
-### 新增：micro 步自动启用 Popa LB 各向异性（M4）
+### Added: micro step automatically enables Popa LB anisotropy (M4)
 
-- 根因：`refine_aniso=True` 只有在 `prm.aniso` 里**逐相写好系数**时才
-  生效，否则只打一条「没有相配置系数」的告警 —— **开关打开等于没开**。
-  基准脚本 `_full_recipe` 是手工 `aniso_default()` 补齐才拿到
-  12.596% / 17.193% 的，GUI/CLI 根本没有这条路
-- 新增 `RefineConfig.aniso_auto`：`solve._resolve_aniso` 为每个缺系数的
-  相补各向同性起点 `aniso_default(λ, prm.X, max(prm.Y, 0.05°))`，并把
-  `refine_aniso` 置为生效；返回签名改为 `(cfg, prm)`
-- **软化护栏**：自动补的相若窗口内独立晶向 < `ANISO_MIN_DIRS=8` → 跳过
-  该相并告警（不整体报错，自动模式不该让精修失败）；**显式配置**的相
-  仍按硬护栏报错
-- 配方语义收紧：开各向异性时 micro 步**不再精修标量 X/Y** ——
-  `ProfileParams` 明确「开该相后标量 X/Y 被逐峰方向值完全取代」，
-  同时放进去就是两个不可辨识的死维度（LM 只多两个噪声方向）
-- 接线：CLI `--aniso-auto`；GUI 微结构齿轮「micro 步自动启用 Popa LB
-  各向异性展宽」复选框（出厂默认开；物相编辑里逐相勾选过 aniso 时
-  以用户配置为准）
+- Root cause: `refine_aniso=True` took effect only when coefficients were **written per
+  phase** in `prm.aniso`; otherwise it only emitted a warning that "no phase has coefficients
+  configured" — **turning the switch on was the same as leaving it off**. The benchmark
+  script `_full_recipe` reached 12.596% / 17.193% only by manually filling in
+  `aniso_default()`; the GUI/CLI had no such path at all
+- Add `RefineConfig.aniso_auto`: `solve._resolve_aniso` fills in an isotropic starting point
+  `aniso_default(λ, prm.X, max(prm.Y, 0.05°))` for every phase lacking coefficients, and sets
+  `refine_aniso` effective; the return signature changes to `(cfg, prm)`
+- **Softened guardrail**: if a phase filled in automatically has fewer than
+  `ANISO_MIN_DIRS=8` independent crystallographic directions in the window → skip that phase
+  with a warning (do not fail the whole run; automatic mode should not make refinement
+  fail); phases **explicitly configured** still raise the hard guardrail error
+- Recipe semantics tightened: when anisotropy is on, the micro step **no longer refines the
+  scalar X/Y** — `ProfileParams` states explicitly that "once enabled for a phase, the
+  scalar X/Y are completely replaced by the per-peak-direction values"; putting both in
+  would create two unidentifiable dead dimensions (LM only adds two noise directions)
+- Wiring: CLI `--aniso-auto`; GUI microstructure gear checkbox "micro step automatically
+  enables Popa LB anisotropic broadening" (factory default on; if anisotropy was checked
+  per phase in the phase editor, the user configuration prevails)
 
-### 新增：micro 步「不改善就回退」护栏
+### Added: micro step "revert if not improved" guardrail
 
-- 叠加各向异性（每相 6 维）/ 织构（每相 19 维）后自由度陡增，短迭代
-  预算下 LM 可能收敛到比入参更差的点。通用路径与 `_run_micro` 两条
-  分支都加：Rwp 未下降即回退到上一步参数，并在 `StepRecord.message`
-  里写明「微结构自由度未改善 Rwp，已回退」
-- 判定条件 `_extra_micro_freedom(cfg)`（`refine_aniso` / `aniso_auto` /
-  `refine_texture` 任一为真），默认路径不进入该分支
+- After stacking anisotropy (6 dimensions per phase) / texture (19 dimensions per phase) the
+  degrees of freedom jump sharply, and under a short iteration budget LM may converge to a
+  point worse than the input. Added to both the generic path and `_run_micro`: if Rwp does
+  not decrease, revert to the previous step's parameters and state "microstructure degrees
+  of freedom did not improve Rwp, reverted" in `StepRecord.message`
+- Trigger condition `_extra_micro_freedom(cfg)` (any of `refine_aniso` / `aniso_auto` /
+  `refine_texture` true); the default path does not enter this branch
 
-### 新增：球谐（Legendre）织构 ODF（M3）
+### Added: spherical-harmonic (Legendre) texture ODF (M3)
 
-- **为什么**：v1.3 的 EWIMV 是 19 点离散网格，单谱上远超可辨识信息量。
-  7 样落盘结果呈典型过拟合形态——相邻 χ bin 在 0.1（下界）与 6.9 之间
-  乱跳（例：样 1 方解石 `[1.03, 1.25, 1.52, 1.16, 0.1, 0.1, 0.38, …]`），
-  且 χ=90° 端点因无反射落入恒等于初值 1.0（完全没被约束）
-- **模型**：Bragg–Brentano 平板 + 样品自转下散射矢量恒沿样品法向，
-  ODF 只依赖极角 χ；球谐展开对 m 求和后只剩偶数阶、再折叠
-  (χ, 180°−χ) 等价 → `T(χ) = 1 + Σ_{l∈{2,4,6,8,10}} c_l·P_l(cos χ)`。
-  这是 MAUD `Harmonic`（`_rita_harmonic_expansion_degree` 6/8/10）在本仪器
-  几何下的**精确子空间**，不是近似替代
-- **四个结构性好处**：① Legendre 基正交，条件数好；② 低阶截断天然光滑，
-  **不需要**二阶差分罚与末端锚定；③ `∫P_l dΩ = 0 (l ≥ 2)` 使 T 的球面
-  平均恒为 1，「T 乘常数 ↔ 该相 scale 除常数」零空间结构性消失
-  （EWIMV 要靠 `TEXTURE_ANCHOR_W=100` 硬锚，已有测试断言这一性质）；
-  ④ 每相 2–4 维而非 19 维
-- **接口**：`ProfileParams.texture[相]` 增加 `model`/`degree`/`coeffs`；
-  `axis`+`grid` 的旧配置**逐位兼容**（分派见 `forward.texture_model`）
-- **接线**：registry 槽位 `phase[相].texture.c2/c4/c6/c8/c10`（键名可读）；
-  `_pack`/`_unpack`/`_bounds` 三方同步（registry 逐位一致性测试守住）；
-  球谐在正则化里**显式 skip**（否则 19 维网格罚对 2 维系数会直接崩）
-- **护栏**：球谐要求窗口内独立 χ 桶数 ≥ 系数个数 + 1，否则 `ValueError`
-  （正交基下这是严格的可辨识条件；EWIMV 维持 ≥ 3）
-- CLI `--texture-model {ewimv,harmonic}` + `--texture-degree N`；
-  GUI 微结构齿轮新增「织构模型」下拉（EWIMV / 阶 4/6/8/10，出厂默认阶 10）
-- **阶数上限对齐 MAUD = 10**：实测 MAUD 对样 3 萤石、样 1 白云石正用
-  `_rita_harmonic_expansion_degree 10`（5 个系数）。首版把上限设 8、
-  系数边界设 ±0.8，样 3 的 c2/c4 双双撞界仍差 6 pt；改为阶 10 + ±1.5 后
-  样 3 从 16.349 → **10.563**（EWIMV 19 参 10.385、MAUD 10.29）。
-  `legendre_even` 用闭式 P2…P10 多项式（同值差 1e-14，比 `legval` 快 2 倍）
-- 测试 `tests/test_texture_harmonic.py` 15 项：阶数校验、球面平均恒 1、
-  零系数逐位不变、EWIMV 分派逐位一致、registry/`_pack`/`_bounds` 三方一致、
-  端到端回收人造织构、欠定护栏
-- 同口径首测（样 2，5–120°）：EWIMV 7.723629917906768 vs 球谐阶 10
-  **7.723629917905643，逐位相同**（该样 `po.json` 无相达阈值、织构为空）。
-  ⚠️ 曾把 5–90° 误口径下的 7.389 当成模型收益，实为**窗口变窄**所致，
-  已在立项书 §1.2 勘误
-- **7 样实测收口**：阶 10 在样 3 达 10.563（vs EWIMV 10.385 / MAUD 10.29）、
-  样 7 达 **17.487**（阶 4 是 20.854，−3.37 pt；EWIMV 17.193），样 1 13.329、
-  样 2 逐位相同、样 6 阶 4 为 12.744；样 4 未跑（单样约 2900 s）。
-  结论：**阶数比模型族更关键**，球谐用 5 参可逼近 19 参 EWIMV
-- **逐相选择验证（负面结论，撤销产品化）**：`eval_texture_m3.py --tex-extra`
-  按相序号补织构。样 5 补上 MAUD 开了 Harmonic 阶 6 的氟磷灰石，
-  17.204 → **17.150**（仅 −0.054 pt）；样 1 补第三碳酸盐相开满三相，
-  13.329 → **13.401（+0.072 反而更差，耗时 23 min）**，且 `ΔB_iso` 仍 5.16 Å²、
-  `xyz` 最大位移仍 0.0500。→ MAUD 的逐相织构开关是它自身参数化下的局部补偿，
-  **不是可移植真值**；「按相自动选织构」若只是照抄开关不值得做，
-  剩余缺口转向结构模型/占位、样 7 方石英、全局峰形
+- **Why**: v1.3's EWIMV is a 19-point discrete grid, far beyond the identifiable information
+  content of a single pattern. The saved results for the 7 samples show a typical
+  over-fitting shape — adjacent χ bins jump between 0.1 (lower bound) and 6.9 (e.g. sample 1
+  calcite `[1.03, 1.25, 1.52, 1.16, 0.1, 0.1, 0.38, …]`), and the χ=90° endpoint is
+  identically the initial value 1.0 because no reflection falls there (completely
+  unconstrained)
+- **Model**: for a Bragg–Brentano flat plate with sample spinning, the scattering vector
+  always lies along the sample normal, so the ODF depends only on the polar angle χ; summing
+  over m in the spherical-harmonic expansion leaves only even orders, and folding the
+  (χ, 180°−χ) equivalence further reduces it to
+  `T(χ) = 1 + Σ_{l∈{2,4,6,8,10}} c_l·P_l(cos χ)`. This is the **exact subspace** of MAUD's
+  `Harmonic` (`_rita_harmonic_expansion_degree` 6/8/10) under this instrument geometry, not
+  an approximate substitute
+- **Four structural advantages**: ① the Legendre basis is orthogonal, with good
+  conditioning; ② low-order truncation is naturally smooth, so a second-difference penalty
+  and end anchoring are **not needed**; ③ `∫P_l dΩ = 0 (l ≥ 2)` makes the spherical mean of
+  T identically 1, so the null space "T times a constant ↔ that phase's scale divided by the
+  constant" disappears structurally (EWIMV needs the hard anchor `TEXTURE_ANCHOR_W=100`; a
+  test already asserts this property); ④ 2–4 dimensions per phase instead of 19
+- **Interface**: `ProfileParams.texture[phase]` gains `model`/`degree`/`coeffs`; the old
+  `axis`+`grid` configuration is **bit-compatible** (dispatch in `forward.texture_model`)
+- **Wiring**: registry slots `phase[phase].texture.c2/c4/c6/c8/c10` (readable key names);
+  `_pack`/`_unpack`/`_bounds` kept in sync in all three places (guarded by the registry
+  bit-consistency test); spherical harmonics are **explicitly skipped** in regularization
+  (otherwise the 19-dimensional grid penalty applied to 2-dimensional coefficients would
+  blow up immediately)
+- **Guardrail**: spherical harmonics require the number of independent χ bins in the window
+  to be ≥ number of coefficients + 1, otherwise `ValueError` (under an orthogonal basis this
+  is the strict identifiability condition; EWIMV keeps ≥ 3)
+- CLI `--texture-model {ewimv,harmonic}` + `--texture-degree N`; the GUI microstructure gear
+  gains a "texture model" dropdown (EWIMV / order 4/6/8/10, factory default order 10)
+- **Order cap aligned with MAUD = 10**: measurement shows MAUD uses
+  `_rita_harmonic_expansion_degree 10` (5 coefficients) for sample 3 fluorite and sample 1
+  dolomite. The first version set the cap to 8 and the coefficient bounds to ±0.8; sample
+  3's c2/c4 both hit the bounds and still lagged by 6 pt; after switching to order 10 + ±1.5,
+  sample 3 went from 16.349 → **10.563** (EWIMV 19 params 10.385, MAUD 10.29). `legendre_even`
+  uses closed-form P2…P10 polynomials (same values within 1e-14, 2× faster than `legval`)
+- Tests `tests/test_texture_harmonic.py` 15 items: order validation, spherical mean
+  identically 1, bit-identical with zero coefficients, bit-identical EWIMV dispatch,
+  registry/`_pack`/`_bounds` three-way consistency, end-to-end recovery of synthetic
+  texture, underdetermined guardrail
+- First same-convention measurement (sample 2, 5–120°): EWIMV 7.723629917906768 vs harmonic
+  order 10 **7.723629917905643, bit-identical** (no phase in that sample's `po.json` reaches
+  the threshold, texture is empty). ⚠️ We once took 7.389 under a mis-set 5–90° convention
+  as a model gain, but it was actually caused by the **narrower window**; corrected in
+  project plan §1.2
+- **7-sample measurement wrap-up**: order 10 reaches 10.563 on sample 3 (vs EWIMV 10.385 /
+  MAUD 10.29), sample 7 reaches **17.487** (order 4 is 20.854, −3.37 pt; EWIMV 17.193),
+  sample 1 13.329, sample 2 bit-identical, sample 6 order 4 is 12.744; sample 4 not run
+  (about 2900 s for a single sample). Conclusion: **the order matters more than the model
+  family**; spherical harmonics with 5 parameters can approach 19-parameter EWIMV
+- **Per-phase selection validation (negative conclusion, productization withdrawn)**:
+  `eval_texture_m3.py --tex-extra` adds texture by phase index. Sample 5, adding the
+  fluorapatite for which MAUD enables Harmonic order 6, goes 17.204 → **17.150** (only
+  −0.054 pt); sample 1, adding the third carbonate phase to enable all three, goes 13.329 →
+  **13.401 (+0.072, actually worse, 23 min spent)**, and `ΔB_iso` is still 5.16 Å², the
+  `xyz` maximum displacement still 0.0500. → MAUD's per-phase texture switches are local
+  compensation within its own parameterization, **not portable truth**; "automatic per-phase
+  texture selection" is not worth doing if it only copies the switches, and the remaining
+  gap shifts to structural model/occupancy, sample 7 cristobalite, global peak shape
 
-### 新增：IUCr CPD 定量 round-robin 外部验证（`tools/eval_iucr_qpa.py`）
+### Added: IUCr CPD quantitative round-robin external validation (`tools/eval_iucr_qpa.py`)
 
-**动机**：M3/M4/M8/M9 的结论全部出自 ShiJiKong 7 个样，同一批数据既调参
-又验收，无法自证。IUCr CPD 定量 round-robin 有**称量真值 + XRF 复核**，
-可直接量 QPA 绝对误差。
+**Motivation**: the conclusions of M3/M4/M8/M9 all come from the 7 ShiJiKong samples; the
+same data served both for tuning and for acceptance, so they cannot self-certify. The IUCr
+CPD quantitative round-robin has **weighed true values + XRF cross-checks**, so the QPA
+absolute error can be measured directly.
 
-### 新增：`.gss` 读取探针与 GSAS-II 独立精修交叉验证（`tools/gss_probe.py`、`tools/gsas2_xcheck.py`）
+### Added: `.gss` reading probe and independent GSAS-II refinement cross-validation (`tools/gss_probe.py`, `tools/gsas2_xcheck.py`)
 
-**更正**：此前「`.gss` 是老版 GSAS 工程、GSAS-II 读不了」的结论是**错的**
-（用户纠正后核实）——`.gss` 是 GSAS 标准 ASCII 粉末数据文件，GSAS-II 的
-`imports/G2pwd_fxye.py` extensionlist 明确含 `.gss`。
+**Correction**: the earlier conclusion that "`.gss` is an old GSAS project that GSAS-II
+cannot read" was **wrong** (verified after the user's correction) — `.gss` is the GSAS
+standard ASCII powder data format, and the `imports/G2pwd_fxye.py` extensionlist of GSAS-II
+explicitly includes `.gss`.
 
-* `tools/gss_probe.py`（用本机 GSAS-II 5.8.2 解释器运行）：
-  - 28 个 `.gss` 全部解析并与 `txt/CPD-*.txt` 逐点比对，**28/28 一致**
-    （23 个逐位相同；zircon/mannitol/nizatidi/pharm1gr/pharm2gr 5 个差
-    ≤1 计数、33–40% 点、与强度无关 → 两路导出的舍入口径差）。
-  - **发现并绕过 GSAS-II 的 off-by-one**：`GetSTDdata` 中 `j += 1` 先自增
-    再 `if j < Nch` 判界，STD 格式 bank 的**最后一个数据点恒定被丢**
-    （7251 点只读出 7250）；工具从文件末行补回末点并标注。
-  - `BANK … CONST 500.00 2.00` 自证 5.00° 起始 / 0.02° 步长；`n ≡ 1`
-    证实 GSAS 权重口径 `σ² = y/n = y` 与我们 `weight_mode="sqrt"` 同源。
-* `tools/gsas2_xcheck.py`（`GSASIIscriptable` 全脚本化 Rietveld）：
-  - cpd-1g（3 相，5–120°，`wRmin=8.65%`）：分阶段常规 **38.9%**，加全相
-    球谐 SH-8 最好 **31.5%**，仍远差于我们 **12.03%**。逐峰核对显示
-    GSAS-II 卡局部极小（CaF₂ (220) 低 38%、SH 系数无界把 CaF₂ (311)
-    算成负强度）；我们无织构模型逐峰偏差仅 7–9%。
-  - **反转发现**：单相纯刚玉标样 GSAS-II **15.8%** vs 我们 **30.6–31.5%**。
-    五种 W/eta 初值收敛到同一极小（FWHM 低角 0.195°、高角 ~0.85°）→
-    **模型性峰形失配**（高角宽度发散、LM 自认收敛于过宽极小），不是初值
-    问题。已立项为 M5/M7 的下一主攻点（详见立项文档 §1.4 末节）。
+* `tools/gss_probe.py` (run with the local GSAS-II 5.8.2 interpreter):
+  - all 28 `.gss` files were parsed and compared point by point with `txt/CPD-*.txt`,
+    **28/28 consistent** (23 bit-identical; the 5 files zircon/mannitol/nizatidi/pharm1gr/
+    pharm2gr differ by ≤1 count, over 33–40% of points, unrelated to intensity → a
+    rounding-convention difference between the two export paths).
+  - **Found and worked around an off-by-one in GSAS-II**: in `GetSTDdata`, `j += 1`
+    increments before the `if j < Nch` bound check, so the **last data point of a STD-format
+    bank is always dropped** (only 7250 of 7251 points read); the tool restores the last
+    point from the file's final line and flags it.
+  - `BANK … CONST 500.00 2.00` self-certifies a 5.00° start / 0.02° step; `n ≡ 1` confirms
+    that the GSAS weight convention `σ² = y/n = y` has the same origin as our
+    `weight_mode="sqrt"`.
+* `tools/gsas2_xcheck.py` (fully scripted Rietveld via `GSASIIscriptable`):
+  - cpd-1g (3 phases, 5–120°, `wRmin=8.65%`): staged conventional refinement **38.9%**, best
+    with all-phase spherical harmonics SH-8 **31.5%**, still far worse than our **12.03%**.
+    Per-peak checks show GSAS-II is stuck in a local minimum (CaF₂ (220) 38% low, unbounded
+    SH coefficients making CaF₂ (311) negative in intensity); our per-peak deviation without
+    any texture model is only 7–9%.
+  - **Reverse finding**: for the single-phase pure corundum standard, GSAS-II **15.8%** vs
+    our **30.6–31.5%**. Five different W/eta initial values converge to the same minimum
+    (FWHM 0.195° at low angle, ~0.85° at high angle) → **model-level peak-shape mismatch**
+    (high-angle width divergence, LM considers itself converged at an over-broad minimum),
+    not an initial-value problem. Registered as the next main target for M5/M7 (details in
+    the last subsection of project document §1.4).
 
-- 数据：`D:\Project\XRD\XRData\IUCr\`。`Must do/Rietveld/1a|1b|1c|1g.txt`
-  与 `txt/CPD-1X_raw.txt` **md5 逐字节相同**；`txt/` 另有 1d/1e/1f/1h，
-  故 Sample 1 扩到 **8 配比点 = 24 个 wt%**（5–150°、0.02°、7251 点、
-  Cu Kα1 1.54056，CaF₂(111) 28.28° 实测吻合）
-- 口径：`tent` 18 节点 + `weight_mode="sqrt"`；`base` = zero/bg/scale/
-  cell/profile/B，`combo` = 再加 `po_probe + xyz + biso + aniso_auto + eta`
-- **引擎自洽（合成 round-trip）**：同三 CIF 合成 1g 配比再回收，无噪声
-  Δ=0.00、泊松 Imax7000 时 ZnO **−0.03**、高计数 +0.03 → QPA 归一化
-  与 `ZMV` 无缺陷（刚玉 6/253.514/101.961、ZnO 2/47.598/81.379、
-  萤石 4/163.059/78.074 逐一核对）
-- **微吸收证伪**：萤石 μ=301.7 cm⁻¹ **高于** ZnO 276.4、刚玉 126.4，
-  方向与实测（CaF₂ 反而偏高）相反；r=5 μm 时三相 Brindley 因子只差
-  3–4%，量级不够 → 本数据**不该加**微吸收校正
-- **无多重度/对称性错误**：对 CIF 自带 PDF 参考强度，刚玉比值 0.97–1.02；
-  ZnO/萤石随 d 减小单调升到 1.05–1.16，是 CIF 自带 B_iso≈0.5 造成，
-  **单调而非跳变**即排除消光规律级错误
-- **ZnO 的强度被重叠相吸走（不是乘性压低）**：ZnO 相对偏差在含量
-  1.36/4.04/15.25/32.89/34.21/55.22% 时为 −16 ~ −22%，但 **93.59% 时
-  只有 −2.4%**（1c）→ 「整体乘性弱 23%」的初判被 1c 推翻。改按
-  `Δ ≈ −c·w·(100−w)` 拟合，七点 c = 0.0016~0.0038（≈0.0025），
-  即**比例型强度转移**：邻居相越多越强、抢得越多，ZnO 占满时无人可抢
-- **择优取向已干净证伪**：手工扫 (001)/(100) × r=1.00–0.80 共 10 组
-  （`tools/eval_iucr_po_scan.py`），**无一优于 r=1.00**，且所有 r<1
-  都把 ZnO 越推越低（−5.91 → −6.65）→ `po_probe` 的"未过阈值"是对的
-- **口径校正（顺带发现一个 API 陷阱）**：`RecipeRunner` 的 profile 步
-  写死 `refine_asym=True`，**`RefineConfig.refine_asym` 在配方路径上是
-  无效开关**（实测开/不开 Rwp 相同到 1e-11）。好处是它证明我们的 tanθ
-  不对称**一直开着**，与 MAUD `_riet_asymmetry_tan_dep` 口径已对齐；
-  已在 `recipe.py` 就地加注，避免后人再把它当开关用
-- **社区基准**：round-robin 1h 参与者均值 刚玉 37.23(+2.11)、ZnO
-  28.83(−1.36)、萤石 33.94(−0.75)，参与者 std 2.4–2.7 → 正确标尺是
-  **2.5 pt 而不是零**；我们 1a(0.78)/1b(0.22)/1c(1.55) 优于社区水平
-- **Rwp 与 QPA 解耦**：1b Rwp 29.99% 而 max\|Δ\| 仅 **0.22 pt**（主相
-  峰形决定 Rwp，次相决定定量）→ 验收标准新增「不以 Rwp 代理 QPA」
-- **Sample 2/4 结构补齐**：COD 1000054 (brucite)、1011032 (magnetite)、
-  5000119 (zircon)，由 `tools/eval_iucr_qpa.py` 按编号下载并缓存；
-  `curl` 对本机 crystallography.net 退出码 56，改用 `urllib` + 退避重试
-- **新增回归测试** `tests/test_qpa_roundtrip.py`（4 项）：合成 → 精修
-  必须回收已知 wt%（无噪声 ≤0.25 pt，含噪声 ≤0.5 pt）。这条测试先前
-  缺失，导致排查「ZnO 系统性偏低」时无法快速排除引擎自身问题
-- 回归：全量 `pytest` **405 项全绿**（无 F/E，仅 spglib
-  DeprecationWarning）；golden 3.409617 逐位不变
+- Data: `D:\Project\XRD\XRData\IUCr\`. `Must do/Rietveld/1a|1b|1c|1g.txt` and
+  `txt/CPD-1X_raw.txt` are **byte-identical by md5**; `txt/` additionally has 1d/1e/1f/1h,
+  so Sample 1 expands to **8 composition points = 24 wt% values** (5–150°, 0.02°, 7251
+  points, Cu Kα1 1.54056, CaF₂(111) at 28.28° matching measurement)
+- Convention: `tent` 18 nodes + `weight_mode="sqrt"`; `base` = zero/bg/scale/cell/profile/B,
+  `combo` = additionally `po_probe + xyz + biso + aniso_auto + eta`
+- **Engine self-consistency (synthetic round-trip)**: synthesize the 1g composition from the
+  same three CIFs and recover it — noise-free Δ=0.00, ZnO **−0.03** at Poisson Imax7000,
+  +0.03 at high counts → QPA normalization and `ZMV` are defect-free (corundum
+  6/253.514/101.961, ZnO 2/47.598/81.379, fluorite 4/163.059/78.074 checked one by one)
+- **Micro-absorption falsified**: fluorite μ=301.7 cm⁻¹ is **higher** than ZnO 276.4 and
+  corundum 126.4, the opposite direction to measurement (CaF₂ is actually high); at r=5 μm
+  the Brindley factors of the three phases differ by only 3–4%, not enough in magnitude →
+  micro-absorption correction **should not** be added for this dataset
+- **No multiplicity/symmetry errors**: against the PDF reference intensities bundled in the
+  CIFs, the corundum ratio is 0.97–1.02; ZnO/fluorite rise monotonically to 1.05–1.16 as d
+  decreases, caused by the CIF's bundled B_iso≈0.5 — being **monotonic rather than jumping**
+  rules out extinction-rule-level errors
+- **ZnO intensity is drawn away by overlapping phases (not multiplicatively suppressed)**:
+  ZnO's relative deviation is −16 ~ −22% at contents 1.36/4.04/15.25/32.89/34.21/55.22%, but
+  **only −2.4% at 93.59%** (1c) → the initial judgment of "uniformly 23% multiplicatively
+  weak" was overturned by 1c. Refitting as `Δ ≈ −c·w·(100−w)` gives c = 0.0016~0.0038
+  (≈0.0025) over seven points, i.e. **proportional intensity transfer**: the more
+  neighbouring phases, the stronger and the more they take, and when ZnO fills everything
+  there is nobody to take from
+- **Preferred orientation cleanly falsified**: manual scan of (001)/(100) × r=1.00–0.80,
+  10 groups in total (`tools/eval_iucr_po_scan.py`), **none better than r=1.00**, and every
+  r<1 pushes ZnO further down (−5.91 → −6.65) → `po_probe`'s "below threshold" is correct
+- **Convention correction (and an incidental API trap)**: the `profile` step of
+  `RecipeRunner` hard-codes `refine_asym=True`, so **`RefineConfig.refine_asym` is an
+  ineffective switch on the recipe path** (measured on/off Rwp identical to 1e-11). The
+  upside is that it proves our tanθ asymmetry **has always been on**, already aligned with
+  MAUD's `_riet_asymmetry_tan_dep` convention; an in-place note has been added in
+  `recipe.py` so successors do not use it as a switch
+- **Community benchmark**: the round-robin 1h participant mean is corundum 37.23(+2.11),
+  ZnO 28.83(−1.36), fluorite 33.94(−0.75), with participant std 2.4–2.7 → the correct
+  yardstick is **2.5 pt rather than zero**; our 1a(0.78)/1b(0.22)/1c(1.55) beat the
+  community level
+- **Rwp and QPA decoupled**: 1b has Rwp 29.99% while max\|Δ\| is only **0.22 pt** (the main
+  phase's peak shape determines Rwp, the minor phases determine quantification) → the
+  acceptance criteria gain "do not use Rwp as a proxy for QPA"
+- **Sample 2/4 structure completion**: COD 1000054 (brucite), 1011032 (magnetite), 5000119
+  (zircon), downloaded by number and cached by `tools/eval_iucr_qpa.py`; `curl` exits with
+  code 56 against the local crystallography.net, so `urllib` + backoff retry was used
+  instead
+- **New regression test** `tests/test_qpa_roundtrip.py` (4 items): synthesize → refine must
+  recover the known wt% (≤0.25 pt noise-free, ≤0.5 pt with noise). This test was previously
+  missing, which is why "ZnO systematically low" could not be quickly ruled out as an engine
+  problem
+- Regression: full `pytest` **405 items all green** (no F/E, only spglib
+  DeprecationWarning); golden 3.409617 bit-identical
 
-### 新增：MAUD 逐相模型盘点（`tools/dump_maud_model.py`）
+### Added: MAUD per-phase model inventory (`tools/dump_maud_model.py`)
 
-- 把 7 样 `.par` 的**逐相**开关抽表（织构模型/展开阶、Popa LB vs Delft
-  Isotropic、晶粒尺寸、微应变、反相畴），落 `maud_model.json`
-- 三条修正：① MAUD 的织构与尺寸应变是**逐相选择**的（样 1 只对
-  Mg/Cal/Dol 开 Harmonic、石英与方石英用 Delft 2 参），不是全局一套；
-  ② **样 1 的方石英本来就是 α 相 P4₁2₁2**（与 MAUD 一致），M8 的
-  「β→α」结论只适用于样 7；③ 读 MAUD 结果必须校验同名 `.par.lst`
-  **非空**——样 6 的 `6#.par` 是未收敛中间态（`.lst` 为空、3 相、
-  15.89%），收敛版 `6b#.par`（14.76%、4 相）才是基线
+- Tabulates the **per-phase** switches of the 7 samples' `.par` files (texture
+  model/expansion order, Popa LB vs Delft Isotropic, crystallite size, microstrain,
+  antiphase domains), written to `maud_model.json`
+- Three corrections: ① MAUD's texture and size/strain are **selected per phase** (sample 1
+  enables Harmonic only for Mg/Cal/Dol, with quartz and cristobalite using Delft 2 params),
+  not one global set; ② **sample 1's cristobalite is already the α phase P4₁2₁2** (consistent
+  with MAUD), so M8's "β→α" conclusion applies only to sample 7; ③ when reading MAUD
+  results one must verify that the same-named `.par.lst` is **non-empty** — sample 6's
+  `6#.par` is an unconverged intermediate state (`.lst` empty, 3 phases, 15.89%), and the
+  converged `6b#.par` (14.76%, 4 phases) is the real baseline
 
-### 新增：MAUD 对标诊断与复现工具（`tools/`）
+### Added: MAUD benchmarking diagnostics and reproduction tools (`tools/`)
 
-- `diag_residual.py`：分区间 Rwp 贡献 + 残差均值 + 各相最强反射归属，
-  结果缓存 `diag_<样>_<tag>.pkl` 供细查
-- `eval_uvw.py`：同模型只换 Caglioti U/V/W（我们的精修值 vs MAUD 定值），
-  用来判定「峰宽模型是否差距来源」
-- `report_v15.py`：base / +EWIMV / +Popa LB 三阶段对 MAUD 的表；
-  **均值逐阶段计算并注明覆盖 n/7**，不把不同覆盖的样混算
-- `eval_cristobalite.py` 新增 `models_m4m5` 阶段：在 M4/M5 口径下重做
-  方石英多型对照，并记录该相 `ΔB_iso` 是否仍撞 6 Å² 上界
-- `eval_texture_m3.py`：与 `bench_v14` 的 `combo_tex_aniso` **同一配方链**、
-  只换织构模型（ewimv / harmonic:4/6/8），逐样断点续跑，`--report` 出表
+- `diag_residual.py`: interval-wise Rwp contribution + residual mean + strongest-reflection
+  attribution per phase, results cached in `diag_<sample>_<tag>.pkl` for closer inspection
+- `eval_uvw.py`: same model with only the Caglioti U/V/W swapped (our refined values vs
+  MAUD's fixed values), used to decide "whether the peak-width model is the source of the
+  gap"
+- `report_v15.py`: three-stage table of base / +EWIMV / +Popa LB against MAUD;
+  **the mean is computed per stage with the covered n/7 noted**, never mixing samples with
+  different coverage
+- `eval_cristobalite.py` gains a `models_m4m5` stage: redo the cristobalite polymorph
+  comparison under the M4/M5 convention, and record whether that phase's `ΔB_iso` still
+  hits the 6 Å² upper bound
+- `eval_texture_m3.py`: **the same recipe chain** as `bench_v14`'s `combo_tex_aniso`, only
+  the texture model changed (ewimv / harmonic:4/6/8), per-sample resumption from
+  checkpoints, table output via `--report`
 
-### 对标结果（同一数据集 `D:\Project\XRDdata\ShiJK-Refinement`，MAUD 2.99993 同批）
+### Benchmark results (same dataset `D:\Project\XRDdata\ShiJK-Refinement`, MAUD 2.99993 same batch)
 
-| 样品 | MAUD 2 | v1.3 base | +EWIMV | **+Popa LB（M4/M5）** | 差距 |
+| Sample | MAUD 2 | v1.3 base | +EWIMV | **+Popa LB (M4/M5)** | Gap |
 |---|---|---|---|---|---|
 | 1 | 10.90 | 23.880 | 16.085 | **12.596** | +1.70 |
 | 2 | 6.34 | 7.764 | 7.845 | **7.724** | +1.38 |
 | 3 | 10.29 | 24.525 | 11.285 | **10.385** | +0.10 |
 | 4 | 9.96 | 14.888 | 11.746 | **10.186** | +0.23 |
 | 5 | 14.87 | 17.721 | 17.702 | **17.204** | +2.33 |
-| 6 | 14.76 | 16.381 | 15.020 | **12.603** | **−2.16（反超 MAUD）** |
+| 6 | 14.76 | 16.381 | 15.020 | **12.603** | **−2.16 (overtakes MAUD)** |
 | 7 | 11.30 | 26.748 | 21.001 | **17.193** | +5.89 |
-| **均值** | **11.20** | 18.84 | 14.38 | **12.56** | +1.36 |
+| **Mean** | **11.20** | 18.84 | 14.38 | **12.56** | +1.36 |
 
-（`tools/report_v15.py` 生成，全部 7 样同口径：`weight_mode=sqrt` + 含背景 Rwp
-+ 窗口按数据实际。**均值不混算**：每个阶段都注明覆盖样数。）
+(Generated by `tools/report_v15.py`, all 7 samples under the same convention:
+`weight_mode=sqrt` + Rwp with background + window per actual data. **Means are not mixed**:
+each stage notes the number of samples covered.)
 
-### 诊断结论：样 7 的差距不是峰宽、不是背景，是方石英多型
+### Diagnostic conclusion: sample 7's gap is neither peak width nor background, but the cristobalite polymorph
 
-- 残差分布（`tools/diag_residual.py`）：**25–30° 占加权 SS 20.3%**（计算偏低）、
-  **20–25° 占 20.0%**；85–90° 计算偏高。21.86° 方石英主峰**顶点计算值只有
-  观测的 53%**，峰腰基本吻合
-- **峰宽假说被证伪**：把 Caglioti U/V/W 换成 MAUD 同数据的精修值
-  （0.00253/0.00272/0.00231，比我们窄 5 倍）后 Rwp **17.27 → 17.64（更差）**。
-  我们的宽峰宽是数据要的，不是缺陷（`tools/eval_uvw.py`）
-- **多型替换有效**（增量口径，M4/M5 配置）：β 高温 Fd-3m **18.06** →
-  α 低温 P4₁2₁2 **15.59（−2.47 pt）**；完全移除该相反而升到 19.04
-  （该相必须留）。见 `tools/eval_cristobalite.py models_m4m5`
-- **端到端验证**：把样 7 的方石英 CIF 换成 α 相后完整配方
-  **17.193 → 15.357（−1.84 pt）**，且该相 `ΔB_iso` **不再撞 6 Å² 上界**
-  （撞界消失 = 过拟合信号消失，这才是健康信号）。见
-  `tools/eval_sample7_alpha.py`
-- 产品侧动作：`ΔB_iso` 撞界告警新增「也可能是该相结构模型与样品不符
-  （多型/占位/无序）」提示，并附上这条实测证据
+- Residual distribution (`tools/diag_residual.py`): **25–30° accounts for 20.3% of the
+  weighted SS** (calculation low), **20–25° for 20.0%**; 85–90° calculation high. The
+  **apex of the 21.86° cristobalite main peak is calculated at only 53% of the observed
+  value**, while the peak flanks basically match
+- **The peak-width hypothesis is falsified**: replacing Caglioti U/V/W with MAUD's refined
+  values on the same data (0.00253/0.00272/0.00231, 5× narrower than ours) makes Rwp
+  **17.27 → 17.64 (worse)**. Our broad peak width is what the data demand, not a defect
+  (`tools/eval_uvw.py`)
+- **Polymorph replacement is effective** (incremental convention, M4/M5 configuration):
+  β high-temperature Fd-3m **18.06** → α low-temperature P4₁2₁2 **15.59 (−2.47 pt)**;
+  removing the phase entirely instead raises it to 19.04 (the phase must stay). See
+  `tools/eval_cristobalite.py models_m4m5`
+- **End-to-end verification**: replacing sample 7's cristobalite CIF with the α phase gives
+  a complete recipe of **17.193 → 15.357 (−1.84 pt)**, and that phase's `ΔB_iso` **no longer
+  hits the 6 Å² upper bound** (the collision disappearing = the over-fitting signal
+  disappearing, which is the healthy signal). See `tools/eval_sample7_alpha.py`
+- Product-side action: the `ΔB_iso` bound-collision warning gains the hint "it may also be
+  that this phase's structural model does not match the sample (polymorph/occupancy/
+  disorder)", together with this measured evidence
 
-### 回归
+### Regression
 
-- 全量 **471 项：467 passed / 4 skipped，EXIT=0**（`--basetemp` 干净目录）；
-  4 个 skip 全是 XinMatch 相关（真实原因是缺 `gemmi`，skip 理由已改为带出
-  真实异常，不再写死误导性的「不在 import 路径上」）
-- golden CLI Rwp 50/50 档 **3.4074156640940005**（M11 起的有意值，已重建
-  基线并新增 `tests/test_golden_b.py` 活体绊线）
-- 新代码路径复跑样 3：**10.3854917764 vs 10.3854917760**（末位差异来自
-  去掉两个死维度后的浮点累加顺序），且耗时 317 s → 238 s
+- Full **471 items: 467 passed / 4 skipped, EXIT=0** (`--basetemp` clean directory); all 4
+  skips are XinMatch-related (the real cause is the missing `gemmi`; the skip reasons now
+  surface the real exception instead of the misleading hard-coded "not on the import path")
+- golden CLI Rwp 50/50 level **3.4074156640940005** (the intentional value since M11; the
+  baseline has been rebuilt and `tests/test_golden_b.py` added as a live tripwire)
+- Re-running sample 3 on the new code path: **10.3854917764 vs 10.3854917760** (the
+  last-digit difference comes from the floating-point accumulation order after removing two
+  dead dimensions), and the runtime goes 317 s → 238 s
 
-## v1.4.0（2026-11-06 已推送）
+## v1.4.0 (2026-11-06, pushed)
 
-主题：**对拍收尾——把 v1.3 已落地但没进生产配方的能力接上实样验证**。
-七样同口径复测（[`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md)
-§11.5）确认 v1.3 引擎零回归，再按「建模补全 → 全量复测」补齐三项配方能力，
-并对方石英无序模型给出数据驱动的处置结论。
+Theme: **Cross-check wrap-up — connecting capabilities already landed in v1.3 but absent from the production recipe to real-sample validation**.
+Seven-sample re-measurement under one protocol ([`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md)
+§11.5) confirms zero regression in the v1.3 engine; then, following "model completion → full re-measurement", three recipe capabilities are completed,
+and a data-driven disposition conclusion is given for the disordered cristobalite model.
 
-### 设计口径（先说清楚，避免误用）
+### Design decisions (stated up front to avoid misuse)
 
-- **CLI / 库 API 全部新能力默认关闭**（`po_probe` / `refine_biso` /
-  `refine_xyz` 都是 `False`），保证 golden 与既有调用逐位零回归；
-  **GUI 只把 `po_probe` 出厂默认开**，依据是 7 样对拍里三个差距样分别
-  −4.82 / −12.60 / −4.45 pt。`refine_biso` / `refine_xyz` GUI 仍默认关，
-  由 micro 齿轮显式勾选——这两项在实样上收益不稳定，不做静默启用
-- **配方步骤「可用」≠「默认执行」**：`xyz` / `B` 两步的
-  `available` 从 `False` 改为 `True`，但未显式开启时 `run_step` 仍记
-  `skipped`，不做假执行
+- **All new capabilities are off by default in the CLI / library API** (`po_probe` / `refine_biso` /
+  `refine_xyz` are all `False`), guaranteeing bit-for-bit zero regression against golden and existing callers;
+  **the GUI ships only `po_probe` enabled by default**, on the basis of the three gap samples in the 7-sample cross-check
+  at −4.82 / −12.60 / −4.45 pt respectively. `refine_biso` / `refine_xyz` remain off by default in the GUI
+  and must be checked explicitly in the micro gear — their gains on real samples are unstable, so they are not silently enabled
+- **A recipe step being "available" ≠ "executed by default"**: `available` for the `xyz` / `B` steps
+  changes from `False` to `True`, but without explicit enablement `run_step` still records
+  `skipped` and does not fake execution
 
-### 新增：micro 步择优取向自动试探（任务 #19）
+### New: automatic preferred-orientation probing in the micro step (task #19)
 
-- 根因：实样对拍里样品 3 的 CaF₂(111) 择优取向一项值 −12.06 pt，
-  但引擎只有在 `prm.po_r` 里**预先填好** (h,k,l) 才会精修 `r`，
-  出厂配方没有这些信息，micro 步等于空转
-- `RecipeRunner._run_micro`：逐相 × 低指数候选轴
-  `DEFAULT_PO_AXES = ((001),(100),(110),(111),(101))` 短精修 `r`
-  （每候选只放 1 个非线性自由度），按 Rwp 增益 ≥ `po_probe_min_gain`
-  （默认 0.3 pt）挑选、最多纳入 `po_probe_max_phases`（默认 2）个相，
-  再把 `r=1` 写回 `po_r` 交给正式 micro 步连同 X/Y 精修
-- **互斥护栏**：用户已配 `po_r`、开了 EWIMV 织构、或落在
-  `DEFAULT_PO_HKL` 内置惯习面表里的相一律不试探。实测若让试探覆盖
-  内置惯习面，会把更准的默认轴换成噪声轴（合成对照 5.4235 → 5.4265）
-- 细节留痕 `runner.po_probe_report` 并写入 `StepRecord.message`；
-  `po_probe=False` 时 `run_step` 完全不走该分支
-- **窗口策略**：micro 齿轮新增 `tmin/tmax`，
-  `_make_inputs` 按窗口自适应背景节点数；实测 5–120° 相对 5–90° 在
-  样品 1/3/7 分别再降 0.834 / 0.812 / 0.940 pt
-- CLI：`--po-probe` / `--po-probe-min-gain` / `--po-probe-max-phases` /
+- Root cause: in the real-sample cross-check, preferred orientation of CaF₂(111) in sample 3 is off by −12.06 pt,
+  yet the engine refines `r` only when (h,k,l) is **pre-filled** in `prm.po_r`;
+  the factory recipe carries no such information, so the micro step idled
+- `RecipeRunner._run_micro`: per-phase × low-index candidate axes
+  `DEFAULT_PO_AXES = ((001),(100),(110),(111),(101))` short refinement of `r`
+  (only 1 nonlinear degree of freedom per candidate), selected by Rwp gain ≥ `po_probe_min_gain`
+  (default 0.3 pt), at most `po_probe_max_phases` (default 2) phases included,
+  then `r=1` is written back to `po_r` and handed to the formal micro step together with X/Y refinement
+- **Mutual-exclusion guard**: no probing when the user has already configured `po_r`, when EWIMV texture is on,
+  or for phases covered by the `DEFAULT_PO_HKL` built-in habit-plane table. In practice, letting the probe
+  override the built-in habit planes replaces the more accurate default axis with a noise axis (synthetic control 5.4235 → 5.4265)
+- Details are recorded in `runner.po_probe_report` and written to `StepRecord.message`;
+  with `po_probe=False`, `run_step` never enters that branch
+- **Window strategy**: the micro gear gains `tmin/tmax`;
+  `_make_inputs` adapts the number of background nodes to the window; measured on 5–120° vs 5–90°,
+  samples 1/3/7 drop a further 0.834 / 0.812 / 0.940 pt
+- CLI: `--po-probe` / `--po-probe-min-gain` / `--po-probe-max-phases` /
   `--po-probe-max-iter`
 
-### 新增：每相 ΔB_iso（任务 #18）
+### New: per-phase ΔB_iso (task #18)
 
-- COD 导出 CIF 的 `B_iso` 恒为 0，实测样品 1 在 40–120° 的计算强度
-  系统性偏高（§4.6）。`ProfileParams.b_iso = {相名: ΔB}` 与全局
-  `bfactor` 共用 `exp(−B/(2d²))` 形式，逐相叠加，只压高角、不改峰位
-- 落点：`forward._accumulate_peaks` / `nonlinear._pack/_unpack/_bounds`
-  与 `ParameterRegistry` 的 `phase[…].B_iso` 槽（逐位对拍通过）/
-  `solve._resolve_biso`（缺相补 0、`tmax<60°` 与全局 `bfactor` 同开时告警）/
-  配方 `B` 步 / CLI `--refine-biso` / GUI micro 齿轮
-- 上界 6 Å²；合成数据注入 ΔB=1.5 可回收到 ±10%
-- **撞界护栏**（来自实样基准）：7 样里 4 样把某些相顶到 6 Å²，且撞界相
-  与 PO/织构收益相高度重合（如样品 3/7 的 CaF₂）——说明 B 在吸收
-  **择优取向 / 织构 / 标度的模型误差**，不是物理温度因子。`solve()` 在
-  任一相撞界时追加「建议先确认 PO 与织构再启用 B 步」告警；B 步因此
-  保持 opt-in，不设出厂默认
+- `B_iso` in COD-exported CIFs is always 0; measured on sample 1, calculated intensity at 40–120° is
+  systematically too high (§4.6). `ProfileParams.b_iso = {phase name: ΔB}` shares the global
+  `bfactor` form `exp(−B/(2d²))`, superimposed per phase, suppressing only high angles without shifting peak positions
+- Landing points: `forward._accumulate_peaks` / `nonlinear._pack/_unpack/_bounds`
+  and the `phase[…].B_iso` slot in `ParameterRegistry` (bit-for-bit cross-check passed) /
+  `solve._resolve_biso` (missing phases filled with 0; warning when `tmax<60°` and the global `bfactor` are both on) /
+  recipe `B` step / CLI `--refine-biso` / GUI micro gear
+- Upper bound 6 Å²; injected ΔB=1.5 in synthetic data is recovered within ±10%
+- **Bound-hit guard** (from the real-sample baseline): 4 of 7 samples push some phase to 6 Å², and the phases
+  hitting the bound overlap highly with those gaining from PO/texture (e.g. CaF₂ in samples 3/7) — indicating that B is absorbing
+  **model error in preferred orientation / texture / scale**, not a physical temperature factor. `solve()` appends
+  a "confirm PO and texture before enabling the B step" warning when any phase hits the bound; the B step therefore
+  remains opt-in, with no factory default
 
-### 新增：原子坐标 xyz 步接入配方（任务 #17）
+### New: atomic-coordinate xyz step wired into the recipe (task #17)
 
-- `CifStructure.source_path`：`parse_cif` 写入 CIF 路径；xyz 步必须
-  **重读未展开的不对称单位 + symop**（`parse_cif` 已展开等价位置，
-  无法反推 Wyckoff 位）。`parse_cif_string` / 手工结构为 `None`，自动跳过
-- `cell.structure_with_cell` 的元数据白名单补 `source_path`，
-  保证 cell 步精修晶胞后 xyz 步仍找得到 CIF
-- `site.refine_sites` 增 `fixed_structures`（不参与结构精修的相作为常量基
-  进入变量投影，避免强度被算到被精修相的标度上）与 `bg_points` 透传
-  （手动/插值背景的固定层必须一致，否则坐标被背景差吸收）
-- `RecipeRunner._run_xyz`：用 cell 步精修后的晶胞覆盖 `SiteModel.cell`；
-  自由坐标系数 > `xyz_max_params`（默认 40）直接判 `failed`；
-  精修后重新 `solve` 比较 Rwp，**没有改善就整体回退**原结构；
-  诊断写入 `runner.xyz_report`
-- **元数据继承**：站点引擎由不对称单位重建结构时只回填
-  `formula/spacegroup`，配方层逐项继承
-  `z_declared / n_asym / n_sym_ops / source_path`，否则 QPA 静默退化、
-  下一轮 xyz 步找不到 CIF
-- **性能护栏 `XYZ_SITE_MAX_ITER=12`**：站点 LM 用数值雅可比，每次迭代
-  需 O(n_free) 次「多相全谱 + 线性层」评估；实样 5 相体系沿用配方
-  `max_iter=40` 会跑十几分钟仍不收敛。xyz 步单独封顶 12 次
-  （坐标精修一般 8–12 次即到平台），主 `solve` 的迭代预算不变
-- **实样复测（3 个差距样）**：样品 1 接受 14 个自由系数，
-  Rwp 23.880 → **21.628%（−2.251 pt）**、最大位移 0.0266，与 §4.6
-  点名的方解石 O 坐标缺口吻合；样品 3 只有 −0.118 pt（其缺口是
-  CaF₂(111) 织构，不是坐标）；样品 7 有 48 个自由系数，触发
-  `xyz_max_params=40` 判 failed 并整体回退，Rwp/QPA 逐位不变
-- CLI `--refine-xyz` / `--xyz-max-params`；GUI micro 齿轮开关
+- `CifStructure.source_path`: `parse_cif` writes the CIF path; the xyz step must
+  **re-read the unexpanded asymmetric unit + symops** (`parse_cif` already expands equivalent positions,
+  so Wyckoff sites cannot be recovered). `parse_cif_string` / manually built structures are `None` and are skipped automatically
+- The metadata whitelist of `cell.structure_with_cell` gains `source_path`,
+  ensuring the xyz step still finds the CIF after the cell step refines the unit cell
+- `site.refine_sites` gains `fixed_structures` (phases not taking part in structural refinement enter the variable projection
+  as constant basis, preventing their intensity from being absorbed into the scale of refined phases) and `bg_points` pass-through
+  (the fixed layer of manual/interpolated background must match, otherwise coordinates absorb the background difference)
+- `RecipeRunner._run_xyz`: the unit cell refined by the cell step overrides `SiteModel.cell`;
+  if the number of free coordinate parameters > `xyz_max_params` (default 40), the step is judged `failed`;
+  after refinement `solve` is re-run to compare Rwp, and **the original structure is rolled back entirely if there is no improvement**;
+  diagnostics are written to `runner.xyz_report`
+- **Metadata inheritance**: when the site engine rebuilds the structure from the asymmetric unit, it only restores
+  `formula/spacegroup`; the recipe layer inherits `z_declared / n_asym / n_sym_ops / source_path`
+  item by item, otherwise QPA degrades silently and the next xyz step cannot find the CIF
+- **Performance guard `XYZ_SITE_MAX_ITER=12`**: the site LM uses a numerical Jacobian, and each iteration
+  requires O(n_free) evaluations of "multi-phase full pattern + linear layer"; a real 5-phase system using the recipe's
+  `max_iter=40` would run for a dozen minutes without converging. The xyz step is capped separately at 12 iterations
+  (coordinate refinement usually plateaus within 8–12), and the iteration budget of the main `solve` is unchanged
+- **Real-sample re-measurement (3 gap samples)**: sample 1 accepts 14 free parameters,
+  Rwp 23.880 → **21.628% (−2.251 pt)**, maximum displacement 0.0266, matching the calcite O-coordinate gap
+  named in §4.6; sample 3 improves only −0.118 pt (its gap is CaF₂(111) texture, not coordinates); sample 7 has 48 free parameters and triggers
+  `xyz_max_params=40`, is judged failed and rolled back entirely, with Rwp/QPA unchanged bit for bit
+- CLI `--refine-xyz` / `--xyz-max-params`; GUI micro gear switch
 
-### 修复
+### Fixes
 
-- `core/absorption.py`：样品 5 的 gehlenite CIF 化学式与占位不一致，
-  `infer_z` 抛错导致 μ·r 不可算。新增 `_density_from_cell_mass` 回退
-  （直接按晶胞占位质量算 ρ），输出 `density_source="cell_mass"` 与
-  「请核对结构模型」warning；7 样全部相可算
-- `tools/bench_v14.py::stage_base` 引用了未定义的 `runner`（重跑 base
-  阶段才触发），改为显式构造 `RecipeRunner`
-- `tests/test_biso.py` 一条过时断言仍期待 `xyz` 步 `available=False`，
-  已同步为 v1.4 口径；`recipe.py` 模块 docstring 从 v1.1 的
-  「xyz/B 未落地」更新为 v1.4 的 opt-in 语义
-- `README-en.md` 长期停在 v1.1.0，补上当前版本与「功能描述仍为 v1.1.0
-  基线、新特性见中文 CHANGELOG」的明确说明，不再假装已同步
+- `core/absorption.py`: the chemical formula of the gehlenite CIF in sample 5 is inconsistent with occupancy,
+  and `infer_z` raises, making μ·r uncomputable. Added `_density_from_cell_mass` fallback
+  (compute ρ directly from unit-cell occupancy mass), with output `density_source="cell_mass"` and
+  a "please check the structural model" warning; all phases of the 7 samples are now computable
+- `tools/bench_v14.py::stage_base` referenced an undefined `runner` (triggered only when re-running the base
+  stage); changed to construct `RecipeRunner` explicitly
+- One outdated assertion in `tests/test_biso.py` still expected `available=False` for the `xyz` step;
+  synced to the v1.4 behaviour; the `recipe.py` module docstring is updated from the v1.1
+  "xyz/B not landed" to the v1.4 opt-in semantics
+- `README-en.md` had long been stuck at v1.1.0; the current version is added along with an explicit note that
+  "feature descriptions remain at the v1.1.0 baseline, see the Chinese CHANGELOG for new features", no longer pretending to be in sync
 
-### 测试
+### Tests
 
-- 新增 `tests/test_po_probe.py`（4 项）、`tests/test_biso.py`（6 项）、
-  `tests/test_xyz_recipe.py`（6 项）：配置默认关、真值轴回收、
-  互斥/阈值护栏、registry 逐位对拍、合成 ΔB 回收与撞界告警、xyz 步
-  skipped / 欠定 / 迭代封顶 / 元数据继承 / 不恶化承诺
-- `tests/test_absorption.py` 加密度回退用例（用 `try/finally` 恢复 fixture）
-- `tests/test_gui_smoke.py` / `tests/test_recipe.py` 同步
-  「7 done / 1 skipped」与 `len(DEFAULT_STEPS)-1` 快照口径
-- **全量回归**：368 项收集 / 364 通过 / 4 skip / 0 失败
-  （v1.3.0 为 350 收集，净增 18 项）
+- Added `tests/test_po_probe.py` (4 items), `tests/test_biso.py` (6 items),
+  `tests/test_xyz_recipe.py` (6 items): defaults off, true-axis recovery,
+  mutual-exclusion/threshold guards, registry bit-for-bit cross-check, synthetic ΔB recovery and bound-hit warning, xyz step
+  skipped / underdetermined / iteration cap / metadata inheritance / no-degradation promise
+- `tests/test_absorption.py` adds a density-fallback case (restoring the fixture with `try/finally`)
+- `tests/test_gui_smoke.py` / `tests/test_recipe.py` synced to
+  "7 done / 1 skipped" and the `len(DEFAULT_STEPS)-1` snapshot semantics
+- **Full regression**: 368 collected / 364 passed / 4 skipped / 0 failed
+  (v1.3.0 collected 350, a net increase of 18)
 
-### 实样复测结论（7 样，详见评估报告 §11.5）
+### Real-sample re-measurement conclusion (7 samples, see evaluation report §11.5)
 
-- **v1.3 零回归**：base 与 v1.2 tent14 基线逐位一致，均值 18.8439%
-- **PO 自动试探**：样品 1/3/7 端到端 −4.816 / −12.604 / −4.451 pt；
-  样品 3 自动选中 CaF₂(111) `r≈0.448`，与全轴穷举上界差 ≤0.05 pt；
-  窗口 5–120° 再降 0.81–0.94 pt
-- **EWIMV / Popa LB**：织构在 1/3/7 值 −6.004 / −13.666 / −5.206 pt
-  （但 19 自由参数，不设默认）；样品 5 各向异性 −0.768 pt
-- **μ·r QPA**：Rwp 不变（数学简并），样品 4 hematite wt% +4.60 pt 最大；
-  样品 5 gehlenite 触发 `cell_mass` 密度回退
-- **组合口径**：5–120° + PO + B + xyz 一起开，样品 1 23.880 → 17.185%、
-  样品 3 24.525 → 13.537%；**收益不可加**——B 先把 CaF₂ 的 ΔB 顶到
-  6 Å² 吸收大半高角失配，组合里 micro 步只剩单项收益的三分之一
-- **#21 无序方石英**：不引入无序模型。三多型 Rwp 26.709/26.350/25.235、
-  wt% 2.72/3.52/5.27；移除该相 +1.00 pt；ΔB_iso 阻尼最多只动 0.11 pt
-  且 wt% 仍漂移。降级为「仅参照相」、wt% 不报告，需 TEM/IR 或
-  21.9° 单峰 Le Bail 人工判读；不新增引擎开关、不改用户数据
+- **v1.3 zero regression**: base matches the v1.2 tent14 baseline bit for bit, mean 18.8439%
+- **Automatic PO probing**: end-to-end −4.816 / −12.604 / −4.451 pt on samples 1/3/7;
+  sample 3 automatically selects CaF₂(111) `r≈0.448`, within ≤0.05 pt of the full-axis exhaustive upper bound;
+  window 5–120° gives a further 0.81–0.94 pt
+- **EWIMV / Popa LB**: texture on 1/3/7 is worth −6.004 / −13.666 / −5.206 pt
+  (but with 19 free parameters, so no default); anisotropic on sample 5 −0.768 pt
+- **μ·r QPA**: Rwp unchanged (mathematically degenerate), hematite wt% in sample 4 +4.60 pt at most;
+  gehlenite in sample 5 triggers the `cell_mass` density fallback
+- **Combined setting**: 5–120° + PO + B + xyz enabled together, sample 1 23.880 → 17.185%,
+  sample 3 24.525 → 13.537%; **gains are not additive** — B first pushes CaF₂ ΔB to
+  6 Å², absorbing most of the high-angle mismatch, so in the combination the micro step retains only one third of its standalone gain
+- **#21 disordered cristobalite**: no disorder model is introduced. Rwp of the three polytypes 26.709/26.350/25.235,
+  wt% 2.72/3.52/5.27; removing the phase +1.00 pt; ΔB_iso damping moves at most 0.11 pt
+  and wt% still drifts. Downgraded to "reference phase only", wt% not reported, requiring TEM/IR or
+  manual interpretation of the 21.9° single peak by Le Bail; no new engine switch, no modification of user data
 
-### 文档
+### Documentation
 
-- `docs/评估报告-实样对拍-MAUD-v1.md` §11.5：v1.4 全量复测记录
-  （零回归基线 / 增量口径修正 / PO·EWIMV·μ·r / PO 试探与窗口 /
-  ΔB_iso 与撞界 / xyz 与组合口径 / 无序方石英 / 发布口径与遗留缺口）
-- 可复现脚本 `tools/bench_v14.py`、`tools/eval_cristobalite.py`
-  （基准数据落临时目录，不入 Git）
+- `docs/评估报告-实样对拍-MAUD-v1.md` §11.5: v1.4 full re-measurement record
+  (zero-regression baseline / incremental-metric corrections / PO·EWIMV·μ·r / PO probing and window /
+  ΔB_iso and bound hits / xyz and combined setting / disordered cristobalite / release decisions and remaining gaps)
+- Reproducible scripts `tools/bench_v14.py`, `tools/eval_cristobalite.py`
+  (benchmark data lands in a temporary directory, not committed to Git)
 
-### 构建修复：安装包必定构建失败（版本号漂移）
+### Build fix: the installer could never build (version number drift)
 
-- 现象：`tools/build_binaries.py build-installer` 打完 PyInstaller 后报
-  「安装包未生成」。`packaging/inno/xinrefinement.iss` 里 `AppVersion` 还停在
-  `1.1.0`，ISCC 据此把产物命名成 `...-1.1.0-setup.exe`，而脚本按
-  `__version__`（`1.4.0`）去找文件 —— 必然落空，前面十几分钟的打包白跑。
-- 修法：iss 只保留一处 `#ifndef AppVersion` 默认值（与 `__version__` 同步），
-  其余位置全部 `{#AppVersion}`；`build_installer()` 用
-  `ISCC /DAppVersion=<ver> /DDistDir=<dir>` 注入，版本号只有一个真相源。
-- 加闸：`tests/test_version_consistency.py`（3 项）—— iss 默认值必须等于
-  `__version__`、文件里除 `#define` 外不得出现字面版本号、构建脚本必须传
-  `/DAppVersion=`。
+- Symptom: `tools/build_binaries.py build-installer` reports "installer not generated" after PyInstaller finishes.
+  `AppVersion` in `packaging/inno/xinrefinement.iss` was still `1.1.0`, so ISCC named the artifact `...-1.1.0-setup.exe`,
+  while the script looked for the file by `__version__` (`1.4.0`) — a guaranteed miss, wasting the preceding
+  ten-plus minutes of packaging.
+- Fix: the iss keeps a single `#ifndef AppVersion` default (synced with `__version__`),
+  and every other occurrence uses `{#AppVersion}`; `build_installer()` injects it via
+  `ISCC /DAppVersion=<ver> /DDistDir=<dir>`, leaving a single source of truth for the version number.
+- Guard added: `tests/test_version_consistency.py` (3 items) — the iss default must equal
+  `__version__`, no literal version number may appear in the file outside `#define`, and the build script must pass
+  `/DAppVersion=`.
 
-## v1.3.0（已推送）
+## v1.3.0 (pushed)
 
-主题：MAUD 源码复核借鉴清单**全部落地**（μ·r 计算器、theoreticalWeights、
-画布点选背景、EWIMV 织构、Popa LB 各向异性、优化器插拔）+ 一项重要设计
-评审结论（μ·r 精修证伪，改为计算器）。测试 350 项收集 / 346 通过 / 4 skip。
+Theme: the MAUD source-code review borrowing list **fully landed** (μ·r calculator, theoreticalWeights,
+canvas-picked background, EWIMV texture, Popa LB anisotropic, pluggable optimizer) + one important design
+review conclusion (μ·r refinement falsified, replaced by a calculator). Tests 350 collected / 346 passed / 4 skipped.
 
-### 设计评审（重要）
+### Design review (important)
 
-- **μ·r 精修证伪，降级为实验机制**：Brindley 因子是每相常数标量，与线性层
-  每相自由 scale **完全简并**（乘积 S_p·f(μr_p) 才可辨识）。数值实验证实：
-  单谱精修 μ·r 数学上不可辨识，LM 在零梯度平面漂移到边界（真值 2.0 →
-  撞界 20.0），且 **Rwp 逐位不变而 wt% 静默漂移**——MAUD 的 Brindley 实现
-  同构、同样存在该简并。`RefineConfig.refine_microabs` 机制代码保留仅供
-  多谱联合/受约束标度等未来场景实验，生产路径（配方/GUI/CLI）一律不暴露
+- **μ·r refinement falsified, downgraded to an experimental mechanism**: the Brindley factor is a constant scalar per phase,
+  **completely degenerate** with the per-phase free scale of the linear layer (only the product S_p·f(μr_p) is identifiable).
+  Numerical experiments confirm: μ·r is mathematically unidentifiable in single-pattern refinement; LM drifts
+  to the boundary on a zero-gradient plane (true value 2.0 → bound 20.0), and **Rwp is unchanged bit for bit while wt% drifts silently** — MAUD's Brindley
+  implementation is isomorphic and suffers the same degeneracy. The mechanism code in `RefineConfig.refine_microabs` is retained only for
+  future experiments such as multi-pattern joint/constrained scaling; the production path (recipe/GUI/CLI) never exposes it
 
-### 新增
+### New
 
-- **μ·r 计算器 `core/absorption.py`**（替代精修的正确路径）：内嵌元素
-  质量衰减系数表（`core/mu_table.py`，由 xraylib 4.3 / NIST-Chantler 评估
-  生成，Z=1–94 × 6 阳极，运行时零依赖）；`calc_mu_r(CIF, 晶粒半径)` 按
-  晶胞占位算元素质量分数、ρ=Z·M/(N_A·V)、μ=(μ/ρ)·ρ，输出 μ·r。
-  物理对照：锐钛矿 ρ=3.890（文献 3.89）、μ/ρ=124 cm²/g（文献 124–129）。
-  GUI 物相参数编辑新增「按成分计算 μ·r」（晶粒半径输入 + 计算明细弹窗）；
-  CLI `--grain-size 相名=r_μm`（手工 `--microabs` 同名时优先）
-- **theoreticalWeights 定权模式**（借鉴 MAUD `theoreticalWeights`）：
-  `weight_mode="theoretical"`，σ=√max(ycalc,1) 用计算值代替观测值定权
-  （抗弱峰噪声漂移）；solve() 入口按初始参数引导解析为固定 σ 数组
-  （静态 σ 保证残差确定性），引擎/e.s.d./Rwp 口径自动一致；
-  GUI 背景弹窗新增「定权模式」下拉；CLI `--weight-mode theoretical`
-- **画布点选背景锚点**（借鉴 MAUD 手工背景点）：工具栏「点选背景」开关，
-  主轴内左键添加/移除锚点（±0.15° 判同点，强度取实测插值）、右键清空；
-  d 轴模式自动换算（存 2θ）；锚点回写 settings.bg 并自动切 manual 模式，
-  经既有 `bg_points` 引擎路径下次精修生效；工程保存/恢复闭环；zh/en/ja
+- **μ·r calculator `core/absorption.py`** (the correct path replacing refinement): embeds an element
+  mass attenuation coefficient table (`core/mu_table.py`, generated from xraylib 4.3 / NIST-Chantler evaluation,
+  Z=1–94 × 6 anodes, zero runtime dependency); `calc_mu_r(CIF, grain radius)` computes element mass fractions
+  from unit-cell occupancy, ρ=Z·M/(N_A·V), μ=(μ/ρ)·ρ, and outputs μ·r.
+  Physical check: anatase ρ=3.890 (literature 3.89), μ/ρ=124 cm²/g (literature 124–129).
+  GUI phase parameter editing adds "compute μ·r from composition" (grain radius input + calculation detail popup);
+  CLI `--grain-size phase=r_μm` (takes precedence over a manual `--microabs` of the same name)
+- **theoreticalWeights weighting mode** (borrowed from MAUD `theoreticalWeights`):
+  `weight_mode="theoretical"`, σ=√max(ycalc,1) uses calculated values instead of observed values for weighting
+  (robust against weak-peak noise drift); the `solve()` entry bootstraps it into a fixed σ array from initial parameters
+  (static σ guarantees residual determinism), and the engine/e.s.d./Rwp metrics stay automatically consistent;
+  GUI background popup adds a "weighting mode" dropdown; CLI `--weight-mode theoretical`
+- **Canvas-picked background anchors** (borrowed from MAUD manual background points): toolbar "pick background" switch,
+  left click in the main axes adds/removes anchors (±0.15° means the same point, intensity taken from measured interpolation), right click clears;
+  d-axis mode converts automatically (stored as 2θ); anchors are written back to settings.bg and the mode switches to manual,
+  taking effect on the next refinement via the existing `bg_points` engine path; project save/restore closes the loop; zh/en/ja
 
-### EWIMV 离散 ODF 织构（任务 #14）
+### EWIMV discrete ODF texture (task #14)
 
-规格见 [`docs/规格-EWIMV织构-v1.md`](docs/规格-EWIMV织构-v1.md)（已实现）。
+Specification in [`docs/规格-EWIMV织构-v1.md`](docs/规格-EWIMV织构-v1.md) (implemented).
 
-- **模型**：Bragg–Brentano 平板对称反射几何下散射矢量恒沿样品法向，织构
-  因子退化为**每反射常数** `T(χ_hkl)`——χ 为晶面法向与织构轴夹角（0–90°，
-  用倒易基矢算，非正交晶系正确）。每相 19 点网格（5° 步长）线性插值
-- **正则化**：二阶差分光滑罚 `√λ·(T[k−1]−2T[k]+T[k+1])`（λ 默认 1.0，
-  CLI/GUI 可调）+ **末端节点锚定 1.0**（权重 100）。锚定不只是物理论断
-  （远场回归无织构），它还**消除「T 整体乘常数 ↔ 该相 scale 除常数」这条
-  零空间**——没有它 T 的水平不可辨识，LM 会沿平盘漂移
-- **护栏**：相内独立 χ 桶数（5° 分桶）< 3 直接 `ValueError`（欠定不给结果）；
-  开织构的相忽略 March–Dollase r 并告警（同一自由度不给两套模型）
-- **落点**：`ProfileParams.texture` / `compute_peaks(with_dirs=)` 的峰方向 /
-  `RefineConfig.refine_texture`+`texture_lambda` / registry `texture` 组
-  （19 槽/相）/ GUI 物相编辑「织构 (EWIMV)」/ CLI `--texture 相名=h,k,l`
-- **实测**（合成谱，anatase (001) 方向 T=3）：无织构模型 17.91% → 开织构
-  0.002%，T(0) 精确回收 3.000，末端 1.000
+- **Model**: under Bragg–Brentano flat-plate symmetric reflection geometry the scattering vector is always along the sample normal, so the texture
+  factor degenerates to a **constant per reflection** `T(χ_hkl)` — χ is the angle between the plane normal and the texture axis (0–90°,
+  computed with reciprocal basis vectors, correct for non-orthogonal crystal systems). 19-point grid per phase (5° step) with linear interpolation
+- **Regularization**: second-difference smoothness penalty `√λ·(T[k−1]−2T[k]+T[k+1])` (λ defaults to 1.0,
+  adjustable in CLI/GUI) + **end-node anchoring at 1.0** (weight 100). Anchoring is not merely a physical assertion
+  (far-field returns to no texture); it also **removes the null space "T scaled by a constant ↔ that phase's scale divided by the constant"** —
+  without it the level of T is unidentifiable and LM drifts along the flat plate
+- **Guards**: fewer than 3 independent χ buckets within a phase (5° bucketing) raises `ValueError` directly (no result when underdetermined);
+  phases with texture on ignore March–Dollase r with a warning (no two models for the same degree of freedom)
+- **Landing points**: `ProfileParams.texture` / peak directions in `compute_peaks(with_dirs=)` /
+  `RefineConfig.refine_texture`+`texture_lambda` / registry `texture` group
+  (19 slots/phase) / GUI phase editing "texture (EWIMV)" / CLI `--texture phase=h,k,l`
+- **Measured** (synthetic pattern, anatase (001) direction T=3): no-texture model 17.91% → texture on
+  0.002%, T(0) recovered exactly as 3.000, end node 1.000
 
-### Popa LB 各向异性尺寸/应变（任务 #15）
+### Popa LB anisotropic size/strain (task #15)
 
-- **模型**：2 阶球谐截断 + **Cholesky 参数化**（`L` 行优先下三角 6 参）：
+- **Model**: 2nd-order spherical harmonic truncation + **Cholesky parameterization** (row-major lower-triangular `L`, 6 parameters):
 
-  `1/D² = |L_sᵀn|²`、`ε² = |L_εᵀn|²` → `Y = (180/π)·Kλ/√(1/D²)`、
-  `X = (180/π)·4ε`（与标量 TCH 同单位同语义，逐位可退化验证）
+  `1/D² = |L_sᵀn|²`, `ε² = |L_εᵀn|²` → `Y = (180/π)·Kλ/√(1/D²)`,
+  `X = (180/π)·4ε` (same units and semantics as scalar TCH, bit-for-bit degenerate verification possible)
 
-  用 Cholesky 而非直接二次型系数，是因为 `|Lᵀn|` 对参数**处处可导**，
-  直接二次型在 q=0 处 `sqrt` 导数发散、LM 数值差分会被放大
-- **可辨识性护栏**（本任务的硬要求）：`aniso_mode` 默认 `"size"`（6 参）；
-  窗口内独立晶向 < 8 直接报错；`"both"`（12 参）给出「size 与 strain 会
-  互相吸收」告警。实测印证：纯尺寸合成数据 + both 模式 → Rwp 0.14% 但
-  L 矩阵乱、比值 52 而非 3.3；只放 size → 参数与比值都正确
-- **落点**：`ProfileParams.aniso` / registry `aniso` 槽（6 或 12/相，
-  对角/非对角分别给界）/ GUI「各向异性尺寸/应变 (Popa LB)」/ CLI `--aniso`
-- **实测**（合成 D_a=200 Å、D_c=60 Å）：各向同性 30.80% → 各向异性 0.06%，
-  `size` 对角回收 4.999e-3 / 1.664e-2（真值 5.000e-3 / 1.667e-2），
-  Dmax/Dmin 3.346（真值 3.333）
+  Cholesky is used rather than direct quadratic-form coefficients because `|Lᵀn|` is **differentiable everywhere** with respect to the parameters,
+  whereas the direct quadratic form has a divergent `sqrt` derivative at q=0, which LM numerical differences would amplify
+- **Identifiability guard** (a hard requirement of this task): `aniso_mode` defaults to `"size"` (6 parameters);
+  fewer than 8 independent crystal directions in the window raises an error; `"both"` (12 parameters) gives a warning that
+  "size and strain will absorb each other". Measurement confirms: pure-size synthetic data + both mode → Rwp 0.14% but the
+  L matrix is garbage and the ratio is 52 instead of 3.3; size only → parameters and ratio are both correct
+- **Landing points**: `ProfileParams.aniso` / registry `aniso` slot (6 or 12/phase,
+  separate bounds for diagonal/off-diagonal) / GUI "anisotropic size/strain (Popa LB)" / CLI `--aniso`
+- **Measured** (synthetic D_a=200 Å, D_c=60 Å): isotropic 30.80% → anisotropic 0.06%,
+  `size` diagonal recovered 4.999e-3 / 1.664e-2 (true values 5.000e-3 / 1.667e-2),
+  Dmax/Dmin 3.346 (true value 3.333)
 
-### 优化器插拔（任务 #16）
+### Pluggable optimizers (task #16)
 
-- 新增 `core/refine/optimizers.py`：`OPTIMIZERS = {lm, trf, dogbox}` +
-  别名 `scipy = trf`，统一入口 `minimize()`；cost 一律 `0.5·||r||²`
-  （重启比较才能直接比）；未知方法**报错并列出可用项**，不静默回退；
-  scipy 缺失时自动回退自研 LM（历史行为）
-- `nonlinear.refine` 与 `cell.refine_cell_full` 均改走注册表；CLI
-  `--backend lm|trf|dogbox|scipy`；新增优化器只需写一个 `_run_xxx` 登记
-- 三方法在同一良态问题上收敛到同一解（cost 到 1e-4 相对一致），边界投影
-  一致；端到端 trf/dogbox 与 lm 的 Rwp 同盆收敛
+- Added `core/refine/optimizers.py`: `OPTIMIZERS = {lm, trf, dogbox}` +
+  alias `scipy = trf`, unified entry `minimize()`; cost is always `0.5·||r||²`
+  (so restart comparisons are directly comparable); unknown methods **raise and list the available options**, with no silent fallback;
+  when scipy is missing, falls back automatically to the in-house LM (historical behaviour)
+- `nonlinear.refine` and `cell.refine_cell_full` both go through the registry; CLI
+  `--backend lm|trf|dogbox|scipy`; a new optimizer only needs one `_run_xxx` function registered
+- All three methods converge to the same solution on the same well-conditioned problem (cost agrees to 1e-4 relative), with consistent
+  bound projection; end-to-end trf/dogbox converge to the same basin as lm in Rwp
 
-### 修复
+### Fixes
 
-- **重启起点丢扩展字段**（`nonlinear._restart_points`）：此前手工重建
-  `ProfileParams`，把 X/Y、microabs、texture、aniso 静默清零——重启后
-  registry.pack 直接崩溃（v1.3 各向异性实测暴露）。改为 `dataclasses.replace`
-  只改 U/V/W，其余字段全部保留
-- **解除 `registry` ↔ `nonlinear` 模块级循环导入**：registry 改为用到时
-  局部导入 nonlinear，使「谁先被 import」都不影响可导入性
+- **Restart start points dropped extension fields** (`nonlinear._restart_points`): previously `ProfileParams` was rebuilt by hand,
+  silently zeroing X/Y, microabs, texture and aniso — `registry.pack` then crashed outright after a restart
+  (exposed by the v1.3 anisotropic measurements). Changed to `dataclasses.replace`
+  modifying only U/V/W, keeping all other fields
+- **Removed the module-level circular import between `registry` and `nonlinear`**: registry now imports
+  nonlinear locally when needed, so import order no longer affects importability
 
-### 文档
+### Documentation
 
-- `docs/规格-EWIMV织构-v1.md`：EWIMV 离散 ODF 织构规格 + 实现落地记录
-  （纤维 1D ODF + 光滑罚 + 六条验收 A1–A6 及实测值）
+- `docs/规格-EWIMV织构-v1.md`: EWIMV discrete ODF texture specification + implementation record
+  (fiber 1D ODF + smoothness penalty + six acceptance items A1–A6 with measured values)
 
-## v1.2.0（未发布）
+## v1.2.0 (unreleased)
 
-主题：实样对拍（7 个 MAUD 手工精修样品，见
-[`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md)）
-暴露的 P0 缺陷修复 + 出厂默认升级 + MAUD 源码复核借鉴前三项
-（[`docs/MAUD源码复核-v1.md`](docs/MAUD源码复核-v1.md)）。
+Theme: P0 defect fixes exposed by the real-sample cross-check (7 manually refined MAUD samples, see
+[`docs/评估报告-实样对拍-MAUD-v1.md`](docs/评估报告-实样对拍-MAUD-v1.md))
++ factory default upgrade + the first three items borrowed from the MAUD source review
+([`docs/MAUD源码复核-v1.md`](docs/MAUD源码复核-v1.md)).
 
-### 修复
+### Fixes
 
-- **配方「晶胞参数」步骤假执行**（`core/refine/recipe.py`）：`config_for`
-  从不设置 `refine_cell`，注释引用的 `run_cell_step` 全仓库不存在，
-  该步 status=done 但 Rwp 前后逐位相同。现由 `RecipeRunner._run_cell`
-  编排「solve → `refine_cell_full`（按晶系放自由分量）→ 用新晶胞再 solve」，
-  新晶胞回写后续步骤共用的相列表。实样 1：该步 36.29% → 26.57%，
-  配方末值 33.74% → 25.92%
-- **GUI 单次精修用峰高旧口径**（`gui/main_window.py`）：`integrated=False`
-  → `True`（Rietveld 标度 S 标准口径，CLI 本就是 True）。实样 1 同配置
-  差 3.65 个百分点
-- **晶胞回写丢元数据**（`core/refine/cell.py`）：新增 `structure_with_cell`
-  公共入口，`apply_cell_scales` 与配方回写共用；漏搬 `formula/z_declared`
-  会让晶胞精修后 QPA 静默变 None
-- **CLI 失败分支崩溃**（`cli/refine.py`）：`rec.note` → `rec.message`
-  （`StepRecord` 无 note 字段，仅真失败时触发 AttributeError）
+- **Fake execution of the "unit cell parameters" recipe step** (`core/refine/recipe.py`): `config_for`
+  never set `refine_cell`, the `run_cell_step` referenced in comments did not exist anywhere in the repository,
+  and the step had status=done while Rwp was identical bit for bit before and after. It is now orchestrated by `RecipeRunner._run_cell`
+  as "solve → `refine_cell_full` (release free components by crystal system) → solve again with the new unit cell",
+  with the new unit cell written back to the phase list shared by subsequent steps. Real sample 1: that step 36.29% → 26.57%,
+  recipe final value 33.74% → 25.92%
+- **GUI single refinement used the old peak-height convention** (`gui/main_window.py`): `integrated=False`
+  → `True` (the standard Rietveld scale S convention; CLI already used True). Real sample 1 differs by 3.65 percentage points
+  under the same configuration
+- **Unit-cell write-back dropped metadata** (`core/refine/cell.py`): added the public entry `structure_with_cell`,
+  shared by `apply_cell_scales` and recipe write-back; failing to carry over `formula/z_declared`
+  would silently turn QPA into None after unit-cell refinement
+- **CLI failure branch crash** (`cli/refine.py`): `rec.note` → `rec.message`
+  (`StepRecord` has no note field, so AttributeError was triggered only on a real failure)
 
-### 新增
+### New
 
-- **定权模式 `weight_mode`**（借鉴 MAUD `getWeight`，P0 对拍§4.3 关联）：
-  `sqrt`（默认，计数统计，与 v1.1.x 逐位一致）/ `file`（谱图自带
-  σ，即 `_pd_meas_intensity_sigma`）/ `unit` / `1/y`；残差与 Rwp 同口径；
-  `esd.py` 同步走该口径；CLI `--weight-mode`
-- **Brindley 微吸收校正（按相）**（借鉴 MAUD `MicroAbsorptionBrindley`）：
-  `ProfileParams.microabs = {相名: μ·r}`，因子 `(1−e^(−μr))/(μr)` 乘到该相
-  计算强度（小 μr 走 Taylor 展开避免消元）；默认关闭逐位不变；
-  GUI 物相参数编辑对话框新增「微吸收校正」组；CLI `--microabs 相名=μr`；
-  v1.2.0 只施加不精修
-- **插值背景 `bg_mode="interp"`**（借鉴 MAUD `backgroundSubtraction`
-  默认 10 次迭代语义）：`interp_background_nodes` 自动提取锚点
-  （2σ 贴背景带 + 段内中位数，合成谱回收 p50 误差 <1 counts），
-  一次性提取后走 P2.2 固定背景分支；CLI `--bg-mode interp`
-- **手动背景点真正接线**（P2.2 断线修复）：GUI 背景弹窗的 manual 模式
-  此前被降级成 cheb、`bg_points` 从未进引擎；现经 `RefineConfig.bg_points`
-  贯通 solve/`refine_cell_full`/配方全路径，结果区背景曲线正确重建
-- **`adaptive_n_bg(tmin, tmax)`**：tent/interp 节点数自适应 ≈1 节点/6°
+- **Weighting mode `weight_mode`** (borrowed from MAUD `getWeight`, related to P0 cross-check §4.3):
+  `sqrt` (default, counting statistics, bit-for-bit identical to v1.1.x) / `file` (pattern-supplied
+  σ, i.e. `_pd_meas_intensity_sigma`) / `unit` / `1/y`; residuals and Rwp share the same convention;
+  `esd.py` follows the same convention; CLI `--weight-mode`
+- **Brindley micro-absorption correction (per phase)** (borrowed from MAUD `MicroAbsorptionBrindley`):
+  `ProfileParams.microabs = {phase name: μ·r}`, factor `(1−e^(−μr))/(μr)` multiplied into that phase's
+  calculated intensity (small μr uses a Taylor expansion to avoid cancellation); off by default and unchanged bit for bit;
+  the GUI phase parameter editing dialog gains a "micro-absorption correction" group; CLI `--microabs phase=μr`;
+  v1.2.0 only applies it, without refinement
+- **Interpolated background `bg_mode="interp"`** (borrowed from the MAUD `backgroundSubtraction`
+  default 10-iteration semantics): `interp_background_nodes` extracts anchors automatically
+  (2σ band hugging the background + in-segment median; synthetic-pattern recovery error of p50 <1 counts),
+  extracted once and then taken through the P2.2 fixed-background branch; CLI `--bg-mode interp`
+- **Manual background points actually wired up** (P2.2 disconnection fix): the manual mode of the GUI background popup
+  was previously downgraded to cheb and `bg_points` never reached the engine; it now flows through `RefineConfig.bg_points`
+  across solve/`refine_cell_full`/recipe full paths, and the background curve is rebuilt correctly in the results area
+- **`adaptive_n_bg(tmin, tmax)`**: tent/interp node count adapts at ≈1 node/6°
 
-### 变更（默认值）
+### Changes (defaults)
 
-- **GUI 出厂背景默认 `tent` + 自适应节点数**（原 cheb + 固定 3 项）：
-  实样对拍 §11.2 实测 7 样均值 23.06% → 18.84%（tent14）；
-  用户在齿轮弹窗显式设置的值优先
+- **GUI factory background default `tent` + adaptive node count** (previously cheb + fixed 3 terms):
+  real-sample cross-check §11.2 measured a 7-sample mean of 23.06% → 18.84% (tent14);
+  values explicitly set by the user in the gear popup take precedence
 
-### 实测效果（7 个实样，出厂「一键连跑」口径）
+### Measured effect (7 real samples, factory "one-click full run" setting)
 
-| 配置 | 7 样平均 Rwp |
+| Config | 7-sample mean Rwp |
 |---|---|
-| v1.1.1 出厂（cheb3 + 峰高口径 + cell 假执行） | 26.00% |
-| v1.2.0 出厂（tent14 + integrated=True + cell 真执行） | 18.84% |
-| v1.2.0 出厂 + interp14（借鉴 1a，两层可加） | 19.01% |
-| MAUD 手工参考 | 11.23% |
+| v1.1.1 factory (cheb3 + peak-height convention + fake cell execution) | 26.00% |
+| v1.2.0 factory (tent14 + integrated=True + real cell execution) | 18.84% |
+| v1.2.0 factory + interp14 (borrowed 1a, two layers are additive) | 19.01% |
+| MAUD manual reference | 11.23% |
 
-> interp（固定插值层 + 自由 Chebyshev 层）与自由 tent 基本打平（差 0.17 点，
-> 逐样互有胜负）：说明本实现已复现 MAUD 背景框架的等效能力；
-> 首版「仅固定曲线、无可叠加多项式层」实测明显劣化（样品 2: 19.49% vs 7.76%），
-> 两层结构是必要条件。
+> interp (fixed interpolation layer + free Chebyshev layer) is essentially on par with free tent (0.17 points apart,
+> with wins and losses varying by sample): the implementation has reproduced the equivalent capability of the MAUD background framework;
+> the first version with "fixed curve only, no stackable polynomial layer" degraded markedly (sample 2: 19.49% vs 7.76%),
+> so the two-layer structure is a necessary condition.
 
-### 验证
+### Validation
 
-- 新增 `tests/test_weight_mode.py`（5 项）、`tests/test_microabs.py`（4 项）、
-  `tests/test_bg_interp.py`（5 项）；`test_recipe.py`/`test_gui_smoke.py`
-  P0 回归锁 3 项；全量 `pytest` → **303 项收集，299 通过 / 4 skip / 0 失败**
-  （v1.1.0 基线 286 项收集，无回归）
-- 借鉴清单后续项（EWIMV ODF / Popa LB / 多优化器 / theoreticalWeights /
-  画布点选背景 / μ·r 精修）已登记任务清单，排 v1.3+
+- Added `tests/test_weight_mode.py` (5 items), `tests/test_microabs.py` (4 items),
+  `tests/test_bg_interp.py` (5 items); `test_recipe.py`/`test_gui_smoke.py`
+  gain 3 P0 regression locks; full `pytest` → **303 collected, 299 passed / 4 skipped / 0 failed**
+  (v1.1.0 baseline collected 286, no regression)
+- Subsequent borrowing-list items (EWIMV ODF / Popa LB / multiple optimizers / theoreticalWeights /
+  canvas-picked background / μ·r refinement) are registered in the task list, scheduled for v1.3+
 
-### 文档
+### Documentation
 
-- `docs/MAUD源码复核-v1.md`：上游源码（v3.09）逐模块复核，
-  6 项可借鉴能力与 4 项不建议照搬项
+- `docs/MAUD源码复核-v1.md`: module-by-module review of the upstream source (v3.09),
+  6 borrowable capabilities and 4 items not recommended for adoption
 
-## v1.1.0（2026-11-05 发布）
+## v1.1.0 (released 2026-11-05)
 
-主题：打通「物相检索（XinMatch）→ 全谱拟合精修（XinRefinement）」家族链路。
-计划与格式契约见 [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md)，
-发布说明见 [`docs/RELEASE_NOTES_v1.1.0.md`](docs/RELEASE_NOTES_v1.1.0.md)，
-安装包见 [Release v1.1.0](https://github.com/PolyXRD/XinRefinement/releases/tag/v1.1.0)。
-配套版本：**XinMatch 3.4.0**。精修引擎、参数模型、CLI 参数与注册机制均未改动。
+Theme: connecting the "phase search (XinMatch) → full-pattern refinement (XinRefinement)" family pipeline.
+The plan and format contract are in [`docs/JOINT_PLAN_xinm_xinr.md`](docs/JOINT_PLAN_xinm_xinr.md),
+release notes in [`docs/RELEASE_NOTES_v1.1.0.md`](docs/RELEASE_NOTES_v1.1.0.md),
+installer in [Release v1.1.0](https://github.com/PolyXRD/XinRefinement/releases/tag/v1.1.0).
+Companion version: **XinMatch 3.4.0**. The refinement engine, parameter model, CLI arguments and registration mechanism are unchanged.
 
-### 新增
+### New
 
-- **导入 XinMatch 物相分析（`.xinm`）**：文件菜单新入口；装载谱图 + 已选物相 CIF +
-  wavelength/anode 元数据；`structural=false` 的相（PDF2 类无结构条目）列为「仅参照」
-  并提示手动补 CIF，不参与精修；导入内核 `core/io/xinm_import.py` 不依赖 Qt，
-  GUI/CLI/库 API 共用，含 zip 炸弹防护与版本协商（version > 支持值提示升级）
-- **工程文件升级 `.xinr`（自包含 zip 容器）**：默认内嵌谱图（规范 CSV，`%.10g`，
-  往返相对误差 ≤ 1e-9）+ CIF + 完整精修结果（`result/refine.json`，与 CLI `--out`
-  同族 schema：R 因子/参数/物相/收敛历史/diagnostics/e.s.d.），换机器/移目录后仍可
-  打开精修；打开工程即回填结果摘要与收敛曲线，**无需重新精修即可复现上次结果**；
-  扩展名分流——`.xinr` 走容器、`.xrp` 保持 v1.0.0 的 JSON 路径引用（**旧文件永久只读兼容**）；
-  顺带修复 v1.0.0 `.xrp` 丢失 `phase_edits` 的问题
-- **导入时晶胞/空间群一致性核对**：manifest 与 CIF 一致则预填 `phase_edits`（记录来源），
-  显著不符（>0.1% 或 >0.05°）时以 CIF 为准并列清单提示，空间群符号做 `:1`/下划线归一化
-  避免误报；`structural=true` 但包内缺 CIF 的相降级为「仅参照」并给出含文件名的原因
-- **库 API**：`capabilities()` 新增 `xinm_import: "1"` 能力位
+- **Import XinMatch phase analysis (`.xinm`)**: a new entry in the File menu; loads pattern + selected phase CIFs +
+  wavelength/anode metadata; phases with `structural=false` (PDF2-type entries without structure) are listed as "reference only"
+  with a prompt to supply a CIF manually, and do not take part in refinement; the import core `core/io/xinm_import.py` has no Qt dependency
+  and is shared by GUI/CLI/library API, including zip-bomb protection and version negotiation (version > supported value prompts an upgrade)
+- **Project file upgraded to `.xinr` (self-contained zip container)**: embeds the pattern by default (canonical CSV, `%.10g`,
+  round-trip relative error ≤ 1e-9) + CIFs + full refinement results (`result/refine.json`, same schema family as CLI `--out`:
+  R factors/parameters/phases/convergence history/diagnostics/e.s.d.), so the refinement can still be opened after moving machines or directories;
+  opening a project immediately restores the result summary and convergence curve, **reproducing the previous result without re-refining**;
+  extension split — `.xinr` uses the container, `.xrp` keeps the v1.0.0 JSON path reference (**old files remain read-only compatible forever**);
+  also fixes the v1.0.0 `.xrp` losing `phase_edits`
+- **Unit-cell/space-group consistency check on import**: if manifest and CIF agree, `phase_edits` is pre-filled (recording the source);
+  on significant mismatch (>0.1% or >0.05°) the CIF wins and a list is shown; space-group symbols are normalized with `:1`/underscores
+  to avoid false positives; a phase with `structural=true` but no CIF in the package is downgraded to "reference only" with a reason that includes the file name
+- **Library API**: `capabilities()` gains the `xinm_import: "1"` capability flag
 
-### 验证
+### Validation
 
-- 新增 `tests/test_xinm_import.py`（13 项，含跨仓库 round-trip 与 S2/S3/S4 场景）、
-  `tests/test_project_zip.py`（7 项，含 `result_full` 往返与缺 source 自包含打开）、
-  `tests/test_joint_s1.py`（3 项，真实 COD 档案 7206075 + 9001681 全闭环）
-- S1 数值保真：`.xinm` 导入后走公开 API → **Rwp 3.409617019598457（与 P0 黄金值逐位一致）**，
-  定量 50.03 / 49.97 wt%；GUI 一键连跑口径下「导入路径」与「手动导入同谱图+CIF」
-  Rwp 逐位相等；保存 `.xinr` 后删除临时谱图与 `.xinm` 重开，Rwp 复现（rel 1e-9）
-- S2 混合来源：COD + 用户 CIF 相打包，PDF2 相仅参照且**包内无 ICDD 衍生文件**；
-  S3 边界：缺 CIF / 损坏 zip / 缺谱图 / version=2 均给可读提示不崩溃
-- 全量测试 259 → **286 项全绿**；i18n 三语补 `menu.import_xinm`
+- Added `tests/test_xinm_import.py` (13 items, including cross-repository round-trip and S2/S3/S4 scenarios),
+  `tests/test_project_zip.py` (7 items, including `result_full` round-trip and self-contained opening when source is missing),
+  `tests/test_joint_s1.py` (3 items, full loop with real COD records 7206075 + 9001681)
+- S1 numerical fidelity: after `.xinm` import through the public API → **Rwp 3.409617019598457 (bit-for-bit identical to the P0 golden value)**,
+  quantification 50.03 / 49.97 wt%; under the GUI one-click full-run setting, the "import path" and "manual import of the same pattern + CIF"
+  give bit-for-bit equal Rwp; after saving `.xinr` and deleting the temporary pattern and `.xinm`, reopening reproduces Rwp (rel 1e-9)
+- S2 mixed sources: COD + user CIF phases packaged, PDF2 phase reference-only and **no ICDD-derived files in the package**;
+  S3 boundaries: missing CIF / corrupted zip / missing pattern / version=2 all give readable prompts without crashing
+- Full test suite 259 → **286 all green**; i18n adds `menu.import_xinm` in three languages
 
-### 二进制与六轮验收
+### Binaries and six-round acceptance
 
-- 构建脚本修掉一处**假失败**：结尾 `print("⚠ …")` 在 GBK 控制台抛
-  `UnicodeEncodeError`，产物已全部生成但退出码为 1（CI 会误判）。`main()` 现先
-  `reconfigure(errors="replace")`。
-- 六轮自动化全通过（报告 `.scratch/accept110.json`）：同源两次构建 exe **逐字节一致**
-  （`a2c9fcc8…` / `7d1ed1ec…`）；两变体 CLI `--version` → `XinRefinement 1.1.0`；
-  CLI 端到端 `rwp = 3.409617`；离屏 GUI 自检两变体分别报 `release/未注册` 与
-  `internal/内部评估版本`；静默安装 606 文件 → 卸载 0 残留；正式版设
-  `XINREFINEMENT_VARIANT=internal` 仍报 `release`（防绕过）。
-- 发布件：`XinRefinement-1.1.0-setup.exe` 67,586,555 B
-  （`046179e6f3ef45d6…`）、`XinRefinement-internal-1.1.0-portable.zip` 113,946,723 B
-  （`a9012229b268bae3…`）。详见 `docs/RELEASE_NOTES_v1.1.0.md`。
+- The build script fixes a **false failure**: a trailing `print("⚠ …")` threw
+  `UnicodeEncodeError` on a GBK console, so all artifacts were generated but the exit code was 1 (CI would misjudge). `main()` now calls
+  `reconfigure(errors="replace")` first.
+- Six automated rounds all pass (report `.scratch/accept110.json`): two builds of the exe from the same source are **byte-identical**
+  (`a2c9fcc8…` / `7d1ed1ec…`); `--version` of both variants' CLI → `XinRefinement 1.1.0`;
+  CLI end-to-end `rwp = 3.409617`; offscreen GUI self-test reports `release/unregistered` and
+  `internal/internal evaluation build` for the two variants; silent install 606 files → uninstall leaves 0 residue; setting
+  `XINREFINEMENT_VARIANT=internal` on the release build still reports `release` (anti-bypass).
+- Release artifacts: `XinRefinement-1.1.0-setup.exe` 67,586,555 B
+  (`046179e6f3ef45d6…`), `XinRefinement-internal-1.1.0-portable.zip` 113,946,723 B
+  (`a9012229b268bae3…`). See `docs/RELEASE_NOTES_v1.1.0.md`.
 
-## v1.0.0（2026-11-05 发布）
+## v1.0.0 (released 2026-11-05)
 
-**首个正式发布版本。** 通用粉末衍射全谱拟合（Rietveld 结构精修 / Le Bail / 谱图精修）。
+**First official release.** General-purpose powder diffraction full-pattern fitting (Rietveld structural refinement / Le Bail / pattern refinement).
 
-### 引擎
+### Engine
 
-- **精修核心**：变量投影（线性 scale/背景解析消去）+ LM / scipy-trf 双后端；Pnma/R-3m 等全 230 空间群（spglib），含 H/R 设置与 Wyckoff 零空间自由坐标
-- **参数模型**：声明式 `ParameterRegistry`（pack/unpack/bounds 与旧路径逐位一致），全晶胞按晶系约束（立方 1 → 三斜 6）
-- **结构精修**：原子坐标（Wyckoff 约束）、各向同性 B、占位（含 `occ_anchor` 退化处理）
-- **谱图精修**：零点/样品位移、背景三模式（Chebyshev/tent/手动点）、Caglioti+TCH 尺寸应变、η、asym、Kα1/Kα2、March-Dollase 多相 PO
-- **定量与不确定度**：Hill-Howard QPA、Schur 补全参数 e.s.d.（含 scale/背景/含量）、DW 统计量
-- **Le Bail**：无结构强度提取 + 多相定量；**CIF 写回**：晶胞/坐标/B/占位
+- **Refinement core**: variable projection (analytic elimination of linear scale/background) + LM / scipy-trf dual backends; all 230 space groups such as Pnma/R-3m (spglib), including H/R settings and Wyckoff null-space free coordinates
+- **Parameter model**: declarative `ParameterRegistry` (pack/unpack/bounds bit-for-bit identical to the old path), full unit cell constrained by crystal system (cubic 1 → triclinic 6)
+- **Structural refinement**: atomic coordinates (Wyckoff constraints), isotropic B, occupancy (including `occ_anchor` degeneracy handling)
+- **Pattern refinement**: zero/sample displacement, three background modes (Chebyshev/tent/manual points), Caglioti+TCH size-strain, η, asym, Kα1/Kα2, March-Dollase multi-phase PO
+- **Quantification and uncertainty**: Hill-Howard QPA, Schur-complement parameter e.s.d. (including scale/background/content), DW statistic
+- **Le Bail**: structure-free intensity extraction + multi-phase quantification; **CIF write-back**: unit cell/coordinates/B/occupancy
 
-### GUI（PySide6）
+### GUI (PySide6)
 
-- 三区主窗口 + 8 步导航式精修（单步 / 一键连跑 / 后台线程 / 停止 / 回退）
-- 交互图谱：实测/计算/残差双轴、背景曲线、每相峰位棒、框选缩放、相开关即时重绘
-- **轴切换**：横轴 2θ ↔ d 值（Bragg 换算 d=λ/2sinθ，轴自动反向，标记条
-  同步换算，波长取谱图 meta 缺省 Cu Kα1）；纵轴 counts ↔ 对数 ↔ √
-  （FunctionScale）；轴标签左键循环、右键弹选单，悬停显示操作提示与手型
-  光标，平移/框选激活时点击让位给工具栏
-- **MAUD 式物相标记条**：主谱下方每相一条窄标记轴，左侧按相着色标注相名，
-  布拉格棒高度 ∝ 相内相对强度（|F|²·LP 归一化）；残差面板高度收窄（1 → 0.55）
-- **编辑 → 物相参数编辑**：按相编辑晶胞 a/b/c/α/β/γ（写回结构体，即时刷新
-  标记条）、March–Dollase 择优取向 hkl+r（传导到前向模型与精修）、
-  空间群/点群/劳厄群（显示与记录）；双击物相列表项直达；随 `.xrp` 持久化
-- **精修菜单**：一键连跑（默认配置）/ 停止
-- **帮助 → 关于**：家族版式（继承 XinMatch 版权主体 PolyXRD Team、联系方式
-  与 Academic/Commercial 双许可，根目录 LICENSE / LICENSE-CN）
-- **品牌资源**：logo / 窗口图标 / splash 启动画面来自项目 `assets/`
-  （源码模式实时可换；打包时内置 `xinrefinement/data/assets/` 副本，
-  三级回退：项目根 → PyInstaller `_MEIPASS` → 包内）
-- **导航工具栏图标彩色化**：以 matplotlib 矢量源 SVG 按品牌色系重新着色
-  （home 蓝 / back 橙 / forward 绿 / 平移紫 / 缩放青 / 子图红 / 编辑棕 /
-  保存深蓝），同色系圆角浅底衬，QtSvg 高清渲染，失败静默回退原图标
-- **功能按钮彩色图标**：新建（蓝文档+绿加号）/ 导入谱图（青·衍射峰形）/
-  导入 CIF（紫·六边形晶格）/ ▶精修（绿·播放三角）/ 报告导出（橙·导出箭头），
-  QPainter 程序化绘制（零素材依赖），16–48px 多尺寸高 DPI 清晰
-- 齿轮弹窗：背景、晶胞（多物相分别勾选）、峰形、原子、温度因子、PO、微结构
-- 结果区三页：摘要（R 因子/含量/DW/e.s.d.）、收敛曲线、相关性矩阵
-- 三语 i18n（zh/en/ja，切换无需重启）、工程文件 `.xrp` 保存/恢复
-- 报告导出：HTML + PNG + JSON 精修日志
+- Three-pane main window + 8-step guided refinement (single step / one-click full run / background thread / stop / rollback)
+- Interactive pattern: measured/calculated/residual dual axes, background curve, per-phase peak-position bars, rubber-band zoom, per-phase toggle with immediate redraw
+- **Axis switching**: horizontal axis 2θ ↔ d value (Bragg conversion d=λ/2sinθ, axis reversed automatically, tick marks
+  converted in sync; wavelength defaults to Cu Kα1 from the pattern meta); vertical axis counts ↔ log ↔ √
+  (FunctionScale); left click cycles the axis label, right click opens a menu, hover shows an operation hint and a pointing-hand
+  cursor; when pan/zoom is active, clicks are yielded to the toolbar
+- **MAUD-style phase tick bars**: a narrow tick axis per phase below the main pattern, phase names labelled on the left in phase colours,
+  Bragg tick height ∝ relative intensity within the phase (|F|²·LP normalized); residual panel height narrowed (1 → 0.55)
+- **Edit → Edit phase parameters**: edit unit cell a/b/c/α/β/γ per phase (written back to the structure and refreshing tick bars
+  immediately), March–Dollase preferred orientation hkl+r (propagated to the forward model and refinement),
+  space group/point group/Laue group (display and logging); double-clicking a phase list item jumps straight there; persisted with `.xrp`
+- **Refine menu**: one-click full run (default configuration) / stop
+- **Help → About**: family layout (inherits the XinMatch copyright holder PolyXRD Team, contact details
+  and the Academic/Commercial dual license, root LICENSE / LICENSE-CN)
+- **Brand assets**: logo / window icon / splash screen come from the project `assets/`
+  (swappable live in source mode; a bundled copy lives in `xinrefinement/data/assets/` when packaged,
+  three-level fallback: project root → PyInstaller `_MEIPASS` → inside the package)
+- **Navigation toolbar icons in colour**: vector matplotlib sources re-coloured to the SVG brand palette
+  (home blue / back orange / forward green / pan purple / zoom cyan / subplot red / edit brown /
+  save dark blue), same-hue rounded light backgrounds, QtSvg high-DPI rendering, silent fallback to the original icon on failure
+- **Colour icons for function buttons**: new (blue document + green plus) / import pattern (cyan · diffraction peak shape) /
+  import CIF (purple · hexagonal lattice) / ▶Refine (green · play triangle) / report export (orange · export arrow),
+  drawn programmatically with QPainter (zero asset dependency), clear at 16–48px across sizes and high DPI
+- Gear dialogs: background, unit cell (per-phase checkboxes), peak shape, atoms, temperature factors, PO, microstructure
+- Three result pages: summary (R factors/content/DW/e.s.d.), convergence curve, correlation matrix
+- Trilingual i18n (zh/en/ja, switching requires no restart), project file `.xrp` save/restore
+- Report export: HTML + PNG + JSON refinement log
 
-### 命令行与 API
+### Command line and API
 
-- `XinRefinementCLI refine <pattern> <cif...>`：`--recipe`（配方分步）、`--report`（HTML/PNG/JSON 目录）、`--quant`（WPF 定量）、`--esd`（Schur e.s.d.）、`--version`
-- 公开库 API：`xinrefinement/api.py`（`RefineRequest`/`RefineResponse`、`refine`/`quant`/`report`/`capabilities`、`API_VERSION`）
+- `XinRefinementCLI refine <pattern> <cif...>`: `--recipe` (stepwise recipe), `--report` (HTML/PNG/JSON directory), `--quant` (WPF quantification), `--esd` (Schur e.s.d.), `--version`
+- Public library API: `xinrefinement/api.py` (`RefineRequest`/`RefineResponse`, `refine`/`quant`/`report`/`capabilities`, `API_VERSION`)
 
-### 双变体与注册（参照 XinMatch）
+### Two variants and registration (modeled on XinMatch)
 
-- **正式版（release）**：Inno Setup 安装包；接入 PolyXRD-Reg 离线注册机制
-  （`xinrefinement/registration.py` 与 XinMatch 逐字同源、密钥一致，注册码互通），
-  启动弹未注册版权提示，帮助菜单「输入注册码…」，状态栏右端「已注册：单位名 / 未注册」
-- **内部评估版（internal）**：免安装便携 zip，不接注册；状态栏右端红字「内部评估版本」
-- 变体由随包 `variant.txt` 固化（缺失按正式版处理，fail-safe）；冻结产物忽略环境变量，
-  防止用 `XINREFINEMENT_VARIANT` 绕过注册提示
-- 注册状态文件 `%APPDATA%\PolyXRD\Registration\XinRefinement.json`；
-  开发方出码 `tools/make_reg_code.py "单位名"`
-- 验收辅助：`XINREFINEMENT_SELFTEST_REG_OUT=<json>` 启动即导出变体/注册状态后退出
+- **Release build**: Inno Setup installer; wired into the PolyXRD-Reg offline registration mechanism
+  (`xinrefinement/registration.py` is verbatim identical in source to XinMatch, same keys, interoperable registration codes),
+  shows an unregistered copyright notice at startup, Help menu "Enter registration code…", and the right end of the status bar shows "Registered: organization name / Not registered"
+- **Internal evaluation build**: installer-free portable zip, no registration; the right end of the status bar shows "Internal evaluation build" in red
+- The variant is fixed by the bundled `variant.txt` (missing → treated as release, fail-safe); frozen builds ignore the environment variable,
+  preventing `XINREFINEMENT_VARIANT` from bypassing the registration notice
+- Registration state file `%APPDATA%\PolyXRD\Registration\XinRefinement.json`;
+  developer-side code generation `tools/make_reg_code.py "organization name"`
+- Acceptance helper: `XINREFINEMENT_SELFTEST_REG_OUT=<json>` exports variant/registration state at startup and exits
 
-### 验收
+### Acceptance
 
-- 测试 **259 项全绿**；`bench_b` 家族 golden round-trip **8/8 PASS**（Rwp 3.41–4.04%，与移植前逐位一致）
-- 虚拟样全基准 **18/18 PASS**（5 晶系 × 1–3 相 × 注入旋钮）
-- 真实锚点：NCM811 实样收敛（Rwp 11.25% 登记）；**GSAS-II 5.8.2 交叉验证晶胞最大相对差 0.031%（实样）/ 0.015%（双相）**
-- 发布物：`XinRefinement-1.0.0-setup.exe`（Windows x64 安装包，zh/en/ja，含 PolyXRD-Reg 注册）；
-  内部评估版 `XinRefinement-internal-1.0.0-portable.zip` 仅内部使用，不随 Release 分发
-- **可复现构建**：构建脚本固定 `SOURCE_DATE_EPOCH`（= git HEAD 提交时间）与 `PYTHONHASHSEED=0`，
-  消除 PyInstaller 的 PE 头时间戳与字符串集合哈希随机化两处非确定性——同一 commit 连续两次构建
-  四个 exe 逐字节一致（安装包/zip 因内嵌时间戳仍会变，只做功能验收）
+- **259 tests all green**; `bench_b` family golden round-trip **8/8 PASS** (Rwp 3.41–4.04%, bit-for-bit identical to before the port)
+- Virtual-sample full benchmark **18/18 PASS** (5 crystal systems × 1–3 phases × injected knobs)
+- Real anchors: NCM811 real sample converges (Rwp 11.25% registered); **GSAS-II 5.8.2 cross-validation of the unit cell, maximum relative difference 0.031% (real sample) / 0.015% (two-phase)**
+- Release artifacts: `XinRefinement-1.0.0-setup.exe` (Windows x64 installer, zh/en/ja, with PolyXRD-Reg registration);
+  the internal evaluation build `XinRefinement-internal-1.0.0-portable.zip` is for internal use only and is not distributed with Releases
+- **Reproducible build**: the build script pins `SOURCE_DATE_EPOCH` (= git HEAD commit time) and `PYTHONHASHSEED=0`,
+  eliminating the two sources of non-determinism in PyInstaller — the PE header timestamp and string-set hash randomization — so two consecutive builds
+  of the same commit give four byte-identical exes (installer/zip still vary because of embedded timestamps and get functional acceptance only)
 
-### 已知限制
+### Known limitations
 
-- TCH 尺寸应变的 X/Y 若精修后停在 0（分支切换点），其 e.s.d. 记为空值（导数无定义）
-- 占位精修需锚定位点（单相全位点绝对占位被 scale 吸收，物理不可辨识）
-- 多相 QPA 的 GSAS-II 交叉验证、FullProf/MAUD/Profex 对比为人工步骤
+- If X/Y of the TCH size-strain stops at 0 (the branch switch point) after refinement, its e.s.d. is recorded as empty (derivative undefined)
+- Occupancy refinement requires anchored sites (absolute occupancy of all sites in a single phase is absorbed by scale and is physically unidentifiable)
+- GSAS-II cross-validation and FullProf/MAUD/Profex comparisons for multi-phase QPA are manual steps

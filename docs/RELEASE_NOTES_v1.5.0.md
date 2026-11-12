@@ -1,154 +1,162 @@
-# XinRefinement v1.5.0 — 对标 MAUD 的拟合质量
+# XinRefinement v1.5.0 — MAUD-class fit quality
 
-> 基线 `v1.4.0`｜主题：把「对标 MAUD」从评估结论落成**产品能力**，并把 7 样
-> 实样上剩下的差距逐样定位到根因。本版没有新增界面模块，改的是**拟合引擎的
-> 默认行为与护栏**——同样一份数据、同样一套 CIF，出来的 Rwp 更低，而且低得有
-> 物理依据。
+> Baseline `v1.4.0` | Theme: turn "benchmarked against MAUD" from an assessment conclusion
+> into a **product capability**, and trace the remaining gap on each of the 7 real samples
+> to its root cause. This version adds no new UI module; it changes the **default behaviour
+> and guardrails of the fitting engine** — same data, same set of CIFs, lower Rwp, and lower
+> for a physical reason.
 
-## 下载
+## Download
 
-| 文件 | 大小 | SHA256 |
+| File | Size | SHA256 |
 |---|---|---|
 | `XinRefinement-1.5.0-setup.exe` | 75.8 MB | `429adb70eaa8df4754c9607ecdc9826f641582ace798f3ae9c7575e1e07ffdc0` |
 
-> 正式版安装包（含注册机制，zh/en/ja 三语安装界面）。内部评估版便携包仅用于
-> 内部验收，不随本 Release 发布。
+> Release installer (includes registration, zh/en/ja installer UI). The internal evaluation
+> portable build is for internal acceptance only and is not distributed with this Release.
 
-## 一句话看变化
+## What changed at a glance
 
 | | v1.4.0 | v1.5.0 |
 |---|---|---|
-| 7 样均值 Rwp | 14.38% | **11.42%**（MAUD 11.20%，差距 3.18 → **0.21 pt**） |
-| 微结构各向异性 | 需手工给每相写系数 | GUI 出厂默认自动启用 + 两条护栏 |
-| 织构 | EWIMV 离散 ODF | 另加**球谐（Legendre）ODF**，GUI 出厂默认 |
-| xyz 欠定 | 整步判失败（4 个样坐标一个都没修） | **按相降级**，只超预算时生效 |
-| 长样耗时 | 无上限（病态样 >1 h） | 配方墙钟预算，GUI 默认 45 min |
-| 纯刚玉标样 | 28.58% | **13.64%**（反超 GSAS-II 的 15.8%） |
-| 多型不符 | 只在日志里告警 | 结果面板出**可点按钮**「试用 α-方石英并重新精修」 |
+| Mean Rwp over 7 samples | 14.38% | **11.42%** (MAUD 11.20%, gap 3.18 → **0.21 pt**) |
+| Microstructure anisotropy | Coefficients had to be written by hand per phase | Automatically enabled by GUI factory default + two guardrails |
+| Texture | EWIMV discrete ODF | Also **spherical-harmonic (Legendre) ODF**, GUI factory default |
+| xyz underdetermined | Whole step judged failed (not one coordinate refined across 4 samples) | **Per-phase degradation**, only takes effect when over budget |
+| Long sample runtime | Unbounded (pathological sample >1 h) | Recipe wall-clock budget, GUI default 45 min |
+| Pure corundum standard | 28.58% | **13.64%** (beats GSAS-II's 15.8%) |
+| Polymorph mismatch | Only a warning in the log | Result panel offers a **clickable button** "Try α-cristobalite and refine again" |
 
-## 主要改动
+## Main changes
 
-### 引擎：三处「假极小」修复（本版收益最大的一类）
+### Engine: three "false minimum" fixes (largest gain of this version)
 
-1. **M10/M10b 分步投影**：`cell` 与 `profile` 步互相冻结对方自由度，零点偏差
-   无处可去，被晶胞与不对称分头吸收。`profile` 步改为**联合精修**
-   （cell+UVW+η+asym+zero），单相纯刚玉 **28.58% → 14.63%**。同时把
-   `micro`/`B` 步的「不改善就回退」改成**无条件**生效。
-2. **M11 窗口边界峰泄漏**：反射枚举严格按窗口过滤，窗口外一点的强峰被整体丢弃，
-   而它在窗内的尾巴本该贡献强度（实测 140–150° 一段吃掉全谱 18.8% 加权残差）。
-   枚举外扩 3° 后纯刚玉 **14.63% → 13.64%**。这是通用系统偏差修正。
-3. **结构因子向量化**：`compute_peaks` 三向量化，**26–37×** 提速且数值逐位等价
-   （护栏 `tests/test_peaks_vectorized.py`）。
+1. **M10/M10b step-wise projection**: the `cell` and `profile` steps froze each other's
+   degrees of freedom, so the zero-point offset had nowhere to go and was absorbed
+   separately by the unit cell and the asymmetry. The `profile` step now performs a
+   **joint refinement** (cell+UVW+η+asym+zero), taking single-phase pure corundum from
+   **28.58% → 14.63%**. At the same time the "revert if not improved" behaviour of the
+   `micro`/`B` steps is now **unconditional**.
+2. **M11 window-boundary peak leakage**: reflection enumeration was filtered strictly by
+   window, so a strong peak just outside the window was dropped entirely even though its
+   tail inside the window should contribute intensity (measured: the 140–150° segment
+   accounted for 18.8% of the whole-pattern weighted residual). Extending enumeration by
+   3° takes pure corundum from **14.63% → 13.64%**. This is a general systematic-bias fix.
+3. **Structure-factor vectorization**: three vectorizations in `compute_peaks`, **26–37×**
+   faster with bit-for-bit equivalent numbers (guardrail `tests/test_peaks_vectorized.py`).
 
-### 微结构：M4 Popa LB 逐相各向异性（GUI 出厂默认开）
+### Microstructure: M4 Popa LB per-phase anisotropy (on by GUI factory default)
 
-逐相 size/strain 各向异性展宽。7 样对拍里样 1 −3.49 pt、样 7 −3.81 pt，是
-v1.5 最大的单项收益。**默认开必须配两条护栏**：
+Per-phase size/strain anisotropic broadening. In the 7-sample comparison sample 1 gains
+−3.49 pt and sample 7 −3.81 pt, the largest single gain in v1.5. **Being on by default must
+come with two guardrails**:
 
-- **可辨识性**：独立晶向数 < 8 的相自动跳过（否则 6 个参数无法辨识）；
-- **不改善就整体回退**：叠加后 Rwp 未下降即回退到上一步参数。
+- **Identifiability**: phases with fewer than 8 independent crystallographic directions are skipped automatically (otherwise the 6 parameters cannot be identified);
+- **Revert as a whole if not improved**: if Rwp does not drop after stacking, revert to the previous step's parameters.
 
-CLI / 库 API 仍默认关（`--aniso-auto` 显式开），保证既有脚本结果逐位不变。
+CLI / library API still default to off (`--aniso-auto` enables it explicitly), keeping the
+results of existing scripts bit-for-bit unchanged.
 
-### 织构：M3 球谐 ODF（GUI 出厂默认，阶 10）
+### Texture: M3 spherical-harmonic ODF (GUI factory default, degree 10)
 
-纤维对称下球谐的**精确子空间** `T(χ)=1+Σ c_l·P_l(cosχ)`，偶数阶 2–10。
-与 EWIMV 相比是同精度下少 4–15 个自由度，且基正交、球面平均恒为 1（结构性
-消除尺度零空间），无需二阶差分罚。CLI `--texture-model harmonic --texture-degree N`。
+Under fibre symmetry the **exact subspace** of the spherical harmonics is
+`T(χ)=1+Σ c_l·P_l(cosχ)`, even orders 2–10. Compared with EWIMV this is 4–15 fewer degrees
+of freedom at the same accuracy, the basis is orthogonal, and the spherical average is
+always 1 (structurally eliminates the scale null space), so no second-difference penalty is
+needed. CLI `--texture-model harmonic --texture-degree N`.
 
-> 实测结论已写进立项书：**阶数比模型族更关键**，且 EWIMV 的部分 Rwp 优势来自
-> 过拟合（样 3 的 T(χ) 拟成准二值掩模）。「照抄 MAUD 的逐相 Harmonic 开关」
-> 已被补相实验证伪，未产品化。
+> The measured conclusion has been written into the project proposal: **the degree matters
+> more than the model family**, and part of EWIMV's Rwp advantage comes from overfitting
+> (sample 3's T(χ) fitted into a near-binary mask). "Copying MAUD's per-phase Harmonic
+> switch" was falsified by the phase-supplement experiment and was not productized.
 
-### 定量：M9 xyz 步按相降级
+### Quantification: M9 per-phase degradation of the xyz step
 
-v1.4 把**所有相**的自由坐标求和后比 `xyz_max_params=40`，于是样 4/5/6/7 的 xyz
-步全部 `failed`——一个坐标都没修，而其中两个是最大缺口样。改为**按相降级**
-（降序贪心保留，其余相转固定结构），只在超预算时生效：
+v1.4 summed the free coordinates of **all phases** and compared against
+`xyz_max_params=40`, so the xyz step of samples 4/5/6/7 all ended up `failed` — not one
+coordinate was refined, and two of them were the samples with the largest gap. Now it
+degrades **per phase** (descending greedy retention, remaining phases switched to fixed
+structure), only taking effect when over budget:
 
-| 样 | 降级前 | 降级后 |
+| Sample | Before degradation | After degradation |
 |---|---:|---:|
 | 5 | 17.204 | **16.026** |
 | 6 | 12.603 | **12.207** |
 | 7 | 17.193 | 16.930 |
 
-### 诊断：样 7 的差距是**方石英多型**，不是峰形也不是背景
+### Diagnosis: sample 7's gap is a **cristobalite polymorph**, not peak shape or background
 
-样 7 的方石英被给成高温 β（Fd-3m），样品实为低温 α（P4₁2₁2）：增量口径
-18.06 → 15.59，端到端 17.193 → 15.357，且该相 `ΔB_iso` 撞 6 Å² 上界**消失**
-（过拟合信号消除）。
+Sample 7's cristobalite was given as the high-temperature β form (Fd-3m) while the sample is
+actually the low-temperature α form (P4₁2₁2): incremental metric 18.06 → 15.59, end-to-end
+17.193 → 15.357, and this phase's `ΔB_iso` hitting the 6 Å² upper bound **disappears** (the
+overfitting signal is gone).
 
-产品侧**只建议、不自动改**：触发条件三条同时满足（ΔB_iso 顶界 + 化学式归一化
-相同 + 空间群等于基线多型），结果面板出按钮「试用 α-方石英并重新精修」。
-结构模型属于实验事实（合成温度、相变史），软件无权替用户判定。
+On the product side it **only suggests, never changes automatically**: triggered when three
+conditions hold simultaneously (ΔB_iso at the upper bound + identical normalized formula +
+space group equal to the baseline polymorph), the result panel then shows the button "Try
+α-cristobalite and refine again". The structural model is an experimental fact
+(synthesis temperature, phase-transition history); the software has no right to decide it
+for the user.
 
-### 外部验证：IUCr CPD 定量 round-robin
+### External validation: IUCr CPD quantification round-robin
 
-ShiJiKong 那 7 个样既是调参对象又是验收对象，不足以证明泛化。本版接入 IUCr
-CPD 标准集（每点有称量真值 + XRF 复核）：
+The 7 ShiJiKong samples served both as tuning targets and as acceptance targets, which is
+not enough to prove generalization. This version takes in the IUCr CPD standard set (each
+point has a weighed true value plus XRF verification):
 
-- Sample 1 **八点全收口**，`combo` 口径平均 `max|Δ|` **2.84 pt**，与 round-robin
-  参与者标准差（2.4–2.7 pt）同量级；1a/1b 明显优于社区水平。
-- Sample 2（择优取向）**31.21 → 15.05**，全是 Popa LB 的功劳。
-- Sample 3（含非晶 29.5%）12.42%，注意**报告这类样必须先说清归一化基准**。
-- Sample 4（微吸收）是我们的能力边界，如实标注：Brindley 因子与每相 scale
-  严格简并（加校正 Rwp 只差 1e-12），只能改 wt% 归一化分配、改不了拟合。
+- Sample 1 **closes all eight points**, average `max|Δ|` **2.84 pt** on the `combo` metric, the same order as the round-robin participants' standard deviation (2.4–2.7 pt); 1a/1b clearly better than the community level.
+- Sample 2 (preferred orientation) **31.21 → 15.05**, entirely thanks to Popa LB.
+- Sample 3 (29.5% amorphous) 12.42%, note that **reports on such samples must first state the normalization basis**.
+- Sample 4 (micro-absorption) is the boundary of our capability, stated as it is: the Brindley factor is strictly degenerate with each phase's scale (adding the correction changes Rwp by only 1e-12); it can only redistribute the wt% normalization, it cannot change the fit.
 
-## 验证数据（7 样验收）
+## Validation data (7-sample acceptance)
 
-> 口径与立项书 §1.7 完全一致（tent 19 节点、逐相 ΔB_iso、xyz、EWIMV 织构、
-> Popa LB、5–120°/样 5 为 10–100°）。**同一串数字在 v1.5 期间被反复复现**，
-> 是「默认路径零回归」的硬证据。
+> Metric exactly as in the project proposal §1.7 (tent 19 nodes, per-phase ΔB_iso, xyz,
+> EWIMV texture, Popa LB, 5–120° with 10–100° for sample 5). **The same string of numbers
+> was reproduced repeatedly during v1.5**, hard evidence of "zero regression on the default
+> path".
 
-| 样 | MAUD 2.99993 | v1.5.0 | 差距 | 判定（`≤ MAUD+2`） | 耗时 |
+| Sample | MAUD 2.99993 | v1.5.0 | Gap | Verdict (`≤ MAUD+2`) | Runtime |
 |---|---:|---:|---:|:---:|---:|
 | 1 | 10.90 | 11.880 | +0.98 | ✅ PASS | 34.2 min |
 | 2 | 6.34 | 6.968 | +0.63 | ✅ PASS | 2.2 min |
-| 3 | 10.29 | **8.123** | **−2.17** | ✅ PASS（反超） | 5.2 min |
+| 3 | 10.29 | **8.123** | **−2.17** | ✅ PASS (beats MAUD) | 5.2 min |
 | 4 | 9.96 | 10.263 | +0.30 | ✅ PASS | 77.5 min |
 | 5 | 14.87 | 15.865 | +1.00 | ✅ PASS | 35.7 min |
-| 6 | 14.76 | **12.122** | **−2.64** | ✅ PASS（反超） | 41.4 min |
+| 6 | 14.76 | **12.122** | **−2.64** | ✅ PASS (beats MAUD) | 41.4 min |
 | 7 | 11.30 | 14.689 | **+3.39** | ❌ **FAIL** | 49.7 min |
-| **均值** | **11.20** | **11.42** | **+0.21** | **6/7 PASS** | 245.9 min |
+| **Mean** | **11.20** | **11.42** | **+0.21** | **6/7 PASS** | 245.9 min |
 
-读法：
+How to read it:
 
-- **7 个样里 6 个复现到小数点后 3 位**（只有样 5 例外，见下），说明 v1.5 的
-  默认路径在本版开发期间没漂过——这是「零回归」最硬的证据，不是自评。
-- **样 7 是唯一未达标项，+3.39 pt**。它的根因已经查清（方石英给成了高温
-  β，样品实为低温 α），但产品**不自动改用户 CIF**；手动替换后本项目实测
-  14.031（−0.66 pt），仍高于 MAUD 11.30——MAUD 把这个相按近非晶宽包处理
-  （size 27 Å / strain 0.0164），我们的 Popa LB 起点离它差 58 倍，数值雅可比
-  走不过去。**这是已知硬骨头，如实标注不掩饰。**
-- **样 4 是 77.5 min 的慢样**（5 相 40 个自由坐标 × 数值雅可比），本次 10.2634
-  与 §1.7 的 10.263 一致；耗时上界见「已知限制」。
-- **样 5 的 15.865 比 §1.7 的 15.942 低 0.077**：M9 按相降级让它的 xyz 步
-  真的跑起来了（4 相 / 36 个自由系数），后续 micro/B 步吸收掉大部分，净收益
-  −0.077。**是有记录的改动，不是漂移。**
-- 若把样 7 排除，其余 6 样均值 **10.87%**，已优于 MAUD 的 11.20%——但这个
-  数字不该拿来宣传，样 7 就是我们还没解决的问题。
+- **6 of the 7 samples reproduce to 3 decimal places** (only sample 5 is the exception, see below), showing that the v1.5 default path never drifted during development of this version — the hardest evidence of "zero regression", not a self-assessment.
+- **Sample 7 is the only item below standard, +3.39 pt**. Its root cause is already identified (cristobalite given as high-temperature β while the sample is low-temperature α), but the product **does not change the user's CIF automatically**; after manual replacement this project measures 14.031 (−0.66 pt), still above MAUD's 11.30 — MAUD treats this phase as a near-amorphous broad envelope (size 27 Å / strain 0.0164), our Popa LB start is 58× away from it, and the numerical Jacobian cannot get there. **This is a known hard problem, stated as it is, not glossed over.**
+- **Sample 4 is the slow one at 77.5 min** (5 phases, 40 free coordinates × numerical Jacobian); this run's 10.2634 agrees with §1.7's 10.263; the runtime upper bound is covered under "Known limits".
+- **Sample 5's 15.865 is 0.077 lower than §1.7's 15.942**: M9 per-phase degradation lets its xyz step actually run (4 phases / 36 free coefficients), the subsequent micro/B steps absorb most of it, net gain −0.077. **It is a recorded change, not drift.**
+- Excluding sample 7, the mean of the other 6 samples is **10.87%**, already better than MAUD's 11.20% — but that number should not be used for promotion; sample 7 is precisely the problem we have not solved.
 
 
-## 已知限制
+## Known limits
 
-- **样 4 的 xyz 降级路径很慢**（40 个自由坐标 × 数值雅可比）。GUI 有 45 min
-  墙钟预算兜底，命令行默认不限；批量脚本请自行传 `--time-budget-min`。
-- **定量（QPA）与 Rwp 解耦**：1b 实测 Rwp 29.99% 而 wt% 误差仅 0.22 pt。
-  验收定量请看 wt%，不要看 Rwp。
-- **背景节点加密不是免费的**：7 样全量判决显示 2.5°/节点能把均值拉到 10.90
-  （字面反超 MAUD），但 QPA 会崩（样 4 石英 −7.6 vol%）。界面已放开到 60 节点，
-  但**以 QPA 为目标时不要超过 1 节点/4°**。
-- **两处「看起来该有用、实测没有」的东西已按负结果关闭**：逐原子 B_iso
-  （+equalTo 分组）在样 1/样 7 十相 90 个扫描点上最大增益 0.0025 pt；
-  LM 阻尼对齐 MAUD 的 λ=0.01 三档极差 0.042 pt 且非单调。旋钮保留，默认不动。
+- **Sample 4's xyz degradation path is slow** (40 free coordinates × numerical Jacobian). The GUI has a 45 min
+  wall-clock budget as a backstop, the command line is unbounded by default; batch scripts should pass `--time-budget-min` themselves.
+- **Quantification (QPA) and Rwp are decoupled**: 1b measures Rwp 29.99% while the wt% error is only 0.22 pt.
+  For acceptance of quantification look at wt%, not Rwp.
+- **Densifying background nodes is not free**: the full 7-sample judgement shows 2.5°/node can pull the mean to 10.90
+  (literally beating MAUD), but QPA collapses (sample 4 quartz −7.6 vol%). The interface already allows up to 60 nodes,
+  but **do not exceed 1 node/4° when QPA is the goal**.
+- **Two things that "looked promising but measured otherwise" are switched off as negative results**: per-atom B_iso
+  (+`equalTo` grouping) gives at most 0.0025 pt gain across 90 scan points over ten phases of samples 1/7;
+  aligning LM damping to MAUD's λ=0.01 gives a 0.042 pt spread across three levels and is non-monotonic. The knobs are kept, defaults untouched.
 
-## 安装与注册
+## Installation and registration
 
-与 v1.0.0 相同：安装包内置 zh/en/ja 三语界面，注册码与 XinMatch 家族互通
-（`%APPDATA%\PolyXRD\Registration\XinRefinement.json`）。内部评估版免注册免安装，
-状态栏红字标示。
+Same as v1.0.0: the installer has a built-in zh/en/ja interface, registration codes
+interoperate across the XinMatch family
+(`%APPDATA%\PolyXRD\Registration\XinRefinement.json`). The internal evaluation build needs
+no registration and no installation, and is marked in red in the status bar.
 
-## 许可
+## License
 
-本软件使用 MIT 许可证。内置晶体结构数据来自 COD（CC0）与 ICSD 派生公开文献，
-**不含任何 PDF 卡片或 ICDD 数据**。
+This software uses the MIT license. The bundled crystal structure data comes from COD (CC0)
+and ICSD-derived public literature, and **contains no PDF cards or ICDD data**.

@@ -1,95 +1,106 @@
-# XinRefinement v1.1.0 — 导入 XinMatch 物相分析（.xinm），工程文件自包含
+# XinRefinement v1.1.0 — Import XinMatch phase analysis (.xinm), self-contained project files
 
-> 基线 `v1.0.0`｜与 **XinMatch 3.4.0** 配套发布。精修引擎、参数模型、CLI 参数、
-> 注册机制**均未改动**；本版新增一条导入通道、一个工程容器格式，并修掉一个
-> v1.0.0 的 `.xrp` 丢字段缺陷。
+> Baseline `v1.0.0` | Released alongside **XinMatch 3.4.0**. The refinement engine, parameter
+> model, CLI arguments and registration mechanism are **all unchanged**; this version adds one
+> import channel and one project container format, and fixes a v1.0.0 `.xrp` field-loss defect.
 
-## 下载
+## Download
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `XinRefinement-1.1.0-setup.exe` | 正式版安装包（含注册机制，zh/en/ja 三语安装界面） |
+| `XinRefinement-1.1.0-setup.exe` | Release installer (includes registration, zh/en/ja installer UI) |
 
-> 内部评估版便携包仅用于内部验收，不随本 Release 发布。
+> The internal evaluation portable build is for internal acceptance only and is not
+> distributed with this Release.
 
-## 主要能力
+## Key capabilities
 
-### 导入 XinMatch 物相分析（.xinm）
+### Import XinMatch phase analysis (.xinm)
 
-`文件 → 导入 XinMatch 物相分析…`。一次装载三样东西，不再手工搬：
+`File → Import XinMatch phase analysis…`. Loads three things at once, no more manual moving:
 
-| 载入项 | 来源 | 说明 |
+| Loaded item | Source | Notes |
 |---|---|---|
-| 谱图 | `.xinm` 内 `pattern/pattern.csv` | 两列 CSV，`%.10g` 往返零误差；`wavelength` 一并传到画布（d 轴换算即刻可用） |
-| 物相 CIF | `.xinm` 内 `cifs/*.cif` | 按相逐个缓存落地后走既有 `_load_cif_paths`，与手动导入同一条代码路径 |
-| 晶胞 / 空间群 | manifest | 与 CIF 解析值核对：一致则预填「物相参数编辑」，显著不符（>0.1% / >0.05°）以 CIF 为准并列出清单 |
+| Pattern | `pattern/pattern.csv` inside the `.xinm` | Two-column CSV, `%.10g` round-trip with zero error; `wavelength` is passed to the canvas as well (d-axis conversion available immediately) |
+| Phase CIF | `cifs/*.cif` inside the `.xinm` | Cached to disk phase by phase, then goes through the existing `_load_cif_paths` — the same code path as manual import |
+| Unit cell / space group | manifest | Checked against the parsed CIF values: matching values prefill "Edit phase parameters"; significant mismatches (>0.1% / >0.05°) defer to the CIF and are listed |
 
-无结构的相（PDF2 类、或 COD 归档里没找到 CIF 的）列为**「仅参照」**：灰色列出、
-不参与精修、给出可读原因，可手动指定 CIF 补上。
+Phases without a structure (PDF2-type, or those whose CIF was not found in the COD
+archive) are listed as **"reference only"**: shown in grey, excluded from refinement, with
+a readable reason; a CIF can be assigned manually to fill them in.
 
-导入内核 `core/io/xinm_import.py` **不依赖 Qt**，GUI / CLI / 库 API 共用；含
-manifest 校验、版本协商（`version` 高于支持值提示升级）、zip 炸弹防护（解压上限 512 MB）、
-CSV 逐行解析与可读错误。
+The import core `core/io/xinm_import.py` **does not depend on Qt**, and is shared by the
+GUI / CLI / library API; it includes manifest validation, version negotiation (a `version`
+above the supported value suggests upgrading), zip-bomb protection (512 MB extraction
+limit), line-by-line CSV parsing and readable errors.
 
-### 工程文件 `.xinr`：自包含 zip 容器
+### Project file `.xinr`: self-contained zip container
 
-| 项 | v1.0.0 | v1.1.0 |
+| Item | v1.0.0 | v1.1.0 |
 |---|---|---|
-| 形态 | 纯 JSON，只存外部路径 | zip：`manifest.json + pattern/ + cifs/ + result/` |
-| 换机器 | 缺文件就废 | **默认内嵌**谱图 CSV + CIF + 完整精修结果，移走原始文件仍能打开并复现 |
-| 结果 | 只存 R 因子摘要 | `result/refine.json`（与 CLI `--out` 同 schema）+ 导航记录，打开即回填结果面板与收敛曲线 |
+| Form | Plain JSON, external paths only | zip: `manifest.json + pattern/ + cifs/ + result/` |
+| Moving machines | Broken if files are missing | **Embeds** the pattern CSV + CIF + full refinement result by default; the original files can be moved away and the project still opens and reproduces |
+| Results | R-factor summary only | `result/refine.json` (same schema as CLI `--out`) + navigation log; opening refills the result panel and convergence curve |
 
-扩展名分流：`.xinr` → 容器；`.xrp` → v1.0.0 的 JSON **永久只读兼容**。
-顺带修掉 v1.0.0 `.xrp` 丢失 `phase_edits` 的 bug（物相参数编辑重开工程后消失）。
+Extension routing: `.xinr` → container; `.xrp` → v1.0.0 JSON, **permanently read-only
+compatible**. Also fixes the v1.0.0 `.xrp` bug that dropped `phase_edits` (phase parameter
+edits disappearing after reopening a project).
 
-### 库 API
+### Library API
 
-`capabilities()` 新增 `xinm_import: "1"`，使用方可探测能力位再决定是否暴露导入入口。
+`capabilities()` gains `xinm_import: "1"`, so consumers can probe the capability bit before
+deciding whether to expose the import entry point.
 
-## 验证数据
+## Validation data
 
-| 项 | 结果 |
+| Item | Result |
 |---|---|
-| S1 全闭环（真实 COD 档案 7206075 + 9001681） | `.xinm` 导入 → 精修 Rwp **3.409617019598457**，与 P0 黄金值逐位一致；GUI 一键连跑路径与「手动导入同谱图/CIF」**Rwp 逐位相等**；保存 `.xinr` → 删除临时谱图与 `.xinm` → 重开复现（rel 1e-9） |
-| 定量 | 两相 50.03 / 49.97 wt% |
-| S2 混合来源 | COD + 用户 CIF 打进 `cifs/`；PDF2 相 `structural=false` 列「仅参照」；**包内无任何 ICDD 衍生文件** |
-| S3 异常边界 | 缺 CIF 成员 / 损坏 zip / 缺谱图 / `version=2` 各自可读报错，不崩溃 |
-| S4 家族注册 | `XinRefinement.json` 与 `XinMatch.json` 各管各的，注册码算法互通不变 |
-| 全量测试 | **286 项全绿**（v1.0.0 为 259；新增 `test_xinm_import.py` 13 项、`test_project_zip.py` 7 项等） |
+| S1 full closed loop (real COD archives 7206075 + 9001681) | `.xinm` import → refinement Rwp **3.409617019598457**, bit-for-bit identical to the P0 golden value; the GUI one-click run-all path and "manual import of the same pattern/CIF" give **bit-for-bit equal Rwp**; save `.xinr` → delete the temporary pattern and `.xinm` → reopen and reproduce (rel 1e-9) |
+| Quantification | Two phases 50.03 / 49.97 wt% |
+| S2 mixed sources | COD + user CIF packed into `cifs/`; PDF2 phase with `structural=false` listed as "reference only"; **no ICDD-derived file of any kind inside the package** |
+| S3 abnormal boundaries | Missing CIF member / corrupt zip / missing pattern / `version=2` each raise a readable error, no crash |
+| S4 family registration | `XinRefinement.json` and `XinMatch.json` are managed separately, registration code algorithm interoperable and unchanged |
+| Full test suite | **286 all green** (259 in v1.0.0; adds 13 in `test_xinm_import.py`, 7 in `test_project_zip.py`, etc.) |
 
-## 安装与注册
+## Installation and registration
 
-与 v1.0.0 相同：安装包三语（简体中文 / English / 日本語），`{autopf}\XinRefinement`；
-首次启动正式版提示「未注册」（可输入注册码）；内部评估版免注册。
-注册码与 XinMatch 家族互通，同一个码两软件都能用。
+Same as v1.0.0: trilingual installer (Simplified Chinese / English / Japanese),
+`{autopf}\XinRefinement`; the release build prompts "not registered" on first launch (a
+registration code can be entered); the internal evaluation build needs no registration.
+Registration codes interoperate across the XinMatch family — one code works for both
+applications.
 
-## 构建与二进制验收（六轮）
+## Build and binary acceptance (six rounds)
 
-| 轮 | 结果 | 实测 |
+| Round | Result | Measured |
 |---|---|---|
-| 1 · 可复现构建 | ✅ | 同源连续两次构建，`XinRefinement.exe` / `XinRefinementCLI.exe` **逐字节一致**：`a2c9fcc80b0f291e…` / `7d1ed1ec7efc8642…`（`SOURCE_DATE_EPOCH` + `PYTHONHASHSEED=0`） |
-| 2 · CLI 冷启动 | ✅ | 两变体均输出 `XinRefinement 1.1.0`，无缺 DLL |
-| 3 · CLI 端到端 | ✅ | 两变体 `refine v50_wide.xy anatase.cif rutile.cif --peak-height` → `rwp = 3.409617`、2 相、`success = true`（合成谱为峰高口径，故需 `--peak-height`；不加该开关为积分口径 `rwp = 5.935965`，与源码逐位一致） |
-| 4 · GUI 冒烟 | 🟡 离屏通过 | 离屏启动 + 自检 JSON：正式版 `{release, registration_enabled: true, 未注册}`、内部版 `{internal, false, 内部评估版本}`；**双击目视仍需人工** |
-| 5 · 安装/卸载 | ✅ 静默 | 静默安装 606 文件 → 安装版 `--version` 正常 → 静默卸载后 0 残留；中文安装界面需人工目视。（安装器默认要求管理员权限，非交互环境无法提权复验；因构建可复现、`setup.exe` SHA-256 与上轮**逐字节一致**，上轮结论继续有效） |
-| 6 · 双变体差异 | ✅ | 标记 `release` / `internal`；正式版设 `XINREFINEMENT_VARIANT=internal` 仍报 `release`（防绕过） |
+| 1 · Reproducible build | ✅ | Two consecutive builds from the same source, `XinRefinement.exe` / `XinRefinementCLI.exe` **byte-for-byte identical**: `a2c9fcc80b0f291e…` / `7d1ed1ec7efc8642…` (`SOURCE_DATE_EPOCH` + `PYTHONHASHSEED=0`) |
+| 2 · CLI cold start | ✅ | Both variants print `XinRefinement 1.1.0`, no missing DLL |
+| 3 · CLI end to end | ✅ | Both variants, `refine v50_wide.xy anatase.cif rutile.cif --peak-height` → `rwp = 3.409617`, 2 phases, `success = true` (the synthetic pattern uses peak-height convention, hence `--peak-height`; without the switch the integrated convention gives `rwp = 5.935965`, bit-for-bit identical to the source run) |
+| 4 · GUI smoke | 🟡 offscreen pass | Offscreen launch + self-test JSON: release `{release, registration_enabled: true, 未注册}`, internal `{internal, false, 内部评估版本}`; **double-click visual check still needs a human** |
+| 5 · Install/uninstall | ✅ silent | Silent install of 606 files → installed `--version` normal → silent uninstall leaves 0 residue; the Chinese installer UI needs human visual check. (The installer requires administrator rights by default and a non-interactive environment cannot elevate; since the build is reproducible and `setup.exe` SHA-256 is **byte-for-byte identical** to the previous round, the previous round's conclusion still holds) |
+| 6 · Variant difference | ✅ | Marks `release` / `internal`; setting `XINREFINEMENT_VARIANT=internal` on the release build still reports `release` (anti-bypass) |
 
-发布件：
+Release artifacts:
 
-| 文件 | 字节 | SHA-256 |
+| File | Bytes | SHA-256 |
 |---|---:|---|
 | `XinRefinement-1.1.0-setup.exe` | 67,586,555 | `046179e6f3ef45d651b241b41dafb273990b423667bc066e5eba2b3982a44926` |
 | `XinRefinement-internal-1.1.0-portable.zip` | 113,946,723 | `a9012229b268bae36741bbd7cd9d5782ecf55a814ea907d4b39dded701db09d1` |
 
-## 已知提示
+## Known notes
 
-- 正式版 `.xinr` 内嵌 CIF 与谱图，工程文件会比 v1.0.0 的 `.xrp` 大（谱图按 CSV 文本存，
-  10 万点约 2 MB）。需要"只存路径"的老行为时，另存为 `.xrp`。
-- `.xrp` 只读兼容，不回写：用旧文件打开再保存，会按扩展名决定写回 JSON 还是容器。
-- 冻结包内没有 `pyproject.toml`，版本号取自 `xinrefinement/__init__.py` 的字面常量
-  （`__version__ = "1.1.0"`），不读运行环境的安装元数据。
-- 未代码签名：首次运行 Windows SmartScreen 可能提示「未知发布者」。
+- The release `.xinr` embeds CIFs and the pattern, so project files are larger than v1.0.0
+  `.xrp` files (the pattern is stored as CSV text, about 2 MB for 100k points). Save as
+  `.xrp` when the old "paths only" behaviour is needed.
+- `.xrp` is read-only compatible and never written back: opening an old file and saving
+  decides by extension whether to write JSON or a container.
+- The frozen package contains no `pyproject.toml`; the version number comes from the literal
+  constant in `xinrefinement/__init__.py` (`__version__ = "1.1.0"`), not from the installed
+  metadata of the runtime environment.
+- No code signing: on first run Windows SmartScreen may warn of an "unknown publisher".
 
-## 许可
+## License
 
-沿用 v1.0.0：见仓库根 `LICENSE` / `LICENSE-CN`（与 XinMatch 同源）。
+Same as v1.0.0: see `LICENSE` / `LICENSE-CN` at the repository root (same origin as
+XinMatch).

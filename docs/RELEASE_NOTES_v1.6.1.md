@@ -1,126 +1,144 @@
-# XinRefinement v1.6.1 — 谱图交互工具行与许可信息
+# XinRefinement v1.6.1 — Pattern operation row and license information
 
-> 基线 `v1.6.0`｜主题：**给谱图装上操作台**。v1.6.0 把「结果怎么讲」解决了，
-> 但谱图本身还是只读的——只有 matplotlib 自带那排英文图标，还挤在画布下方；
-> 想放大一段角度只能靠滚轮试探，想量一个峰位只能截图比对。本版六项界面微调，
-> 并在帮助页补上完整的版权与许可信息。
+> Baseline `v1.6.0` | Theme: **give the pattern a control panel**. v1.6.0 solved "how to tell
+> the result", but the pattern itself was still read-only — only matplotlib's built-in row of
+> English icons, squeezed below the canvas; zooming into an angle range meant probing with the
+> wheel, and measuring a peak position meant taking a screenshot and comparing. This version
+> makes six small UI adjustments and fills in complete copyright and license information on
+> the Help page.
 >
-> **数值零变化**：golden 50/50 档仍是 `3.4074156640940005`，CLI/API 行为逐位不变。
+> **Zero numerical change**: the golden 50/50 case is still `3.4074156640940005`, CLI/API
+> behaviour bit-for-bit unchanged.
 
-## 下载
+## Download
 
-| 文件 | 大小 | SHA256 |
+| File | Size | SHA256 |
 |---|---|---|
 | `XinRefinement-1.6.1-setup.exe` | 75.8 MB | `34cb1288a16d282e1aa87d8a9446e40996225c92a5dcffd9a5cfa92dcef49b9d` |
 
-> 正式版安装包（含注册机制，zh/en/ja 三语安装界面）。内部评估版便携包
-> （`XinRefinement-internal-1.6.1-portable.zip`，114.2 MB，
-> sha256 `64afe606ebc5f6bd11811a243dad16dec54f76bace9c607dbbe04324f29658de`）
-> 仅用于内部验收，不随本 Release 发布。
+> Release installer (includes registration, zh/en/ja installer UI). The internal evaluation
+> portable build (`XinRefinement-internal-1.6.1-portable.zip`, 114.2 MB,
+> sha256 `64afe606ebc5f6bd11811a243dad16dec54f76bace9c607dbbe04324f29658de`)
+> is for internal acceptance only and is not distributed with this Release.
 
-## 一句话看变化
+## What changed at a glance
 
 | | v1.6.0 | v1.6.1 |
 |---|---|---|
-| 快捷图标位置 | 挤在谱图**下方**，chip 36 | 移到谱图**上方**，chip 30（缩小一号） |
-| 谱图操作 | 只有 matplotlib 自带的平移/缩放 | 另加**一行 9 键专用操作**：复位 / 横向框选 / 纵向框选 / 矩形框选 / 左移 / 右移 / 放大 / 缩小 / 十字线 |
-| 量峰位 | 截图后用尺子比 | 十字线**红竖线跟手**读数（角度 + 强度），**右键落点**加手动峰位，再右键删 |
-| 状态栏「内部评估版本」 | 贴右端、小字、灰色 | **居中、放大一号、红色加粗** |
-| 左下标题 | 「精修日志（跑码）」 | 「精修日志」 |
-| 帮助菜单 | 只有「关于…」（摘要一行） | 另加「**版权与许可…**」，弹**许可全文**对话框 |
-| 步骤齿轮 | 全部同色 | **八色区分**（每步一色 + tooltip） |
+| Shortcut icon position | Squeezed **below** the pattern, chip 36 | Moved **above** the pattern, chip 30 (one size smaller) |
+| Pattern operations | Only matplotlib's built-in pan/zoom | Adds **a row of 9 dedicated buttons**: reset / horizontal box zoom / vertical box zoom / rectangle box zoom / move left / move right / zoom in / zoom out / crosshair |
+| Measuring peak position | Screenshot, then compare with a ruler | Crosshair **red vertical line follows the mouse** with a readout (angle + intensity), **right-click** drops a manual peak position, right-click again deletes it |
+| Status bar "internal evaluation build" | Right-aligned, small, grey | **Centred, one size larger, red bold** |
+| Bottom-left title | "Refinement log (run log)" | "Refinement log" |
+| Help menu | Only "About…" (one-line summary) | Adds "**Copyright and license…**", opening a dialog with the **full license text** |
+| Step gears | All the same colour | **Eight distinct colours** (one per step + tooltip) |
 
-## 主要改动
+## Main changes
 
-### 1. 谱图操作行（9 键）
+### 1. Pattern operation row (9 buttons)
 
-布局：中列自上而下 = matplotlib 导航条 → **谱图操作行** → 谱图画布。
+Layout: middle column from top to bottom = matplotlib navigation bar → **pattern operation row** → pattern canvas.
 
-| # | 按钮 | 行为 |
+| # | Button | Behaviour |
 |---|---|---|
-| ① | 原始谱图 | 恢复初始视场（含 d 模式反向轴方向） |
-| ② | 横向框选 | 拖出角度区间，**只改横轴** |
-| ③ | 纵向框选 | 拖出强度区间，**只改纵轴** |
-| ④ | 矩形框选 | 拖出矩形，横纵都改 |
-| ⑤ | 左移 | 视场左移 1/4 宽 |
-| ⑥ | 右移 | 视场右移 1/4 宽 |
-| ⑦ | 放大 | 以视场**中心**为锚，逐步放大 |
-| ⑧ | 缩小 | 同上反向 |
-| ⑨ | 十字线 | 红竖线跟随鼠标，右上角显示 `2θ = …° · I = …`；**右键**加手动峰位 |
+| ① | Original pattern | Restore the initial view (including reversed axis direction in d mode) |
+| ② | Horizontal box zoom | Drag an angle range, **changes the horizontal axis only** |
+| ③ | Vertical box zoom | Drag an intensity range, **changes the vertical axis only** |
+| ④ | Rectangle box zoom | Drag a rectangle, changes both axes |
+| ⑤ | Move left | Shift the view left by 1/4 of its width |
+| ⑥ | Move right | Shift the view right by 1/4 of its width |
+| ⑦ | Zoom in | Anchor at the **centre** of the view, zoom in step by step |
+| ⑧ | Zoom out | The reverse of the above |
+| ⑨ | Crosshair | Red vertical line follows the mouse, top right shows `2θ = …° · I = …`; **right-click** adds a manual peak position |
 
-要点：
+Key points:
 
-- ②③④ 是**分工明确的三把工具**，不是「框选就两向都压」：只压横轴时纵轴
-  会**自动贴合当前视场**，否则放大一个弱峰仍被全谱最高峰压成平线，看起来
-  像按钮没反应。
-- ⑤⑥⑦⑧ 是**离散操作**：平移按视场宽的固定比例、缩放以视场中心为锚，不取
-  鼠标位置（按钮点击时鼠标在哪没有语义）。
-- ⑨ 手动峰位显示为**红色虚线 + 竖排角度标签**；落点在 `0.25°` 内再右键一次
-  即删除。**退出十字线工具后竖线消失，手动峰位保留**。换谱（载入新数据）时
-  两者一起清空——留着上一样品的标注比没有更误导。
-- 谱图操作与 matplotlib 自带的平移/缩放**互斥**（两套拖拽会抢同一个鼠标
-  事件）；同一按钮再点一次退出，交还轴点击的原语义。
+- ②③④ are **three tools with clearly divided duties**, not "box zoom always squeezes both
+  axes": when only the horizontal axis is squeezed the vertical axis **adapts to the current
+  view automatically**, otherwise zooming into a weak peak is still flattened by the highest
+  peak of the whole pattern and the button looks unresponsive.
+- ⑤⑥⑦⑧ are **discrete operations**: panning uses a fixed fraction of the view width, zooming
+  anchors at the view centre and does not use the mouse position (where the mouse happens to be
+  when the button is clicked carries no meaning).
+- ⑨ manual peak positions are drawn as a **red dashed line + vertical angle label**; a
+  right-click within `0.25°` of an existing position deletes it. **Leaving the crosshair tool
+  hides the line but keeps the manual peak positions.** Switching patterns (loading new data)
+  clears both — keeping the previous sample's annotations is more misleading than having none.
+- Pattern operations and matplotlib's built-in pan/zoom are **mutually exclusive** (two drag
+  systems would fight over the same mouse events); clicking the same button again exits and
+  hands the original axis-click semantics back.
 
-### 2. 导航条缩小一号并移到谱图上方
+### 2. Navigation bar one size smaller, moved above the pattern
 
-`NavigationToolbar2QT` 从画布下方移到上方，chip 36 → **30**、`iconSize`
-24 → 20，配色方案不变。这样两排「对图的操作」挨在一起，不用隔着画布找。
+`NavigationToolbar2QT` moves from below the canvas to above it, chip 36 → **30**, `iconSize`
+24 → 20, colour scheme unchanged. The two rows of "operations on the plot" now sit next to
+each other, no more hunting across the canvas.
 
-### 3. 状态栏「内部评估版本」居中、放大、红色加粗
+### 3. Status bar "internal evaluation build" centred, larger, red bold
 
-- `AlignRight` → `AlignCenter`，字号 `+1` 并加粗，颜色 `#d32f2f`。
-- 仍挂在状态栏的 **permanent** 区：十字线读数、轴提示都通过
-  `statusBar().showMessage()` 输出，普通部件会被临时顶掉，常驻标签只有
-  permanent 区才活得下来。
+- `AlignRight` → `AlignCenter`, font size `+1` and bold, colour `#d32f2f`.
+- It still lives in the status bar's **permanent** area: the crosshair readout and axis hints
+  are emitted through `statusBar().showMessage()`, and normal widgets get temporarily covered,
+  so only a permanent-area label survives.
 
-### 4. 左下只写「精修日志」
+### 4. Bottom left now reads "Refinement log" only
 
-标题去掉「（跑码）」，zh/en/ja 三语同步。窗口行为不变。
+The "（run log）" suffix is removed from the title, synchronized across zh/en/ja. Window
+behaviour unchanged.
 
-### 5. 帮助页的版权与许可
+### 5. Copyright and license on the Help page
 
-- 帮助菜单新增 **「版权与许可…」**（在「关于…」上方，带分隔线），打开
-  `LicenseDialog`：许可摘要 + 只读全文（等宽字体，可滚动）。
-- 「关于」对话框里也加了同一个按钮入口。
-- 全文**运行时从磁盘读取**（`licenses/LICENSE` / `licenses/LICENSE-CN`），
-  不在代码里复写——两份文本必然漂移。源码树里指向仓库根的两个文件，安装版
-  由打包脚本一并带上；找不到时提示「许可文件缺失」，不会让对话框打不开。
+- The Help menu gains **"Copyright and license…"** (above "About…", with a separator), opening
+  `LicenseDialog`: license summary + read-only full text (monospace font, scrollable).
+- The same button entry point is also added to the "About" dialog.
+- The full text is **read from disk at runtime** (`licenses/LICENSE` / `licenses/LICENSE-CN`)
+  and not duplicated in code — two copies of the text would inevitably drift. In the source
+  tree it points at the two files at the repository root; the installed build ships them via
+  the packaging script; when they are missing it reports "license file missing" instead of
+  failing to open the dialog.
 
-### 6. 步骤齿轮八色区分
+### 6. Eight-colour step gears
 
-零点 / 背景 / 标度 / 晶胞 / 峰形 / 坐标 / 微结构 / 温度因子 各一色，字号
-16 加粗，tooltip 给步骤名。颜色只作**识别辅助**，不编码状态（跑没跑过、
-是否收敛仍看别的指示），避免「红了就是失败」的误读。
+Zero point / background / scale / unit cell / peak shape / coordinates / microstructure /
+temperature factor each get a colour, font size 16 bold, tooltip gives the step name. Colour
+is an **identification aid only** and does not encode state (whether a step has run or
+converged still shows through other indicators), avoiding the misreading "red means failed".
 
-## 验证
+## Verification
 
-- 全量回归 **527 项：527 passed / 0 failed / 0 skipped，EXIT=0**
-  （v1.6.0 为 512 项，新增 `tests/test_v161_gui.py` 15 项）。
-- golden CLI Rwp 50/50 档 **`3.4074156640940005`** 未变，证实本版没碰引擎。
-- 画布行为离屏实测：`xlim (5.0, 89.98)` → 缩小至 `(26.245, 68.735)` →
-  右移 1/4 → `(36.8675, 79.3575)` → 复位回 `(5.0, 89.98)`；横向框选拖
-  20→40 得 `(20.0, 40.0)` 且皮筋松手消失；十字线在 25.3° 处读
-  `2θ = 25.300° · I = 39728`，右键产生 `[25.3]`、再右键回到 `[]`。
-- 打包产物核验：`XinRefinementCLI.exe --version` = `XinRefinement 1.6.1`；
-  冻结包内 `_internal/licenses/` 确认含 `LICENSE`（2411 B）与
-  `LICENSE-CN`（1887 B），许可对话框在安装版里能读到全文而不只是摘要。
+- Full regression **527 items: 527 passed / 0 failed / 0 skipped, EXIT=0**
+  (512 in v1.6.0; adds 15 in `tests/test_v161_gui.py`).
+- golden CLI Rwp 50/50 case **`3.4074156640940005`** unchanged, confirming this version did
+  not touch the engine.
+- Canvas behaviour measured offscreen: `xlim (5.0, 89.98)` → zoom out to `(26.245, 68.735)` →
+  move right 1/4 → `(36.8675, 79.3575)` → reset back to `(5.0, 89.98)`; horizontal box zoom
+  dragging 20→40 gives `(20.0, 40.0)` and the rubber band disappears on release; the crosshair
+  at 25.3° reads `2θ = 25.300° · I = 39728`, a right-click produces `[25.3]`, another
+  right-click returns to `[]`.
+- Packaged artifact check: `XinRefinementCLI.exe --version` = `XinRefinement 1.6.1`; the
+  frozen package's `_internal/licenses/` is confirmed to contain `LICENSE` (2411 B) and
+  `LICENSE-CN` (1887 B), and the license dialog in the installed build reads the full text
+  rather than only the summary.
 
-## 已知限制
+## Known limits
 
-- **样 7 仍未达标**（+3.39 pt，方石英近非晶宽包起点问题），本版未触碰引擎。
-- 谱图操作是**视图层**功能：缩放/平移/十字线/手动峰位都不进结果表、不进
-  报告、不参与拟合，也不会被保存到项目文件。
-- 晶胞分量勾选只影响 `cell` 步；`profile` 步的联合精修仍按晶系全放开
-  （与 v1.6.0 相同）。
+- **Sample 7 is still below standard** (+3.39 pt, the near-amorphous broad-envelope starting
+  point of cristobalite); this version does not touch the engine.
+- Pattern operations are a **view-layer** feature: zoom/pan/crosshair/manual peak positions do
+  not enter the result tables, do not enter the report, do not participate in fitting, and are
+  not saved to project files.
+- Unit-cell component checkboxes affect the `cell` step only; the joint refinement of the
+  `profile` step still releases the full crystal system (same as v1.6.0).
 
-## 安装与注册
+## Installation and registration
 
-与 v1.6.0 相同：安装包内置 zh/en/ja 三语界面，注册码与 XinMatch 家族互通
-（`%APPDATA%\PolyXRD\Registration\XinRefinement.json`）。内部评估版免注册
-免安装，状态栏红字标示。
+Same as v1.6.0: the installer has a built-in zh/en/ja interface, registration codes
+interoperate across the XinMatch family
+(`%APPDATA%\PolyXRD\Registration\XinRefinement.json`). The internal evaluation build needs
+no registration and no installation, and is marked in red in the status bar.
 
-## 许可
+## License
 
-本软件使用 MIT 许可证（`LICENSE` / `LICENSE-CN`，帮助菜单内可查看全文）。
-内置晶体结构数据来自 COD（CC0）与 ICSD 派生公开文献，**不含任何 PDF 卡片
-或 ICDD 数据**。
+This software uses the MIT license (`LICENSE` / `LICENSE-CN`, full text viewable from the Help
+menu). The bundled crystal structure data comes from COD (CC0) and ICSD-derived public
+literature, and **contains no PDF cards or ICDD data**.
