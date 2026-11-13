@@ -5,6 +5,58 @@
 > content are kept in sync.
 
 
+## v1.7.0 (unreleased, 2026-11-13) — Amorphous hump component (opt-in)
+
+Theme: samples that contain a genuinely amorphous fraction (glass, fumed
+silica) scatter a broad hump that a Bragg-only model cannot carry, and the
+common workaround — a denser background — silently eats intensity from
+overlapping peaks. This adds a **physical** broad component instead, refined
+analytically so it cannot masquerade as background freedom.
+
+### Feature
+- `RefineConfig.amorphous = ((center_deg, fwhm_deg), ...)` and
+  `amorphous_eta` (pseudo-Voigt mixing, default 0.5); CLI `--amorphous 22:9`
+  (repeatable/comma-separated) and `--amorphous-eta`; GUI background dialog
+  gains an "amorphous hump" group (enable + center + FWHM); `RefineRequest.
+  amorphous` plus a `amorphous_hump` capability flag in the API.
+- The hump amplitude is solved **in the linear layer** together with the phase
+  scales and background coefficients (`linear.amorphous_basis` +
+  `solve_linear_detail(amorphous=...)`), so it adds **zero nonlinear
+  parameters** and cannot steal degrees of freedom from the peak model.
+  Center and FWHM are user-supplied and not refined on purpose: freeing them
+  degenerates into a background that absorbs overlapping peaks.
+- Results expose the amplitude (`RefineResult.amorphous` /
+  `SolveResult.amorphous`); background coefficients keep their old length.
+- Disabled by default: with `amorphous=()` every code path is bit-identical
+  to v1.6.4 (golden CLI Rwp still `3.4074156640940005`).
+
+### Tests
+- 579 → **586 collected / 586 passed / 0 skipped**; 7 new cases in
+  `tests/test_v170_amorphous.py` cover basis normalisation and FWHM
+  definition, amplitude recovery on a synthetic pattern (250 → 250 ±5%),
+  the manual-background branch, the bit-identical disabled path, and the
+  `SolveResult` contract.
+
+### Benchmark evidence (and an honest negative result)
+- Sample 7 (alpha cristobalite, re-selected texture axis, 13.072%) with a
+  22°/9° hump: **13.181%** — 0.109 pt *worse*, with QPA drifting 2.7 vol%
+  (quartz 16.03 → 17.41, cristobalite 19.81 → 17.15). Acceptance criterion
+  (ΔRwp ≤ −0.5 pt, QPA drift ≤ 1 vol%) **not met**.
+- A shape sweep at frozen parameters (5 centers × 6 FWHM, amplitude solved
+  analytically) gives at best **−0.026 pt on sample 7** and **−0.076 pt on
+  sample 6**, with most amplitudes coming out negative — i.e. the fit does
+  not want the hump at all.
+- Splitting the weighted residual by Bragg position explains why: **17.1% of
+  the points sit on a peak but carry 52.8% of the squared residual**
+  (on-peak mean residual +0.42σ vs +0.10σ between peaks). The remaining gap
+  is a **peak-shape / intensity** problem, not an unmodelled amorphous
+  background.
+- Therefore the component ships as an **opt-in modelling capability for data
+  that really contains glass** (where the user knows the hump position), not
+  as a benchmark improvement. The next lever for samples 6/7 is the peak
+  profile, not the background.
+
+
 ## v1.6.4 (2026-11-12) — Third batch of audit remediation (engineering robustness + read performance)
 
 Theme: absorb the five "safe to fix, no numerical impact" items from the 2026-11-11 global
