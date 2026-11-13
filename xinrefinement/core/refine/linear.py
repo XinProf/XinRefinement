@@ -141,6 +141,30 @@ def manual_basis(two_theta: np.ndarray,
     return np.interp(tt, xs, ys).reshape(-1, 1)
 
 
+def amorphous_basis(two_theta: np.ndarray,
+                    components, eta: float = 0.5) -> np.ndarray:
+    """非晶宽包基：每个分量一列归一化伪 Voigt（峰高 1）。
+
+    ``components`` 为 ``((center_deg, fwhm_deg), ...)``。峰高由线性层与各相
+    标度、背景系数一起解析求解，**不占非线性参数**——宽包中心/半高宽留给
+    用户给（物理上来自非晶相的短程有序距离，靠精修很容易退化成吸峰的本底）。
+
+    v1.7：样 7 的非晶 SiO₂ 宽包与方石英主峰重叠，用密集 tent 背景去追会把
+    重叠峰的强度吸走（n_bg=45 时 QPA 漂 3.6 vol%），故改为物理分量。
+    """
+    tt = np.asarray(two_theta, dtype=np.float64)
+    cols = []
+    for center, fwhm in components or ():
+        half = max(float(fwhm), 1e-6) * 0.5
+        x = (tt - float(center)) / half          # 归一化：x=±1 即半高处
+        gauss = np.exp(-np.log(2.0) * x * x)
+        lorentz = 1.0 / (1.0 + x * x)
+        cols.append((1.0 - float(eta)) * gauss + float(eta) * lorentz)
+    if not cols:
+        return np.zeros((tt.size, 0))
+    return np.column_stack(cols)
+
+
 def background_basis(two_theta: np.ndarray, n_terms: int,
                      mode: str = "cheb",
                      points: list[tuple[float, float]] | None = None) -> np.ndarray:
@@ -169,7 +193,8 @@ def _solve(A: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
 def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
                         yobs: np.ndarray, sigma: np.ndarray | None,
                         n_bg: int = 3, bg_mode: str = "cheb",
-                        bg_points: list[tuple[float, float]] | None = None
+                        bg_points: list[tuple[float, float]] | None = None,
+                        amorphous=None, amorphous_eta: float = 0.5
                         ) -> tuple[np.ndarray, np.ndarray, list[int]]:
     """线性求解（完整版，带负标度剔除）。
 
@@ -178,7 +203,8 @@ def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
                   "interp"（v1.2.0，需 bg_points —— MAUD 两层可加语义：
                   自动提取的**固定**插值曲线 + 其上自由 Chebyshev ``n_bg`` 项）
     返回 (coeffs, ycalc, dropped)：
-      coeffs = [S_1..S_P, b_0..b_{n_bg-1}]（相位在前，背景在后）
+      coeffs = [S_1..S_P, b_0..b_{n_bg-1}(, A_1..A_K)]（相位 → 背景 →
+      非晶宽包峰高）；``amorphous`` 为空时长度与 v1.6 完全一致。
       dropped: scale 被置 0 的相下标（剔除重解 + 重解后仍为负的相）
 
     P2.2 ``manual`` 分支：用户放置的背景点是**固定曲线**（非可解系数），
@@ -190,16 +216,21 @@ def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
     g = np.asarray(grid, dtype=np.float64)
     n_phase = bp.shape[0]
     n_bg = int(n_bg)
+    hump = amorphous_basis(g, amorphous, amorphous_eta)
 
     if bg_mode == "manual":
         fixed_bg = manual_basis(g, bg_points or []).ravel()
         w_m = np.ones_like(y) if sigma is None else 1.0 / np.asarray(sigma, float)
         y_res = y - fixed_bg
-        sol = _solve(bp.T, y_res, w_m)
-        scales = np.where(sol < 0.0, 0.0, sol)
-        dropped = [int(i) for i in np.flatnonzero(sol < 0.0)]
-        coeffs = np.concatenate([scales, np.ones(1)])
+        A = np.hstack([bp.T, hump]) if hump.size else bp.T
+        sol = _solve(A, y_res, w_m)
+        scales = np.where(sol[:n_phase] < 0.0, 0.0, sol[:n_phase])
+        dropped = [int(i) for i in np.flatnonzero(sol[:n_phase] < 0.0)]
+        amp = sol[n_phase:]
+        coeffs = np.concatenate([scales, np.ones(1), amp])
         ycalc = bp.T @ scales + fixed_bg
+        if hump.size:
+            ycalc = ycalc + hump @ amp
         return coeffs, ycalc, dropped
 
     if bg_mode == "interp":
@@ -220,10 +251,13 @@ def solve_linear_detail(basis_phases: np.ndarray, grid: np.ndarray,
 
     w = np.ones_like(y) if sigma is None else 1.0 / np.asarray(sigma, float)
     y_work = y - offset          # interp：固定层先扣，可解层在其上拟合
+    if hump.size:
+        # 非晶宽包与背景并列进线性层：峰高解析求解，非线性参数一个都不增加
+        bg = np.hstack([bg, hump])
 
     scales = np.zeros(n_phase)
     keep = list(range(n_phase))
-    bg_c = np.zeros(n_bg)
+    bg_c = np.zeros(bg.shape[1])
     dropped: list[int] = []
 
     for attempt in range(2):

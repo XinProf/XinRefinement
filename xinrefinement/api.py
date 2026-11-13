@@ -31,13 +31,16 @@ class RefineRequest:
     formulas: dict[str, str] | None = None
     refine_po: bool = False
     peak_height: bool = False       # 合成/峰高口径谱用 True
+    #: v1.7 非晶宽包分量 ``((中心2θ, 半高宽), ...)``；峰高由线性层求解
+    amorphous: tuple = ()
 
     def as_dict(self) -> dict:
         return {"pattern": str(self.pattern),
                 "cifs": [str(c) for c in self.cifs],
                 "tmin": self.tmin, "tmax": self.tmax,
                 "anode": self.anode, "formulas": self.formulas,
-                "refine_po": self.refine_po, "peak_height": self.peak_height}
+                "refine_po": self.refine_po, "peak_height": self.peak_height,
+                "amorphous": [list(a) for a in self.amorphous]}
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ def refine(request: RefineRequest) -> RefineResponse:
     cfg = RefineConfig(refine_zero=True, refine_uvw=True,
                        refine_po=request.refine_po,
                        n_bg=3, max_iter=40,
+                       amorphous=tuple(tuple(float(v) for v in a)
+                                       for a in (request.amorphous or ())),
                        tmin=request.tmin, tmax=request.tmax)
     res = solve(RefineInputs(pattern=pat, phases=phases, profile=prm,
                              config=cfg, formulas=request.formulas))
@@ -130,6 +135,8 @@ def _solve_raw(request: RefineRequest):
     cfg = RefineConfig(refine_zero=True, refine_uvw=True,
                        refine_po=request.refine_po,
                        n_bg=3, max_iter=40,
+                       amorphous=tuple(tuple(float(v) for v in a)
+                                       for a in (request.amorphous or ())),
                        tmin=request.tmin, tmax=request.tmax)
     return solve(RefineInputs(pattern=pat, phases=phases, profile=prm,
                               config=cfg, formulas=request.formulas))
@@ -146,4 +153,6 @@ def capabilities() -> dict:
         "engines": ["builtin variable-projection LM/scipy-trf"],
         # v1.1.0 联合计划：可导入 XinMatch 物相分析状态（.xinm）
         "xinm_import": "1",
+        # v1.7：非晶宽包物理分量（RefineRequest.amorphous）
+        "amorphous_hump": "1",
     }

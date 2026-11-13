@@ -136,6 +136,31 @@ class BackgroundDialog(_BaseDialog):
             self.table.setItem(r, 1, QTableWidgetItem(f"{y:g}"))
         lay.addWidget(self.table)
         self._root.addWidget(grp)
+
+        # v1.7：非晶宽包（物理分量）——含玻璃/气相 SiO₂ 的样品用
+        amo = QGroupBox("非晶宽包（物理分量，v1.7）")
+        amo_lay = QFormLayout(amo)
+        self.amo_on = QCheckBox("启用（峰高由线性层求解，与背景/标度一起）")
+        cur_amo = tuple(cur.get("amorphous") or ())
+        self.amo_on.setChecked(bool(cur_amo))
+        self.amo_center = QDoubleSpinBox()
+        self.amo_center.setRange(5.0, 120.0)
+        self.amo_center.setDecimals(2)
+        self.amo_center.setSingleStep(0.5)
+        self.amo_center.setValue(float(cur_amo[0][0]) if cur_amo else 22.0)
+        self.amo_center.setToolTip("宽包中心 2θ（非晶相的短程有序峰位）")
+        self.amo_fwhm = QDoubleSpinBox()
+        self.amo_fwhm.setRange(1.0, 40.0)
+        self.amo_fwhm.setDecimals(2)
+        self.amo_fwhm.setSingleStep(0.5)
+        self.amo_fwhm.setValue(float(cur_amo[0][1]) if cur_amo else 9.0)
+        self.amo_fwhm.setToolTip("半高宽（度）；玻璃/气相 SiO₂ 常见 8–15°")
+        amo_lay.addRow(self.amo_on)
+        amo_lay.addRow("中心 2θ", self.amo_center)
+        amo_lay.addRow("半高宽 FWHM", self.amo_fwhm)
+        amo_lay.addRow(QLabel("提示：非晶宽包不参与定量；与密集背景相比它不会\n"
+                              "把重叠峰的强度吸走（QPA 更稳）。"))
+        self._root.addWidget(amo)
         self._add_buttons()
 
     def settings(self) -> dict:
@@ -153,6 +178,9 @@ class BackgroundDialog(_BaseDialog):
         return {"bg_mode": mode,
                 "n_bg": int(self.n_terms.value()),
                 "bg_points": pts, "manual_points": mode == "manual",
+                "amorphous": (((float(self.amo_center.value()),
+                                float(self.amo_fwhm.value())),)
+                              if self.amo_on.isChecked() else ()),
                 "weight_mode": ("sqrt", "file", "unit", "1/y",
                                 "theoretical")[self.weight.currentIndex()]}
 

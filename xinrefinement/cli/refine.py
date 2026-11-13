@@ -44,6 +44,12 @@ def _add_refine_parser(sub) -> None:
                         "默认 10 次迭代）；manual 需配 --bg-points")
     r.add_argument("--bg-points", default="", metavar="2θ:强度,...",
                    help="manual 背景锚点，如 --bg-points 15:320,60:180")
+    r.add_argument("--amorphous", default="", metavar="中心:半高宽[,..]",
+                   help="v1.7 非晶宽包物理分量（可多个），如 --amorphous 22:9；"
+                        "峰高由线性层解析求解，与背景/标度一起；"
+                        "用于含玻璃/气相 SiO₂ 的样品，避免密背景吸峰")
+    r.add_argument("--amorphous-eta", type=float, default=0.5,
+                   help="非晶宽包的伪 Voigt 混合比（0=高斯，1=洛伦兹，默认 0.5）")
     r.add_argument("--weight-mode",
                    choices=["sqrt", "file", "unit", "1/y", "theoretical"],
                    default="sqrt",
@@ -248,6 +254,20 @@ def _parse_bg_points(spec: str) -> tuple:
     return tuple(pts)
 
 
+def _parse_amorphous(spec: str) -> tuple:
+    """'22:9' 或 '22:9,31:12' -> ((22.0, 9.0), (31.0, 12.0))。
+
+    每项是 (中心 2θ, 半高宽)，峰高由线性层解析求解；中心/半高宽不精修。
+    """
+    comps = []
+    for item in filter(None, (spec or "").split(",")):
+        c, _, f = item.partition(":")
+        if not c or not f:
+            raise SystemExit("--amorphous 需要 中心:半高宽，如 --amorphous 22:9")
+        comps.append((float(c), float(f)))
+    return tuple(comps)
+
+
 def _build_inputs(args) -> RefineInputs:
     pat = load_pattern(args.pattern)
     phases = [parse_cif(p) for p in args.cif]
@@ -297,6 +317,8 @@ def _build_inputs(args) -> RefineInputs:
         n_bg=args.n_bg,
         bg_mode=args.bg_mode,
         bg_points=_parse_bg_points(args.bg_points),
+        amorphous=_parse_amorphous(args.amorphous),
+        amorphous_eta=args.amorphous_eta,
         weight_mode=args.weight_mode,
         max_iter=args.max_iter,
         backend=args.backend,

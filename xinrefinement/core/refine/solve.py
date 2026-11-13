@@ -87,6 +87,8 @@ class SolveResult:
     pattern: Pattern
     engine: EngineResult
     warnings: tuple[str, ...] = ()
+    #: v1.7：非晶宽包峰高（与 ``config.amorphous`` 顺序对应）；未启用时为空。
+    amorphous: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
 
 def _clip_to_window(pat: Pattern, tmin: float, tmax: float,
@@ -474,4 +476,6 @@ def solve(inputs: RefineInputs) -> SolveResult:
         pattern=pat,
         engine=engine,
         warnings=tuple(warnings),
+        amorphous=np.asarray(getattr(engine, "amorphous", np.zeros(0)),
+                             dtype=np.float64),
     )

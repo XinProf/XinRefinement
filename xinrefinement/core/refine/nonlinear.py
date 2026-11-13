@@ -166,6 +166,13 @@ class RefineConfig:
     bg_points: tuple = ()
     #: "interp" 提取迭代次数（MAUD 默认 10）
     bg_interp_iters: int = 10
+    # ---- v1.7：非晶宽包物理分量（默认关，关闭时所有路径逐位不变） ----
+    #: 每项 ``(center_deg, fwhm_deg)``（可多个）。**峰高由线性层解析求解**，
+    #: 与各相标度、背景系数一起；中心/半高宽不精修——它们物理上由非晶相的
+    #: 短程有序距离决定，放开反而容易退化成「吸峰的本底」。
+    amorphous: tuple = ()
+    #: 非晶宽包的伪 Voigt 混合比（0 = 纯高斯，1 = 纯洛伦兹）
+    amorphous_eta: float = 0.5
     refine_po: bool = False          # March–Dollase 择优取向 r 精修（默认关）
     # ---- v1.4 任务 #19：micro 步择优取向自动试探（默认关，零回归） ----
     #: 为真时配方 micro 步先逐相×逐轴短精修 r，按 Rwp 增益挑选惯习面，
@@ -286,6 +293,9 @@ class RefineResult:
     cell_scales: list[tuple[float, float]] = field(default_factory=list)
     iters: int = 0
     po_r: dict | None = None
+    #: v1.7：非晶宽包的峰高（与 ``RefineConfig.amorphous`` 顺序对应）；
+    #: 未启用时为空数组。
+    amorphous: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # NCA 修改（T3.2，INV-3 追加字段）：收敛点相关性（corr.CorrResult），
     # refine_corr=False 时为 None。
     correlation: object = None
@@ -693,10 +703,13 @@ def _build_residual(phases: list[CifStructure], pat: Pattern, base: ProfileParam
         basis = np.vstack(rows) if rows else np.zeros((0, tt.size))
         _coeffs, ycalc, _dropped = solve_linear_detail(
             basis, tt, yo, sig, cfg.n_bg, cfg.bg_mode,
-            bg_points=list(cfg.bg_points) or None)
+            bg_points=list(cfg.bg_points) or None,
+            amorphous=cfg.amorphous, amorphous_eta=cfg.amorphous_eta)
         # history 记录每次评估的 Rwp（GSAS-II 口径，背景计入）
         rwp = compute_rfactors(
-            yo, ycalc, n_params=x.size + basis.shape[0] + cfg.n_bg).rwp
+            yo, ycalc,
+            n_params=x.size + basis.shape[0] + cfg.n_bg
+            + len(cfg.amorphous)).rwp
         history.append(rwp)
         gen[0] += 1
         if cfg.on_iter is not None:
@@ -742,8 +755,10 @@ def _rwp_at(phases: list[CifStructure], pat: Pattern, prm: ProfileParams,
             for s in phases]
     _coeffs, ycalc, _dropped = solve_linear_detail(
         np.vstack(rows), tt, yo, sig, cfg.n_bg, cfg.bg_mode,
-        bg_points=list(cfg.bg_points) or None)
-    return compute_rfactors(yo, ycalc, n_params=cfg.n_bg).rwp
+        bg_points=list(cfg.bg_points) or None,
+        amorphous=cfg.amorphous, amorphous_eta=cfg.amorphous_eta)
+    return compute_rfactors(yo, ycalc,
+                           n_params=cfg.n_bg + len(cfg.amorphous)).rwp
 
 
 def _restart_points(prm_try: ProfileParams) -> list[ProfileParams]:
@@ -919,14 +934,20 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
     coeffs, ycalc, dropped = solve_linear_detail(
         basis, pat.two_theta, pat.intensity,
         sig_final, cfg.n_bg, cfg.bg_mode,
-        bg_points=list(cfg.bg_points) or None)
-    n_p = best_x.size + basis.shape[0] + cfg.n_bg
+        bg_points=list(cfg.bg_points) or None,
+        amorphous=cfg.amorphous, amorphous_eta=cfg.amorphous_eta)
+    n_p = best_x.size + basis.shape[0] + cfg.n_bg + len(cfg.amorphous)
     rf = compute_rfactors(pat.intensity, ycalc, n_params=n_p,
                           sigma=sig_final, include_bg=True)
-    return RefineResult(params=prm, scales=coeffs[:basis.shape[0]].copy(),
-                        bg=coeffs[basis.shape[0]:].copy(), ycalc=ycalc,
+    n_sc = basis.shape[0]
+    n_hump = len(cfg.amorphous)
+    return RefineResult(params=prm, scales=coeffs[:n_sc].copy(),
+                        bg=coeffs[n_sc:n_sc + (coeffs.size - n_sc - n_hump)].copy(),
+                        ycalc=ycalc,
                         rf=rf, success=success, history=history,
                         phase_dropped=dropped, restarted=restarted,
                         cell_scales=cell_scales, iters=gen[0],
                         po_r=prm.po_r if cfg.refine_po else None,
+                        amorphous=coeffs[coeffs.size - n_hump:].copy()
+                        if n_hump else np.zeros(0),
                         correlation=correlation)

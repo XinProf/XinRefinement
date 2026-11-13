@@ -1229,11 +1229,15 @@ class MainWindow(QMainWindow):
         tmin, tmax = self._refine_window()
         bg_points = tuple((float(x), float(v))
                           for x, v in (bg.get("bg_points") or ()))
+        # v1.7：非晶宽包（物理分量），来自背景弹窗的勾选 + 中心/半高宽
+        amorphous = tuple((float(c), float(f))
+                          for c, f in (bg.get("amorphous") or ()))
         cfg = RefineConfig(
             refine_zero=True, refine_uvw=True,
             n_bg=int(bg.get("n_bg", adaptive_n_bg(tmin, tmax))),
             bg_mode=bg.get("bg_mode", "tent"),
             bg_points=bg_points,
+            amorphous=amorphous,
             # v1.3：定权模式（MAUD getWeight + theoreticalWeights）
             weight_mode=bg.get("weight_mode", "sqrt"),
             # v1.3 #14：物相编辑里显式勾选织构轴才精修 T(χ)（默认关）
