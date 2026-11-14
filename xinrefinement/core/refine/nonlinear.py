@@ -131,7 +131,15 @@ class RefineConfig:
     tmax: float = 90.0
     # ---- v1.0.0 扩展（默认关闭，保持 v0.1.0 行为） ----
     bg_mode: str = "cheb"            # "cheb" | "tent" | "interp"（v1.2.0）
-    refine_asym: bool = False        # 低角不对称尾
+    #: 低角不对称尾。**三态**（v1.7）：
+    #: ``None``（默认）= 由调用方决定——裸 ``solve()`` 视为关，配方
+    #: ``profile`` 步自动开（低角不对称尾在实测谱上几乎总存在）；
+    #: ``True`` / ``False`` = 强制开 / 强制关，配方路径也遵守。
+    #: 改造前该字段是 ``bool = False`` 且配方写死 ``refine_asym=True``，
+    #: 导致它在 ``RecipeRunner`` 路径上**完全无效**（结论七，2026-11-06
+    #: IUCr 对照实测「开/不开两次 Rwp 相同到 1e-11」）。默认 None 保证
+    #: 既有数值路径逐位不变。
+    refine_asym: bool | None = None
     refine_bfactor: bool = False     # 经验高角衰减 B（全局）
     #: v1.4 #18：每相各向同性温度因子增量 ΔB_iso（默认关）。开启时
     #: solve() 会为缺相补 0 起点；与全局 bfactor 叠加，共用 exp(−B/2d²)。

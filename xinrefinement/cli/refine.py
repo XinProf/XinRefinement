@@ -94,7 +94,12 @@ def _add_refine_parser(sub) -> None:
                         "展宽（各向同性起点，6 参/相）；方向数不足的相自动"
                         "跳过。等价于逐相 --aniso，但无需手写相名")
     r.add_argument("--refine-eta", action="store_true")
-    r.add_argument("--refine-asym", action="store_true")
+    # v1.7：三态。都不给 = 交配方自动决定（profile 步开 asym）；
+    # 给 --no-refine-asym 才真正关掉（改造前该开关在配方路径无效）。
+    r.add_argument("--refine-asym", action="store_true",
+                   help="强制精修低角不对称尾（默认由配方 profile 步自动开）")
+    r.add_argument("--no-refine-asym", action="store_true",
+                   help="强制关闭不对称精修（覆盖配方默认）")
     r.add_argument("--refine-bfactor", action="store_true")
     r.add_argument("--refine-biso", action="store_true",
                    help="v1.4 #18：逐相精修各向同性温度因子 ΔB_iso (Å²)，"
@@ -296,7 +301,9 @@ def _build_inputs(args) -> RefineInputs:
         refine_zero=True,
         refine_uvw=True,
         refine_eta=args.refine_eta,
-        refine_asym=args.refine_asym,
+        # v1.7 三态：都不给 → None（配方自动）；显式开关才覆盖
+        refine_asym=(True if args.refine_asym
+                     else (False if args.no_refine_asym else None)),
         refine_bfactor=args.refine_bfactor,
         refine_biso=args.refine_biso,
         refine_xyz=args.refine_xyz,

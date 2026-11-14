@@ -135,14 +135,15 @@ class RefineStep:
         # 故开各向异性时 micro 步不再精修标量尺寸/应变。
         aniso_on = (self.key == "micro"
                     and (cfg.refine_aniso or cfg.aniso_auto))
-        # ``refine_asym`` 由 profile 步**无条件**打开，不看 ``cfg.refine_asym``：
+        # ``refine_asym`` 默认（``None``）由 profile 步**无条件**打开：
         # 低角不对称尾在实测谱上几乎总存在，且与 U/V/W/eta 只弱相关，
-        # 交给用户在配方外记得打开不现实。副作用是
-        # ``RefineConfig.refine_asym`` 在 ``RecipeRunner`` 路径上**是无效开关**
-        # （只在裸 ``solve()`` 路径生效）——2026-11-06 做 IUCr CPD 对照时
-        # 实测「开/不开 refine_asym 两次结果 Rwp 相同到 1e-11」才发现。
-        # 保留无条件打开是对的（MAUD 的 ``_riet_asymmetry_tan_dep`` 同样是
-        # 全局开），但**不要再把这个字段当成配方开关用**。
+        # 交给用户在配方外记得打开不现实。但 v1.7 起该字段是**三态**——
+        # 显式 ``True`` / ``False`` 会覆盖这里的默认（结论七）：
+        # 改造前本行写死 ``(self.key == "profile")``，用户传
+        # ``RefineConfig(refine_asym=False)`` 也照样开，字段形同虚设
+        # （2026-11-06 做 IUCr CPD 对照时实测「开/不开两次结果 Rwp
+        # 相同到 1e-11」才发现）。
+        asym_default = (self.key == "profile")
         return replace(cfg,
                        # v1.5 M10b（2026-11-07）：``profile`` 步**必须**连带
                        # 重新精修 zero。实测 IUCr 纯刚玉：``zero`` 步是在默认
@@ -174,7 +175,8 @@ class RefineStep:
                        # width_probe`` 供单点实验用，默认路径不启用。
                        width_probe=False,
                        refine_eta=(self.key == "profile"),
-                       refine_asym=(self.key == "profile"),
+                       refine_asym=(asym_default if cfg.refine_asym is None
+                                    else cfg.refine_asym),
                        refine_bfactor=False,
                        # v1.4 #18：调用方显式开启 refine_biso 时，B 步逐相
                        # 精修 ΔB_iso（solve 自动补 0 起点）；其余步一律关，
