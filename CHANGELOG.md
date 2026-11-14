@@ -5,7 +5,7 @@
 > content are kept in sync.
 
 
-## v1.7.0 (unreleased, 2026-11-13) — Amorphous hump component (opt-in)
+## Unreleased — v1.7.0 (2026-11-13) — Amorphous hump component (opt-in)
 
 Theme: samples that contain a genuinely amorphous fraction (glass, fumed
 silica) scatter a broad hump that a Bragg-only model cannot carry, and the
@@ -55,6 +55,32 @@ analytically so it cannot masquerade as background freedom.
   that really contains glass** (where the user knows the hump position), not
   as a benchmark improvement. The next lever for samples 6/7 is the peak
   profile, not the background.
+- Follow-up peak-shape experiments (2026-11-14; frozen-parameter diagnostics,
+  **no production code changes**): a two-component "sharp core + broad
+  Lorentz wing" profile first looked promising (best −1.112 pt, QPA drift
+  0.67 vol%), but a single pseudo-Voigt using only the **existing** knobs
+  (global FWHM ×0.85 plus η +0.3) reaches −1.379 pt. The new shape family
+  therefore adds no expressive power and is **rejected**. `ka_ratio` scans
+  top out at −0.142 pt (at 0.6), and locking QPA retains 98% of the
+  dual-shape gain, so neither the Kα doublet nor phase-scale freedom is the
+  bottleneck. The improvement is concentrated on the 28.5° fluorite (111)
+  region: the 15–30° bin carries 83% of the total weighted-SS reduction,
+  while the 24–26° region worsens.
+- Diagnostic finding, **not fixed in this release**: whenever Popa LB
+  anisotropy is active, `forward._accumulate_peaks()` takes η from
+  `tch_eta()` and ignores `ProfileParams.eta`, even though the `profile`
+  recipe step still refines it via `refine_eta=True`. Sweeping η from 0 to 1
+  changes Rwp by exactly 0 pt; all 7 benchmark samples run 100% through that
+  TCH branch (0 scalar peaks) and the GUI ships with `aniso_auto` enabled.
+  Fixing it would change the default numerical path and `n_params`, so it is
+  tracked as a separate engineering item rather than folded into the
+  benchmark work.
+- The only surviving lever (a +0.2 η bias on TCH peaks) also **fails** the
+  full-recipe on/off check: Rwp 13.2231% → 12.6790% (−0.544 pt) but QPA
+  drifts 9.44 vol% (fluorite 25.09 → 34.53) and runtime grows 1.59×. This is
+  the same degenerate solution as the rejected per-phase width scaling — the
+  28.5° peak is fitted by moving phase fractions, not by improving the shape.
+  No production code was changed in any of these experiments.
 
 
 ## v1.6.4 (2026-11-12) — Third batch of audit remediation (engineering robustness + read performance)
