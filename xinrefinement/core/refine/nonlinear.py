@@ -50,6 +50,8 @@ from xinrefinement.core.profile.forward import (
     TEXTURE_COEFF_BOUNDS,
     TEXTURE_N_GRID,
     ProfileParams,
+    _peaks_with_po,
+    aniso_xy,
     compute_phase_profile,
     normalize_texture_grid,
     texture_coeffs,
@@ -299,6 +301,42 @@ class RefineResult:
     # NCA 修改（T3.2，INV-3 追加字段）：收敛点相关性（corr.CorrResult），
     # refine_corr=False 时为 None。
     correlation: object = None
+
+
+def eta_is_active(phases: list[CifStructure], prm: ProfileParams,
+                  tmin: float = 5.0, tmax: float = 120.0) -> bool:
+    """``prm.eta`` 是否真的参与计算谱（K30，v1.7）。
+
+    ``forward._accumulate_peaks`` 在 (X, Y) != (0, 0) 的峰上走 TCH 分支，
+    逐峰 η 由 ``tch_eta(fg, fl)`` 给出并**忽略** ``ProfileParams.eta``；
+    只有退回 Caglioti 标量分支（x_deg == y_deg == 0）的峰才用 ``prm.eta``。
+    7 个基准样全相开 Popa LB 时 100% 走 TCH，此时 ``refine_eta`` 精修的是
+    一列恒零雅可比，还让 ``n_params`` 多算 1（实测 Rexp 偏小 0.0007~0.0015）。
+
+    返回 True 当且仅当存在至少一个标量分支的峰。只枚举峰列表（命中
+    ``_PEAKS_CACHE``），不做额外前向计算。
+    """
+    for struct in phases:
+        aniso = (prm.aniso or {}).get(struct.name)
+        ss = (prm.size_strain or {}).get(struct.name)
+        if aniso is None and ss is None:
+            # 未被覆盖的相用全局标量 X/Y；两者皆零才退回 Caglioti + prm.eta
+            if prm.X == 0.0 and prm.Y == 0.0:
+                return True
+            continue
+        if aniso is None:
+            if float(ss[0]) == 0.0 and float(ss[1]) == 0.0:
+                return True
+            continue
+        # 各向异性相：逐峰方向值可能恰好为 (0, 0) 并退回标量分支
+        for peak in _peaks_with_po(prm, struct, tmin, tmax):
+            if peak[1] <= 0:
+                continue          # 与 _accumulate_peaks 一致：零高峰不累加
+            n = peak[3] if len(peak) > 3 else (0.0, 0.0, 1.0)
+            x_deg, y_deg = aniso_xy(aniso, n, prm.wavelength)
+            if x_deg == 0.0 and y_deg == 0.0:
+                return True
+    return False
 
 
 def _pack(prm: ProfileParams, cfg: RefineConfig, n_phase: int) -> np.ndarray:
@@ -839,6 +877,15 @@ def refine(phases: list[CifStructure], pat: Pattern, prm0: ProfileParams,
              缺相按 DEFAULT_PO_HKL 补 (h,k,l,1.0) 起点，结果见
              RefineResult.po_r）
     """
+    # K30（v1.7）：TCH / Popa LB 各向异性路径下逐峰 η 由 tch_eta() 决定，
+    # ProfileParams.eta 完全不参与计算谱。此时 refine_eta 只是往 LM 向量里
+    # 放一列恒零雅可比，并把 n_params 多算 1（Rexp 系统性偏小，7 样实测
+    # −0.0007 ~ −0.0015）。在入口统一关掉该槽位：计算谱 / Rwp / 精修参数
+    # 逐位不变，只修正自由度计数。用局部变量，SolveResult.config 仍保留
+    # 用户原设置，对外契约不变。
+    if cfg.refine_eta and not eta_is_active(
+            phases, prm0, cfg.tmin, cfg.tmax):
+        cfg = replace(cfg, refine_eta=False)
     if cfg.progress_cb is not None:
         try:
             cfg.progress_cb("正在初始化精修模型…", None)
