@@ -8,12 +8,12 @@
 
 简体中文 · [English](README.md)
 
-## 当前版本：v1.6.4
+## 当前版本：v1.7.0
 
 | | |
 |---|---|
-| **下载** | [`XinRefinement-1.6.4-setup.exe`](https://github.com/XinProf/XinRefinement/releases/tag/v1.6.4) —— Windows x64，中/英/日 三语安装界面 |
-| **发布说明** | [v1.6.4 — 审计整改第三批](https://github.com/XinProf/XinRefinement/releases/tag/v1.6.4) |
+| **下载** | [`XinRefinement-1.7.0-setup.exe`](https://github.com/XinProf/XinRefinement/releases/tag/v1.7.0) —— Windows x64，中/英/日 三语安装界面 |
+| **发布说明** | [v1.7.0 — 非晶宽包分量 + 配方路径修复](https://github.com/XinProf/XinRefinement/releases/tag/v1.7.0) |
 | **变更记录** | [CHANGELOG.md](CHANGELOG.md) |
 | **SHA256** | `258afa309558adfc18ca4a9bed3193213c2982b56006460291fae0a6f5b90701` |
 

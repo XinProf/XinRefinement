@@ -5,7 +5,7 @@
 > content are kept in sync.
 
 
-## Unreleased — v1.7.0 (2026-11-13) — Amorphous hump component (opt-in)
+## v1.7.0 (2026-11-14) — Amorphous hump component + recipe-path fixes
 
 Theme: samples that contain a genuinely amorphous fraction (glass, fumed
 silica) scatter a broad hump that a Bragg-only model cannot carry, and the

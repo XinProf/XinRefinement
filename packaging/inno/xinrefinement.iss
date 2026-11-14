@@ -11,7 +11,7 @@
 
 #define AppName "XinRefinement"
 #ifndef AppVersion
-#define AppVersion "1.6.4"
+#define AppVersion "1.7.0"
 #endif
 #define AppPublisher "PolyXRD"
 #define AppExe "XinRefinement.exe"

@@ -8,12 +8,12 @@
 
 [简体中文](README-CN.md) · English
 
-## Current version: v1.6.4
+## Current version: v1.7.0
 
 | | |
 |---|---|
-| **Download** | [`XinRefinement-1.6.4-setup.exe`](https://github.com/XinProf/XinRefinement/releases/tag/v1.6.4) — Windows x64, zh/en/ja installer |
-| **Release notes** | [v1.6.4 — audit remediation batch 3](https://github.com/XinProf/XinRefinement/releases/tag/v1.6.4) |
+| **Download** | [`XinRefinement-1.7.0-setup.exe`](https://github.com/XinProf/XinRefinement/releases/tag/v1.7.0) — Windows x64, zh/en/ja installer |
+| **Release notes** | [v1.7.0 — Amorphous hump component + recipe-path fixes](https://github.com/XinProf/XinRefinement/releases/tag/v1.7.0) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 | **SHA256** | `258afa309558adfc18ca4a9bed3193213c2982b56006460291fae0a6f5b90701` |
 
