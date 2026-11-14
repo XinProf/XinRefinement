@@ -86,7 +86,35 @@ analytically so it cannot masquerade as background freedom.
   drifts 9.44 vol% (fluorite 25.09 → 34.53) and runtime grows 1.59×. This is
   the same degenerate solution as the rejected per-phase width scaling — the
   28.5° peak is fitted by moving phase fractions, not by improving the shape.
-  No production code was changed in any of these experiments.
+- **`refine_asym` is now a real switch on the recipe path (conclusion 7).**
+  `RefineStep.config_for()` used to hard-code `refine_asym=(key == "profile")`
+  and ignore `cfg.refine_asym` entirely, so passing `refine_asym=False` to
+  `RecipeRunner` still refined the asymmetry term (measured 2026-11-06: Rwp
+  identical to 1e-11 with the flag on and off). The field is now **tri-state**:
+  `None` (default) keeps the old behaviour — the `profile` step opens the term
+  automatically, and a bare `solve()` treats it as off — while explicit
+  `True` / `False` now override the recipe on every step. CLI gains
+  `--no-refine-asym` (the existing `--refine-asym` still forces it on); giving
+  neither leaves the decision to the recipe. Default `None` reproduces the
+  previous numerical path bit-for-bit.
+- **Fixed-QPA + peak-shape check (the last untested combination): negative.**
+  The 28.5° hotspot had one candidate left — constrain QPA inside the full
+  recipe and *then* improve the shape — because the frozen-state test kept 98%
+  of the gain only by pinning phase fractions. Three full-recipe rounds with a
+  monkeypatched linear solve (phase columns merged at fixed weights, so only a
+  total scale + background is solved):
+  free QPA **13.2234%** → fixed QPA **14.9871%** (**constraint costs
+  +1.7637 pt**) → fixed QPA + η +0.2 **13.9907%** (**shape gains −0.9964 pt**).
+  The shape gain is real — well past the −0.5 pt bar, with QPA held to
+  0.01 vol% — but the constraint costs 1.76 pt, nearly twice the gain, so the
+  combination nets **+0.7673 pt** and fails. QPA freedom is worth 1.7637 pt,
+  more than any profile knob can return, which makes this family
+  **structurally** unviable: while phase fractions stay free they keep
+  absorbing the residual. All peak-shape / background / phase-fraction levers
+  for sample 7 are now closed; the remaining explanation is the structural
+  model itself — the bundled fluorite reference is an ideal CaF₂ CIF while the
+  literature phase is an anion-excess defect structure — which is an **input
+  data** problem, not an engine problem.
 
 
 ## v1.6.4 (2026-11-12) — Third batch of audit remediation (engineering robustness + read performance)
