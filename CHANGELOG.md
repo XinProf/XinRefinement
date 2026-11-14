@@ -66,15 +66,21 @@ analytically so it cannot masquerade as background freedom.
   bottleneck. The improvement is concentrated on the 28.5° fluorite (111)
   region: the 15–30° bin carries 83% of the total weighted-SS reduction,
   while the 24–26° region worsens.
-- Diagnostic finding, **not fixed in this release**: whenever Popa LB
-  anisotropy is active, `forward._accumulate_peaks()` takes η from
-  `tch_eta()` and ignores `ProfileParams.eta`, even though the `profile`
-  recipe step still refines it via `refine_eta=True`. Sweeping η from 0 to 1
-  changes Rwp by exactly 0 pt; all 7 benchmark samples run 100% through that
-  TCH branch (0 scalar peaks) and the GUI ships with `aniso_auto` enabled.
-  Fixing it would change the default numerical path and `n_params`, so it is
-  tracked as a separate engineering item rather than folded into the
-  benchmark work.
+- **K30 fixed**: whenever Popa LB anisotropy is active,
+  `forward._accumulate_peaks()` takes η from `tch_eta()` and ignores
+  `ProfileParams.eta`, even though the `profile` recipe step still refined it
+  via `refine_eta=True`. Sweeping η from 0 to 1 changed Rwp by exactly 0 pt;
+  all 7 benchmark samples run 100% through that TCH branch (0 scalar peaks)
+  and the GUI ships with `aniso_auto` enabled, so the dead parameter sat on
+  the product default path. `nonlinear.eta_is_active()` now probes the cached
+  peak list at `refine()` entry and locally clears `refine_eta` when no
+  scalar-branch peak exists. The computed pattern, Rwp and every refined
+  parameter are **bit-identical on all 7 samples** (`max|diff| = 0`); only
+  `n_params` drops by one, which corrects `Rexp` (previously low by
+  0.0007–0.0015). `SolveResult.config` still reports the caller's original
+  setting, so the public contract is unchanged. `tch_eta()` itself is
+  untouched — giving the TCH branch a real η degree of freedom would move the
+  default numerical path and needs its own project.
 - The only surviving lever (a +0.2 η bias on TCH peaks) also **fails** the
   full-recipe on/off check: Rwp 13.2231% → 12.6790% (−0.544 pt) but QPA
   drifts 9.44 vol% (fluorite 25.09 → 34.53) and runtime grows 1.59×. This is
